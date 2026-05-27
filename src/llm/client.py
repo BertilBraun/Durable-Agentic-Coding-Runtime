@@ -67,13 +67,23 @@ class LLMClient(Generic[StructuredOutput]):
     ) -> None:
         self.model_configuration = model_configuration or load_model_configuration()
         self.usage_ledger = usage_ledger or LLMUsageLedger()
-        self.async_openai_client = async_openai_client or AsyncOpenAI(
-            api_key=os.getenv("LLM_API_KEY"),
-            base_url=os.getenv("LLM_BASE_URL"),
-        )
+        self.async_openai_client = async_openai_client
+        if self.async_openai_client is None and not _fake_mode_enabled():
+            self.async_openai_client = AsyncOpenAI(
+                api_key=os.getenv("LLM_API_KEY"),
+                base_url=os.getenv("LLM_BASE_URL"),
+            )
 
     async def complete(self, role: ModelRole, messages: list[Message]) -> str:
         model = self.model_configuration.model_for_role(role)
+        if _fake_mode_enabled():
+            content = _fake_completion_content(role)
+            self.usage_ledger.record(
+                _fake_usage(role=role, model=model, messages=messages, content=content)
+            )
+            return content
+        if self.async_openai_client is None:
+            raise ValueError("OpenAI client is required when fake mode is disabled")
         response = await self.async_openai_client.chat.completions.create(
             model=model,
             messages=[message.model_dump(mode="json") for message in messages],
@@ -88,6 +98,13 @@ class LLMClient(Generic[StructuredOutput]):
         messages: list[Message],
         output_type: type[StructuredOutput],
     ) -> StructuredOutput:
+        if _fake_mode_enabled():
+            model = self.model_configuration.model_for_role(role)
+            content = _fake_structured_content(output_type)
+            self.usage_ledger.record(
+                _fake_usage(role=role, model=model, messages=messages, content=content)
+            )
+            return output_type.model_validate_json(content)
         structured_messages = [
             *messages,
             Message(
@@ -100,6 +117,76 @@ class LLMClient(Generic[StructuredOutput]):
         ]
         content = await self.complete(role=role, messages=structured_messages)
         return output_type.model_validate_json(content)
+
+
+def _fake_mode_enabled() -> bool:
+    return os.getenv("LLM_FAKE_MODE") == "1"
+
+
+def _fake_completion_content(role: ModelRole) -> str:
+    match role:
+        case ModelRole.IMPLEMENTATION:
+            return ""
+        case _:
+            return "{}"
+
+
+def _fake_structured_content(output_type: type[BaseModel]) -> str:
+    match output_type.__name__:
+        case "TaskContract":
+            return (
+                '{"task_type":"bugfix","goal":"Run the smoke workflow",'
+                '"acceptance_criteria":["Workflow completes"],"non_goals":[],'
+                '"affected_areas":["smoke"],"risk_areas":[],"tests_expected":[],'
+                '"open_questions":[]}'
+            )
+        case "ComplexityVerdict":
+            return '{"requires_human_approval":false,"reasoning":"Narrow smoke task."}'
+        case "Plan":
+            return (
+                '{"summary":"Smoke test plan","steps":[{"id":"step_1",'
+                '"goal":"Complete a no-op implementation step","target_files":[],'
+                '"allowed_files":[],"tests_to_run":[],"expected_result":"Step completes",'
+                '"risk":"low","requires_human_approval":false}],'
+                '"integration_tests":[],"rollback_strategy":"Discard workspace",'
+                '"definition_of_done":["Workflow completes"]}'
+            )
+        case "ContextGathererTurn":
+            return (
+                '{"done":true,"context_pack":{"task_summary":"Smoke context",'
+                '"relevant_snippets":[],"recent_observations":[],'
+                '"failed_attempt_summaries":[],"available_tools":[],"budget_remaining":0},'
+                '"tool_calls":[]}'
+            )
+        case "ImplementationAgentTurn":
+            return (
+                '{"done":true,"worker_result":{"status":"success","patch_id":"smoke",'
+                '"diff_summary":"No-op smoke implementation","tests_run":[],'
+                '"test_results":[],"discovered_issues":[],"confidence":"high",'
+                '"replan_suggestion":null},"tool_calls":[]}'
+            )
+        case "ReviewVerdict":
+            return (
+                '{"verdict":"accept","blocking_issues":[],"non_blocking_issues":[],'
+                '"evidence":["Smoke workflow completed"],"missing_tests":[],'
+                '"regression_risks":[],"minimality_assessment":"No-op smoke change",'
+                '"recommended_next_action":"Accept smoke result"}'
+            )
+        case _:
+            raise ValueError(f"No fake structured response for {output_type.__name__}")
+
+
+def _fake_usage(role: ModelRole, model: str, messages: list[Message], content: str) -> LLMUsage:
+    input_tokens = sum(len(message.content.split()) for message in messages)
+    output_tokens = len(content.split())
+    return LLMUsage(
+        role=role,
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=0,
+        cost_usd=0.0,
+    )
 
 
 def _extract_content(response: object) -> str:
