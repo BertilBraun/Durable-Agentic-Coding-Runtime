@@ -71,6 +71,23 @@ class PatchApplicationResult(BaseModel):
     stderr: str
 
 
+class OracleCommandResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    command: str
+    exit_code: int
+    stdout: str
+    stderr: str
+
+
+class OracleResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    resolved: bool
+    reason: str | None
+    command_results: list[OracleCommandResult] = Field(default_factory=list)
+
+
 SUPPORTED_LANGUAGES = frozenset({"python", "typescript", "javascript", "js", "ts"})
 TERMINAL_WORKFLOW_STATUSES = frozenset({"completed", "failed"})
 SWE_BENCH_WORKDIR = "/testbed"
@@ -168,6 +185,58 @@ def _apply_patch_to_container(
     return PatchApplicationResult(
         applied=exit_code == 0,
         exit_code=exit_code,
+        stdout=str(execution_result["stdout"]),
+        stderr=str(execution_result["stderr"]),
+    )
+
+
+def _run_oracle(
+    container_id: str,
+    instance: SweBenchInstance,
+    docker_client: object,
+) -> OracleResult:
+    command_results: list[OracleCommandResult] = []
+    fail_to_pass_results = [
+        _run_oracle_command(container_id, test_identifier, docker_client)
+        for test_identifier in instance.fail_to_pass
+    ]
+    command_results.extend(fail_to_pass_results)
+    if any(command_result.exit_code != 0 for command_result in fail_to_pass_results):
+        return OracleResult(
+            resolved=False,
+            reason="fail_to_pass_failed",
+            command_results=command_results,
+        )
+
+    pass_to_pass_results = [
+        _run_oracle_command(container_id, test_identifier, docker_client)
+        for test_identifier in instance.pass_to_pass
+    ]
+    command_results.extend(pass_to_pass_results)
+    if any(command_result.exit_code != 0 for command_result in pass_to_pass_results):
+        return OracleResult(
+            resolved=False,
+            reason="pass_to_pass_failed",
+            command_results=command_results,
+        )
+    return OracleResult(resolved=True, reason=None, command_results=command_results)
+
+
+def _run_oracle_command(
+    container_id: str,
+    test_identifier: str,
+    docker_client: object,
+) -> OracleCommandResult:
+    command = f"pytest {test_identifier}"
+    execution_result = docker_client.containers.execute(
+        container_id=container_id,
+        command=["sh", "-lc", command],
+        stdin="",
+        workdir=SWE_BENCH_WORKDIR,
+    )
+    return OracleCommandResult(
+        command=command,
+        exit_code=int(execution_result["exit_code"]),
         stdout=str(execution_result["stdout"]),
         stderr=str(execution_result["stderr"]),
     )

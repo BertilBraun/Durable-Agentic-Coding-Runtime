@@ -3,6 +3,7 @@ from src.eval.swe_bench import (
     SweBenchInstance,
     _apply_patch_to_container,
     _pull_official_image,
+    _run_oracle,
     _select_evaluation_instances,
     _start_official_container,
 )
@@ -115,6 +116,55 @@ def test_apply_patch_to_container_rejects_empty_patch() -> None:
         )
 
 
+def test_run_oracle_resolves_when_fail_to_pass_and_pass_to_pass_succeed() -> None:
+    docker_client = FakeDockerClient()
+
+    result = _run_oracle(
+        container_id="container-1",
+        instance=SweBenchInstance(
+            instance_id="python-1",
+            repo="owner/repo",
+            problem_statement="Fix the bug",
+            language="python",
+            fail_to_pass=["tests/test_bug.py::test_fixed"],
+            pass_to_pass=["tests/test_existing.py::test_existing"],
+            docker_image="sweb.eval.x86_64.python-1:latest",
+        ),
+        docker_client=docker_client,
+    )
+
+    assert result.resolved is True
+    assert [command_result.command for command_result in result.command_results] == [
+        "pytest tests/test_bug.py::test_fixed",
+        "pytest tests/test_existing.py::test_existing",
+    ]
+
+
+def test_run_oracle_fails_when_pass_to_pass_regresses() -> None:
+    docker_client = FakeDockerClient()
+    docker_client.containers.command_exit_codes = {
+        "pytest tests/test_bug.py::test_fixed": 0,
+        "pytest tests/test_existing.py::test_existing": 1,
+    }
+
+    result = _run_oracle(
+        container_id="container-1",
+        instance=SweBenchInstance(
+            instance_id="python-1",
+            repo="owner/repo",
+            problem_statement="Fix the bug",
+            language="python",
+            fail_to_pass=["tests/test_bug.py::test_fixed"],
+            pass_to_pass=["tests/test_existing.py::test_existing"],
+            docker_image="sweb.eval.x86_64.python-1:latest",
+        ),
+        docker_client=docker_client,
+    )
+
+    assert result.resolved is False
+    assert result.reason == "pass_to_pass_failed"
+
+
 def _instance(instance_id: str, language: str) -> SweBenchInstance:
     return SweBenchInstance(
         instance_id=instance_id,
@@ -151,6 +201,7 @@ class FakeContainers:
     def __init__(self) -> None:
         self.run_arguments: dict[str, object] | None = None
         self.executions: list[dict[str, object]] = []
+        self.command_exit_codes: dict[str, int] = {}
 
     def run(self, **keyword_arguments: object) -> FakeContainer:
         self.run_arguments = keyword_arguments
@@ -171,7 +222,9 @@ class FakeContainers:
                 "workdir": workdir,
             }
         )
-        return {"exit_code": 0, "stdout": "applied", "stderr": ""}
+        shell_command = command[-1]
+        exit_code = self.command_exit_codes.get(shell_command, 0)
+        return {"exit_code": exit_code, "stdout": "ok", "stderr": ""}
 
 
 class FakeDockerClient:
