@@ -104,6 +104,45 @@ ctx, cfg, req, res
 
 ---
 
+## No silent defaults
+
+Never use default parameter values that could hide bugs. All parameters must be explicitly passed by the caller - do not rely on defaults to fill in missing values.
+
+```python
+# correct
+def create_task(request: TaskRequest) -> TaskContract: ...
+# wrong
+def create_task(request: TaskRequest, contract_type="bugfix") -> TaskContract: ...
+
+#correct
+important_value = config.get("important_value")
+if important_value is None:
+    raise ValueError("important_value is required in config")
+# wrong
+important_value = config.get("important_value", "default_value")
+```
+
+---
+
+## Dependencies
+
+Once dependencies are added, they may be assumed to be present and do not require defensive checks or fallbacks.
+
+```python
+# correct
+from httpx import AsyncClient
+
+# wrong
+try:
+    import httpx
+except ImportError:
+    class AsyncClient:
+        def __init__(*args, **kwargs):
+            raise ImportError("httpx is required for AsyncClient")
+```
+
+---
+
 ## match/case over isinstance chains
 
 ```python
