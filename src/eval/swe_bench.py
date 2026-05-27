@@ -242,6 +242,18 @@ def _run_oracle_command(
     )
 
 
+def _extract_patch_from_workflow_result(workflow_result: dict[str, object]) -> str:
+    inline_patch = workflow_result.get("patch")
+    if isinstance(inline_patch, str) and inline_patch.strip():
+        return inline_patch
+    patch_artifact = workflow_result.get("patch_artifact")
+    if isinstance(patch_artifact, dict):
+        artifact_path = patch_artifact.get("path")
+        if isinstance(artifact_path, str) and artifact_path.strip():
+            return f"@{artifact_path}"
+    raise ValueError("Workflow result did not include a patch")
+
+
 def _skipped_result(instance: SweBenchInstance, reason: str) -> EvaluationTaskResult:
     return EvaluationTaskResult(
         instance_id=instance.instance_id,

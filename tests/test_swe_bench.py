@@ -2,6 +2,7 @@ import pytest
 from src.eval.swe_bench import (
     SweBenchInstance,
     _apply_patch_to_container,
+    _extract_patch_from_workflow_result,
     _pull_official_image,
     _run_oracle,
     _select_evaluation_instances,
@@ -163,6 +164,35 @@ def test_run_oracle_fails_when_pass_to_pass_regresses() -> None:
 
     assert result.resolved is False
     assert result.reason == "pass_to_pass_failed"
+
+
+def test_extract_patch_from_workflow_result_uses_patch_artifact_path() -> None:
+    patch = _extract_patch_from_workflow_result(
+        {
+            "patch_artifact": {
+                "path": "/artifacts/run-1/patch.diff",
+                "summary": "Patch artifact",
+                "kind": "diff",
+            }
+        }
+    )
+
+    assert patch == "@/artifacts/run-1/patch.diff"
+
+
+def test_extract_patch_from_workflow_result_uses_inline_patch() -> None:
+    patch = _extract_patch_from_workflow_result(
+        {
+            "patch": "diff --git a/app.py b/app.py\n",
+        }
+    )
+
+    assert patch == "diff --git a/app.py b/app.py\n"
+
+
+def test_extract_patch_from_workflow_result_rejects_missing_patch() -> None:
+    with pytest.raises(ValueError, match="patch"):
+        _extract_patch_from_workflow_result({"status": "accept"})
 
 
 def _instance(instance_id: str, language: str) -> SweBenchInstance:
