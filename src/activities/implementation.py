@@ -5,7 +5,7 @@ import os
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.activities.temporal import durable_activity
-from src.activities.workspace_manager import WorkspaceInfo, run_tool
+from src.activities.workspace_manager import ToolExecutionRequest, WorkspaceInfo, run_tool
 from src.llm.client import LLMClient, Message
 from src.llm.config import ModelRole
 from src.models.context import ContextPack
@@ -130,7 +130,9 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
         observations: list[str] = []
         for tool_call in agent_turn.tool_calls:
             tool = _tool_from_call(tool_call)
-            tool_result = await run_tool(request.workspace_info, tool)
+            tool_result = await run_tool(
+                ToolExecutionRequest(workspace_info=request.workspace_info, tool=tool)
+            )
             observations.append(
                 f"tool={tool_call.tool_name} exit_code={tool_result.exit_code}\n"
                 f"stdout:\n{tool_result.stdout}\n"
@@ -144,7 +146,9 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
 
 @durable_activity(retries=0, timeout=120)
 async def get_full_diff(workspace_info: WorkspaceInfo) -> str:
-    tool_result = await run_tool(workspace_info, GitDiff(path="."))
+    tool_result = await run_tool(
+        ToolExecutionRequest(workspace_info=workspace_info, tool=GitDiff(path="."))
+    )
     return tool_result.stdout
 
 

@@ -3,7 +3,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from src.activities.workspace_manager import create_workspace, destroy_workspace, run_tool
+from src.activities.workspace_manager import (
+    ToolExecutionRequest,
+    create_workspace,
+    destroy_workspace,
+    run_tool,
+)
 from src.tools.definitions import ReadFileRange, WriteFile
 
 pytestmark = pytest.mark.integration
@@ -27,12 +32,16 @@ async def test_workspace_runs_tools_in_fresh_container(tmp_path: Path) -> None:
     workspace_info = await create_workspace("integration-test", str(source_repository_path))
     try:
         read_result = await run_tool(
-            workspace_info,
-            ReadFileRange(file_path="hello.txt", start_line=1, end_line=1),
+            ToolExecutionRequest(
+                workspace_info=workspace_info,
+                tool=ReadFileRange(file_path="hello.txt", start_line=1, end_line=1),
+            )
         )
         write_result = await run_tool(
-            workspace_info,
-            WriteFile(file_path="created.txt", content="created\n"),
+            ToolExecutionRequest(
+                workspace_info=workspace_info,
+                tool=WriteFile(file_path="created.txt", content="created\n"),
+            )
         )
     finally:
         await destroy_workspace(workspace_info)

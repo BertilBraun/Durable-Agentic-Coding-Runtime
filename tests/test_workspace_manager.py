@@ -1,6 +1,9 @@
+from pathlib import Path
+
 import pytest
-from src.activities.workspace_manager import WorkspaceInfo, run_tool
-from src.tools.definitions import RunTests
+from src.activities.workspace_manager import ToolExecutionRequest, WorkspaceInfo, run_tool
+from src.models.repo import FileEntry, Language, RepoIndex, Symbol, SymbolKind
+from src.tools.definitions import FindReferences, FindSymbol, GitStatus, RunTests
 
 
 class FakeContainer:
@@ -43,15 +46,116 @@ async def test_run_tool_applies_tool_timeout(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     result = await run_tool(
-        WorkspaceInfo(
-            run_id="run-1",
-            volume_name="volume",
-            worktree_path="workspace",
-            branch_name="branch",
+        ToolExecutionRequest(
+            workspace_info=WorkspaceInfo(
+                run_id="run-1",
+                volume_name="volume",
+                worktree_path="workspace",
+                branch_name="branch",
+            ),
+            tool=RunTests(command="pytest", timeout_seconds=17),
         ),
-        RunTests(command="pytest", timeout_seconds=17),
     )
 
     assert result.exit_code == 0
     assert container.timeout_seconds == 17
     assert container.removed is True
+
+
+def test_tool_execution_request_preserves_tool_type_after_json_round_trip() -> None:
+    request = ToolExecutionRequest(
+        workspace_info=WorkspaceInfo(
+            run_id="run-1",
+            volume_name="volume",
+            worktree_path="workspace",
+            branch_name="branch",
+        ),
+        tool=GitStatus(path="."),
+    )
+
+    restored_request = ToolExecutionRequest.model_validate(request.model_dump(mode="json"))
+
+    assert restored_request.tool == GitStatus(path=".")
+
+
+@pytest.mark.asyncio
+async def test_run_tool_finds_python_symbol_from_repo_index(tmp_path: Path) -> None:
+    repository_index = RepoIndex(
+        symbols=[
+            Symbol(
+                name="Parser",
+                kind=SymbolKind.CLASS,
+                file_path="src/parser.py",
+                start_line=3,
+                end_line=8,
+                language=Language.PYTHON,
+            )
+        ]
+    )
+
+    result = await run_tool(
+        ToolExecutionRequest(
+            workspace_info=WorkspaceInfo(
+                run_id="run-1",
+                volume_name="volume",
+                worktree_path=str(tmp_path),
+                branch_name="branch",
+            ),
+            tool=FindSymbol(name="Parser", language="python"),
+            repo_index=repository_index,
+        )
+    )
+
+    assert result.exit_code == 0
+    assert "src/parser.py:3-8 class Parser" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_run_tool_finds_tsx_references_from_indexed_files(tmp_path: Path) -> None:
+    component_path = tmp_path / "src" / "component.tsx"
+    component_path.parent.mkdir()
+    component_path.write_text(
+        "export function Widget() {\n"
+        "  return null;\n"
+        "}\n"
+        "\n"
+        "export function App() {\n"
+        "  return <Widget />;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    repository_index = RepoIndex(
+        file_tree=[
+            FileEntry(
+                path="src/component.tsx",
+                language=Language.TSX,
+                size_bytes=component_path.stat().st_size,
+            )
+        ],
+        symbols=[
+            Symbol(
+                name="Widget",
+                kind=SymbolKind.FUNCTION,
+                file_path="src/component.tsx",
+                start_line=1,
+                end_line=3,
+                language=Language.TSX,
+            )
+        ],
+    )
+
+    result = await run_tool(
+        ToolExecutionRequest(
+            workspace_info=WorkspaceInfo(
+                run_id="run-1",
+                volume_name="volume",
+                worktree_path=str(tmp_path),
+                branch_name="branch",
+            ),
+            tool=FindReferences(symbol_name="Widget", file_path="src/component.tsx"),
+            repo_index=repository_index,
+        )
+    )
+
+    assert result.exit_code == 0
+    assert "src/component.tsx:6:  return <Widget />;" in result.stdout

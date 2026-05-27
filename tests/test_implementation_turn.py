@@ -6,14 +6,14 @@ from src.activities.implementation import (
     ImplementationTurnRequest,
     run_implementation_turn,
 )
-from src.activities.workspace_manager import ToolResult, WorkspaceInfo
+from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceInfo
 from src.llm.client import Message
 from src.llm.config import ModelRole
 from src.models.context import ContextPack
 from src.models.plan import PlanStep, Risk
 from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerStatus
-from src.tools.definitions import RunTests, Tool, ToolName
+from src.tools.definitions import RunTests, ToolName
 
 
 class FakeImplementationClient:
@@ -64,8 +64,8 @@ class FakeImplementationClient:
 async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     tool_names: list[str] = []
 
-    async def fake_run_tool(workspace_info: WorkspaceInfo, tool: Tool) -> ToolResult:
-        tool_names.append(type(tool).__name__)
+    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+        tool_names.append(type(request.tool).__name__)
         return ToolResult(stdout="file content", stderr="", exit_code=0, truncated=False)
 
     monkeypatch.setattr("src.activities.implementation.LLMClient", FakeImplementationClient)
@@ -147,12 +147,12 @@ async def test_implementation_turn_preserves_run_tests_timeout(
                 }
             )
 
-    async def fake_run_tool(workspace_info: WorkspaceInfo, tool: Tool) -> ToolResult:
-        match tool:
+    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+        match request.tool:
             case RunTests(timeout_seconds=timeout_seconds):
                 captured_timeout_seconds.append(timeout_seconds)
             case _:
-                raise AssertionError(f"Unexpected tool: {tool}")
+                raise AssertionError(f"Unexpected tool: {request.tool}")
         return ToolResult(stdout="tests failed", stderr="", exit_code=1, truncated=False)
 
     monkeypatch.setenv("IMPLEMENTATION_MAX_TOOL_ROUNDS", "1")

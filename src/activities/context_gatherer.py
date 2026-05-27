@@ -5,7 +5,7 @@ import os
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.activities.temporal import durable_activity
-from src.activities.workspace_manager import WorkspaceInfo, run_tool
+from src.activities.workspace_manager import ToolExecutionRequest, WorkspaceInfo, run_tool
 from src.llm.client import LLMClient, Message
 from src.llm.config import ModelRole
 from src.models.context import ContextPack
@@ -102,7 +102,13 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
             if tool_call_count >= max_tool_calls:
                 break
             tool = _tool_from_call(tool_call)
-            tool_result = await run_tool(request.workspace_info, tool)
+            tool_result = await run_tool(
+                ToolExecutionRequest(
+                    workspace_info=request.workspace_info,
+                    tool=tool,
+                    repo_index=request.repo_index,
+                )
+            )
             observations.append(tool_result.stdout or tool_result.stderr)
             tool_call_count += 1
         messages.append(Message(role="assistant", content=turn.model_dump_json()))
