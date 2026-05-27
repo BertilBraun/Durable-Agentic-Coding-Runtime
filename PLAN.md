@@ -1419,14 +1419,14 @@ This section is the current execution checkpoint for continuing implementation. 
 Latest commits:
 
 ```text
+193d89b Add human approval signal CLI
+4ec026b Expose workflow LLM usage totals
+de2430a Run SWE-bench oracle in evaluation
+790f4c5 Document stricter coding standards
+5a2e46f Update implementation checkpoint
 2dc8e86 Complete SWE-bench evaluation report
 15d5b81 Stop agents near context limit
 ea10d90 Replan after worker replan signal
-8a54970 Assert validated tool call fields
-7cdd6af Use per-turn context observations
-bfe99d7 Require observed diff evidence
-1b2917d Dispatch gather context activity
-8d27b12 Extract SWE-bench workflow patches
 ```
 
 The `Temporal-Light` dependency is tracked as a Git submodule via `.gitmodules`.
@@ -1449,6 +1449,7 @@ LLM layer:
 
 - `src/llm/config.py` defines `ModelRole` and env-based model routing.
 - `src/llm/client.py` centralizes all OpenAI-compatible calls with structured output parsing and usage ledger.
+- `LLMClient` records per-call usage into a workflow-visible usage summary.
 - `LLMClient` tracks `last_input_token_count` and exposes `context_utilization()` using configured model context limits.
 - `LLM_FAKE_MODE=1` provides deterministic structured responses for smoke workflows.
 
@@ -1468,6 +1469,7 @@ Activities:
 
 - Contract builder, complexity assessor, planner, context gatherer, implementation turn, reviewer, report builder, human plan presentation, tool executor, and workspace manager activities.
 - Activity wrapper serializes Pydantic/dataclass inputs and outputs to JSON-safe Temporal-Light event payloads.
+- Report builder exposes final `llm_usage` totals for evaluation and reporting.
 - `run_implementation_turn` dispatches `gather_context` as an activity and injects the returned `ContextPack` as a structured observation.
 - `gather_context` feeds only the current turn's tool observations back to the cheap-model agent while retaining all observations for fallback context packs.
 - Implementation and context gatherer tool conversion assert validated fields instead of silently substituting defaults.
@@ -1499,8 +1501,13 @@ SWE-bench harness (`src/eval/swe_bench.py`):
 - Official SWE-bench Docker image pull and container start per instance.
 - Patch application inside containers.
 - Oracle test execution (`FAIL_TO_PASS` / `PASS_TO_PASS`).
-- Patch extraction from completed workflow artifact volume.
+- Patch extraction from completed workflow result or artifact path.
+- Main evaluation loop applies both workflow and baseline patches in official SWE-bench containers and scores them with the oracle.
 - JSON evaluation reports include `resolved`, `failed`, `skipped`, skip-reason breakdown, `cost_per_resolved_task`, and resolved/failed `llm_calls_per_task`.
+
+Human approval operations:
+
+- `python -m src.cli.human_approval` sends typed `human_approval` signals to Temporal-Light's signal endpoint for approve/revise decisions.
 
 ### 22.3 Current Gaps
 
@@ -1509,15 +1516,8 @@ Real-LLM validation:
 - The system has still not run against a real LLM on a real repository. All end-to-end verification remains fake-mode/unit-test based.
 - The next high-leverage milestone is a live smoke run with non-fake model calls and a small local repository.
 
-Evaluation gaps:
-
-- SWE-bench baseline currently generates and stores a patch, but baseline oracle execution is not yet wired into `run_evaluation`.
-- Framework task evaluation still treats workflow completion as resolved; it does not yet extract the workflow patch, apply it in the official SWE-bench image, and run the oracle in the main evaluation loop.
-- Cost accounting in SWE-bench framework results is still placeholder until workflow reports expose the LLM usage ledger.
-
 Lower-priority gaps:
 
-- Human approval CLI helper for sending signals to a waiting workflow is missing.
 - `destroy_workspace` runs only on normal completion; failure cleanup has no recovery path.
 - Workspace uses a cloned copy, not a true git worktree from the source repository.
 
@@ -1594,15 +1594,24 @@ Work in small commits. Keep `ruff format`, `ruff check`, and `pytest -q` green b
    - Write JSON evaluation report with `resolved`, `failed`, `skipped`, `cost_per_resolved_task`, and `llm_calls_per_task`.
    - Add a five-task smoke run mode (`--subset 5`) for fast local validation.
 
+### 22.4a Completed Follow-up
+
+The follow-up work after the checkpoint completed these items:
+
+1. Committed the stricter `CODING_STANDARDS.md` additions.
+2. Wired the SWE-bench main evaluation loop to apply framework and baseline patches in official containers and score them with the oracle.
+3. Exposed workflow `llm_usage` totals in `FinalReport` and registered the usage reset/collection activities.
+4. Added `src.cli.human_approval` for sending approve/revise signals to waiting workflows.
+5. Reviewed workspace behavior: the current implementation creates an isolated host-side clone per run and mounts that clone into each tool container, which matches the desired diff/revert workflow. A switch to `git worktree` is optional rather than blocking.
+
 ### 22.5 Next Implementation Plan
 
 Work in small commits. Keep `ruff format`, `ruff check`, and `pytest -q` green before each commit.
 
-1. Wire SWE-bench oracle execution into the main evaluation loop for both framework and baseline patches.
-2. Expose LLM usage ledger totals in workflow final reports so evaluation cost metrics are real instead of placeholders.
-3. Run the first non-fake live smoke workflow against a small local repository and document the result.
-4. Add cleanup/recovery handling so `destroy_workspace` runs after workflow failures.
-5. Build a small CLI helper for sending human approval signals to waiting workflows.
+1. Run the first non-fake live smoke workflow against a small local repository and document the result.
+2. Run a small SWE-bench subset with a real model and inspect failures.
+3. Fix bugs exposed by the live smoke or SWE-bench subset before increasing benchmark size.
+4. Revisit workspace cleanup once Temporal-Light supports failure/cancellation compensation.
 
 ### 22.6 Commands for Next Session
 
