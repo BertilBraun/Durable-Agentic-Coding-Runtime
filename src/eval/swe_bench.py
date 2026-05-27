@@ -64,6 +64,7 @@ class EvaluationReport(BaseModel):
 
 SUPPORTED_LANGUAGES = frozenset({"python", "typescript", "javascript", "js", "ts"})
 TERMINAL_WORKFLOW_STATUSES = frozenset({"completed", "failed"})
+SWE_BENCH_WORKDIR = "/testbed"
 
 
 async def run_evaluation(
@@ -117,6 +118,28 @@ def _select_evaluation_instances(
         if len(selected_instances) >= limit:
             break
     return selected_instances
+
+
+def _pull_official_image(instance: SweBenchInstance, docker_client: object) -> None:
+    image = _official_image(instance)
+    docker_client.images.pull(image)
+
+
+def _start_official_container(instance: SweBenchInstance, docker_client: object) -> str:
+    image = _official_image(instance)
+    container = docker_client.containers.run(
+        image=image,
+        command="sleep infinity",
+        detach=True,
+        working_dir=SWE_BENCH_WORKDIR,
+    )
+    return str(container.id)
+
+
+def _official_image(instance: SweBenchInstance) -> str:
+    if instance.docker_image is None:
+        raise ValueError(f"SWE-bench instance {instance.instance_id} is missing docker_image")
+    return instance.docker_image
 
 
 def _skipped_result(instance: SweBenchInstance, reason: str) -> EvaluationTaskResult:
