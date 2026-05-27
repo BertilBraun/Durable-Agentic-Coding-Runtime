@@ -1,0 +1,5 @@
+services:
+  agent-worker:
+    volumes:
+      - ./src:/app/src
+    command: watchfiles "python -m src.worker" src/
