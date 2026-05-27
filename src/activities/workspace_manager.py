@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
 from src.activities.temporal import durable_activity
+from src.models.context import ArtifactKind, ArtifactReference
 from src.models.repo import Language, RepoIndex, Symbol
 from src.tools.definitions import (
     FindReferences,
@@ -25,6 +26,9 @@ WORKSPACE_IMAGE_ENVIRONMENT_NAME = "WORKSPACE_IMAGE"
 DEFAULT_WORKSPACE_IMAGE = "durable-agentic-workspace:latest"
 CONTAINER_WORKSPACE_PATH = "/workspace/repository"
 MAX_OUTPUT_CHARACTERS = 20_000
+COMPACT_OUTPUT_CHARACTERS = 800
+ARTIFACTS_ROOT_ENVIRONMENT_NAME = "ARTIFACTS_ROOT"
+DEFAULT_ARTIFACTS_ROOT = "/artifacts"
 
 
 class WorkspaceInfo(BaseModel):
@@ -43,6 +47,7 @@ class ToolResult(BaseModel):
     stderr: str
     exit_code: int
     truncated: bool
+    artifacts: list[ArtifactReference] = []
 
 
 class ToolExecutionRequest(BaseModel):
@@ -132,13 +137,27 @@ async def run_tool(request: ToolExecutionRequest) -> ToolResult:
     stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
     stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
     container.remove(force=True)
-    truncated_stdout = _truncate(stdout)
-    truncated_stderr = _truncate(stderr)
+    stdout_reference = _write_large_output_artifact(
+        request=request,
+        stream_name="stdout",
+        output=stdout,
+    )
+    stderr_reference = _write_large_output_artifact(
+        request=request,
+        stream_name="stderr",
+        output=stderr,
+    )
+    artifacts = [
+        artifact_reference
+        for artifact_reference in (stdout_reference, stderr_reference)
+        if artifact_reference is not None
+    ]
     return ToolResult(
-        stdout=truncated_stdout,
-        stderr=truncated_stderr,
+        stdout=_compact_output(stdout),
+        stderr=_compact_output(stderr),
         exit_code=int(wait_result.get("StatusCode", 1)),
-        truncated=truncated_stdout != stdout or truncated_stderr != stderr,
+        truncated=bool(artifacts),
+        artifacts=artifacts,
     )
 
 
@@ -282,7 +301,36 @@ def _docker_client() -> object:
     return docker.from_env()
 
 
-def _truncate(output: str) -> str:
+def _write_large_output_artifact(
+    request: ToolExecutionRequest,
+    stream_name: str,
+    output: str,
+) -> ArtifactReference | None:
+    if len(output) <= MAX_OUTPUT_CHARACTERS:
+        return None
+    artifact_path = Path(_artifacts_root()) / request.workspace_info.run_id / f"{stream_name}.log"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(output, encoding="utf-8")
+    return ArtifactReference(
+        path=artifact_path.as_posix(),
+        summary=f"{stream_name} output stored in artifact ({len(output)} characters)",
+        kind=_artifact_kind_for_output(request.tool),
+    )
+
+
+def _artifact_kind_for_output(tool: Tool) -> ArtifactKind:
+    match tool:
+        case RunTests():
+            return ArtifactKind.TEST_OUTPUT
+        case _:
+            return ArtifactKind.LOG
+
+
+def _artifacts_root() -> str:
+    return os.getenv(ARTIFACTS_ROOT_ENVIRONMENT_NAME, DEFAULT_ARTIFACTS_ROOT)
+
+
+def _compact_output(output: str) -> str:
     if len(output) <= MAX_OUTPUT_CHARACTERS:
         return output
-    return output[:MAX_OUTPUT_CHARACTERS]
+    return output[:COMPACT_OUTPUT_CHARACTERS]

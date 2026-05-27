@@ -2,14 +2,17 @@ from pathlib import Path
 
 import pytest
 from src.activities.workspace_manager import ToolExecutionRequest, WorkspaceInfo, run_tool
+from src.models.context import ArtifactKind
 from src.models.repo import FileEntry, Language, RepoIndex, Symbol, SymbolKind
 from src.tools.definitions import FindReferences, FindSymbol, GitStatus, RunTests
 
 
 class FakeContainer:
-    def __init__(self) -> None:
+    def __init__(self, stdout: bytes = b"ok\n", stderr: bytes = b"") -> None:
         self.timeout_seconds: int | None = None
         self.removed = False
+        self.stdout = stdout
+        self.stderr = stderr
 
     def wait(self, timeout: int | None = None) -> dict[str, int]:
         self.timeout_seconds = timeout
@@ -17,8 +20,8 @@ class FakeContainer:
 
     def logs(self, stdout: bool, stderr: bool) -> bytes:
         if stdout:
-            return b"ok\n"
-        return b""
+            return self.stdout
+        return self.stderr
 
     def remove(self, force: bool) -> None:
         self.removed = force
@@ -60,6 +63,72 @@ async def test_run_tool_applies_tool_timeout(monkeypatch: pytest.MonkeyPatch) ->
     assert result.exit_code == 0
     assert container.timeout_seconds == 17
     assert container.removed is True
+
+
+@pytest.mark.asyncio
+async def test_run_tool_writes_large_stdout_to_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    container = FakeContainer(stdout=b"x" * 20_001)
+    monkeypatch.setenv("ARTIFACTS_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setattr(
+        "src.activities.workspace_manager._docker_client",
+        lambda: FakeDockerClient(container),
+    )
+
+    result = await run_tool(
+        ToolExecutionRequest(
+            workspace_info=WorkspaceInfo(
+                run_id="run-large",
+                volume_name="volume",
+                worktree_path="workspace",
+                branch_name="branch",
+            ),
+            tool=RunTests(command="pytest", timeout_seconds=17),
+        ),
+    )
+
+    assert result.truncated is True
+    assert len(result.stdout) < 1_000
+    assert len(result.artifacts) == 1
+    artifact_reference = result.artifacts[0]
+    assert artifact_reference.kind == ArtifactKind.TEST_OUTPUT
+    assert artifact_reference.path.endswith("/artifacts/run-large/stdout.log")
+    assert Path(artifact_reference.path).read_text(encoding="utf-8") == "x" * 20_001
+
+
+@pytest.mark.asyncio
+async def test_run_tool_writes_large_stderr_to_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    container = FakeContainer(stderr=b"e" * 20_001)
+    monkeypatch.setenv("ARTIFACTS_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setattr(
+        "src.activities.workspace_manager._docker_client",
+        lambda: FakeDockerClient(container),
+    )
+
+    result = await run_tool(
+        ToolExecutionRequest(
+            workspace_info=WorkspaceInfo(
+                run_id="run-large",
+                volume_name="volume",
+                worktree_path="workspace",
+                branch_name="branch",
+            ),
+            tool=GitStatus(path="."),
+        ),
+    )
+
+    assert result.truncated is True
+    assert len(result.stderr) < 1_000
+    assert len(result.artifacts) == 1
+    artifact_reference = result.artifacts[0]
+    assert artifact_reference.kind == ArtifactKind.LOG
+    assert artifact_reference.path.endswith("/artifacts/run-large/stderr.log")
+    assert Path(artifact_reference.path).read_text(encoding="utf-8") == "e" * 20_001
 
 
 def test_tool_execution_request_preserves_tool_type_after_json_round_trip() -> None:
