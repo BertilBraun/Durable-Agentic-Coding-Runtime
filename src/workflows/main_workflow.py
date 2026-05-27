@@ -11,7 +11,7 @@ from src.activities.reviewer import ReviewRequest, review_patch
 from src.activities.workspace_manager import create_workspace, destroy_workspace, make_run_id
 from src.models.approval import ApprovalDecision, HumanApprovalSignal
 from src.models.task import TaskRequest
-from src.models.worker import WorkerResult
+from src.models.worker import WorkerResult, WorkerStatus
 from src.workflows.temporal import spawn_child, wait_for_child, wait_for_signal, workflow
 
 
@@ -25,7 +25,12 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
     repo_index = await build_repo_index(workspace_info)
 
     plan = await build_plan(
-        PlanRequest(contract=contract, repo_index=repo_index, human_feedback=None),
+        PlanRequest(
+            contract=contract,
+            repo_index=repo_index,
+            worker_results=[],
+            human_feedback=None,
+        ),
     )
     complexity_verdict = await assess_complexity(contract)
 
@@ -40,12 +45,18 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
                 break
             plan = await build_plan(
                 PlanRequest(
-                    contract=contract, repo_index=repo_index, human_feedback=approval.feedback
+                    contract=contract,
+                    repo_index=repo_index,
+                    worker_results=[],
+                    human_feedback=approval.feedback,
                 ),
             )
 
     worker_results: list[WorkerResult] = []
-    for plan_step in plan.steps:
+    pending_plan_steps = plan.steps
+    while pending_plan_steps:
+        plan_step = pending_plan_steps[0]
+        pending_plan_steps = pending_plan_steps[1:]
         child_id = await spawn_child(
             "implementation_workflow",
             step=plan_step.model_dump(mode="json"),
@@ -53,7 +64,23 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
             contract=contract.model_dump(mode="json"),
         )
         child_result = await wait_for_child(child_id)
-        worker_results.append(WorkerResult.model_validate(child_result))
+        worker_result = WorkerResult.model_validate(child_result)
+        worker_results.append(worker_result)
+        match worker_result.status:
+            case WorkerStatus.NEEDS_REPLAN:
+                plan = await build_plan(
+                    PlanRequest(
+                        contract=contract,
+                        repo_index=repo_index,
+                        worker_results=worker_results,
+                        human_feedback=worker_result.replan_suggestion,
+                    ),
+                )
+                pending_plan_steps = plan.steps
+            case WorkerStatus.FAILED | WorkerStatus.BLOCKED:
+                pending_plan_steps = []
+            case WorkerStatus.SUCCESS:
+                pass
 
     diff = await get_full_diff(workspace_info)
     final_verdict = await review_patch(
