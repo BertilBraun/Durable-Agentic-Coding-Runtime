@@ -1,0 +1,3 @@
+[submodule "Temporal-Light"]
+	path = Temporal-Light
+	url = https://github.com/BertilBraun/Temporal-Light.git

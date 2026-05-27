@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from src.activities import repo_indexer
 from src.activities.repo_indexer import build_repo_index
 from src.activities.workspace_manager import WorkspaceInfo
 from src.models.repo import Language, SymbolKind
@@ -58,3 +59,8 @@ async def test_repo_indexer_finds_javascript_exported_symbols(tmp_path: Path) ->
     symbol_pairs = {(symbol.name, symbol.kind) for symbol in repository_index.symbols}
     assert ("Widget", SymbolKind.FUNCTION) in symbol_pairs
     assert ("useWidget", SymbolKind.FUNCTION) in symbol_pairs
+
+
+def test_repo_indexer_has_no_non_tree_sitter_symbol_fallbacks() -> None:
+    assert not hasattr(repo_indexer, "_python_symbols")
+    assert not hasattr(repo_indexer, "_javascript_family_symbols")

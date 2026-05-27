@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-import ast
-import re
 from pathlib import Path
+
+import tree_sitter_javascript
+import tree_sitter_python
+from tree_sitter import Language as TreeSitterLanguage
+from tree_sitter import Node, Parser
 
 from src.activities.workspace_manager import WorkspaceInfo
 from src.models.repo import FileEntry, Language, RepoIndex, Symbol, SymbolKind
@@ -68,35 +71,30 @@ def _language_for_path(file_path: Path) -> Language:
 
 
 def _symbols_for_file(file_path: Path, relative_path: str, language: Language) -> list[Symbol]:
-    tree_sitter_symbols = _tree_sitter_symbols_for_file(
-        file_path=file_path,
-        relative_path=relative_path,
-        language=language,
-    )
-    if tree_sitter_symbols is not None:
-        return tree_sitter_symbols
-
     match language:
-        case Language.PYTHON:
-            return _python_symbols(file_path=file_path, relative_path=relative_path)
-        case Language.TYPESCRIPT | Language.TSX | Language.JAVASCRIPT | Language.JSX:
-            return _javascript_family_symbols(
-                file_path=file_path, relative_path=relative_path, language=language
-            )
         case Language.UNKNOWN:
             return []
+        case (
+            Language.PYTHON
+            | Language.TYPESCRIPT
+            | Language.TSX
+            | Language.JAVASCRIPT
+            | Language.JSX
+        ):
+            return _tree_sitter_symbols_for_file(
+                file_path=file_path,
+                relative_path=relative_path,
+                language=language,
+            )
 
 
 def _tree_sitter_symbols_for_file(
     file_path: Path,
     relative_path: str,
     language: Language,
-) -> list[Symbol] | None:
+) -> list[Symbol]:
     parser = _tree_sitter_parser(language)
-    if parser is None:
-        return None
-    source_bytes = file_path.read_bytes()
-    syntax_tree = parser.parse(source_bytes)
+    syntax_tree = parser.parse(file_path.read_bytes())
     symbols: list[Symbol] = []
     for node in syntax_tree.root_node.children:
         match language:
@@ -109,47 +107,31 @@ def _tree_sitter_symbols_for_file(
     return symbols
 
 
-def _tree_sitter_parser(language: Language) -> object | None:
-    try:
-        from tree_sitter import Language as TreeSitterLanguage
-        from tree_sitter import Parser
-    except ImportError:
-        return None
-
+def _tree_sitter_parser(language: Language) -> Parser:
+    parser = Parser()
     match language:
         case Language.PYTHON:
-            try:
-                import tree_sitter_python
-            except ImportError:
-                return None
-            parser = Parser()
             parser.language = TreeSitterLanguage(tree_sitter_python.language())
             return parser
         case Language.TYPESCRIPT | Language.TSX | Language.JAVASCRIPT | Language.JSX:
-            try:
-                import tree_sitter_javascript
-            except ImportError:
-                return None
-            parser = Parser()
             parser.language = TreeSitterLanguage(tree_sitter_javascript.language())
             return parser
         case Language.UNKNOWN:
-            return None
+            raise ValueError("Cannot create a tree-sitter parser for unknown language")
 
 
-def _python_tree_sitter_symbols(node: object, relative_path: str) -> list[Symbol]:
-    node_type = node.type
-    if node_type not in {"function_definition", "class_definition"}:
+def _python_tree_sitter_symbols(node: Node, relative_path: str) -> list[Symbol]:
+    if node.type not in {"function_definition", "class_definition"}:
         return []
     name_node = node.child_by_field_name("name")
     if name_node is None:
         return []
-    kind = SymbolKind.CLASS if node_type == "class_definition" else SymbolKind.FUNCTION
+    kind = SymbolKind.CLASS if node.type == "class_definition" else SymbolKind.FUNCTION
     return [_node_symbol(name_node, node, kind, relative_path, Language.PYTHON)]
 
 
 def _javascript_tree_sitter_symbols(
-    node: object,
+    node: Node,
     relative_path: str,
     language: Language,
 ) -> list[Symbol]:
@@ -168,7 +150,7 @@ def _javascript_tree_sitter_symbols(
 
 
 def _javascript_named_declaration_symbols(
-    node: object,
+    node: Node,
     relative_path: str,
     language: Language,
 ) -> list[Symbol]:
@@ -180,7 +162,7 @@ def _javascript_named_declaration_symbols(
 
 
 def _javascript_variable_symbols(
-    node: object,
+    node: Node,
     relative_path: str,
     language: Language,
 ) -> list[Symbol]:
@@ -199,8 +181,8 @@ def _javascript_variable_symbols(
 
 
 def _node_symbol(
-    name_node: object,
-    source_node: object,
+    name_node: Node,
+    source_node: Node,
     kind: SymbolKind,
     relative_path: str,
     language: Language,
@@ -211,87 +193,5 @@ def _node_symbol(
         file_path=relative_path,
         start_line=source_node.start_point[0] + 1,
         end_line=source_node.end_point[0] + 1,
-        language=language,
-    )
-
-
-def _python_symbols(file_path: Path, relative_path: str) -> list[Symbol]:
-    source = file_path.read_text(encoding="utf-8", errors="ignore")
-    syntax_tree = ast.parse(source)
-    symbols: list[Symbol] = []
-    for node in syntax_tree.body:
-        match node:
-            case ast.FunctionDef() | ast.AsyncFunctionDef():
-                symbols.append(
-                    Symbol(
-                        name=node.name,
-                        kind=SymbolKind.FUNCTION,
-                        file_path=relative_path,
-                        start_line=node.lineno,
-                        end_line=getattr(node, "end_lineno", node.lineno),
-                        language=Language.PYTHON,
-                    )
-                )
-            case ast.ClassDef():
-                symbols.append(
-                    Symbol(
-                        name=node.name,
-                        kind=SymbolKind.CLASS,
-                        file_path=relative_path,
-                        start_line=node.lineno,
-                        end_line=getattr(node, "end_lineno", node.lineno),
-                        language=Language.PYTHON,
-                    )
-                )
-    return symbols
-
-
-def _javascript_family_symbols(
-    file_path: Path, relative_path: str, language: Language
-) -> list[Symbol]:
-    source_lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    symbols: list[Symbol] = []
-    for line_number, line in enumerate(source_lines, start=1):
-        stripped_line = line.strip()
-        function_match = re.match(
-            r"^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)",
-            stripped_line,
-        )
-        arrow_match = re.match(
-            r"^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(",
-            stripped_line,
-        )
-        if function_match is not None:
-            name = function_match.group(1)
-            symbols.append(
-                _source_symbol(name, SymbolKind.FUNCTION, relative_path, line_number, language)
-            )
-        if arrow_match is not None:
-            name = arrow_match.group(1)
-            symbols.append(
-                _source_symbol(name, SymbolKind.FUNCTION, relative_path, line_number, language)
-            )
-        class_match = re.match(r"^(?:export\s+)?class\s+([A-Za-z_$][\w$]*)", stripped_line)
-        if class_match is not None:
-            name = class_match.group(1)
-            symbols.append(
-                _source_symbol(name, SymbolKind.CLASS, relative_path, line_number, language)
-            )
-    return symbols
-
-
-def _source_symbol(
-    name: str,
-    kind: SymbolKind,
-    relative_path: str,
-    line_number: int,
-    language: Language,
-) -> Symbol:
-    return Symbol(
-        name=name,
-        kind=kind,
-        file_path=relative_path,
-        start_line=line_number,
-        end_line=line_number,
         language=language,
     )
