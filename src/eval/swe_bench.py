@@ -62,6 +62,15 @@ class EvaluationReport(BaseModel):
     delta: float
 
 
+class PatchApplicationResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    applied: bool
+    exit_code: int
+    stdout: str
+    stderr: str
+
+
 SUPPORTED_LANGUAGES = frozenset({"python", "typescript", "javascript", "js", "ts"})
 TERMINAL_WORKFLOW_STATUSES = frozenset({"completed", "failed"})
 SWE_BENCH_WORKDIR = "/testbed"
@@ -140,6 +149,28 @@ def _official_image(instance: SweBenchInstance) -> str:
     if instance.docker_image is None:
         raise ValueError(f"SWE-bench instance {instance.instance_id} is missing docker_image")
     return instance.docker_image
+
+
+def _apply_patch_to_container(
+    container_id: str,
+    patch: str,
+    docker_client: object,
+) -> PatchApplicationResult:
+    if not patch.strip():
+        raise ValueError("SWE-bench patch cannot be empty")
+    execution_result = docker_client.containers.execute(
+        container_id=container_id,
+        command=["sh", "-lc", "git apply -"],
+        stdin=patch,
+        workdir=SWE_BENCH_WORKDIR,
+    )
+    exit_code = int(execution_result["exit_code"])
+    return PatchApplicationResult(
+        applied=exit_code == 0,
+        exit_code=exit_code,
+        stdout=str(execution_result["stdout"]),
+        stderr=str(execution_result["stderr"]),
+    )
 
 
 def _skipped_result(instance: SweBenchInstance, reason: str) -> EvaluationTaskResult:

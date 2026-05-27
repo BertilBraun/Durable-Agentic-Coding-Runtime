@@ -1,6 +1,7 @@
 import pytest
 from src.eval.swe_bench import (
     SweBenchInstance,
+    _apply_patch_to_container,
     _pull_official_image,
     _select_evaluation_instances,
     _start_official_container,
@@ -84,6 +85,36 @@ def test_start_official_container_uses_testbed_workdir() -> None:
     }
 
 
+def test_apply_patch_to_container_streams_patch_to_git_apply() -> None:
+    docker_client = FakeDockerClient()
+
+    result = _apply_patch_to_container(
+        container_id="container-1",
+        patch="diff --git a/app.py b/app.py\n",
+        docker_client=docker_client,
+    )
+
+    assert result.exit_code == 0
+    assert result.applied is True
+    assert docker_client.containers.executions == [
+        {
+            "container_id": "container-1",
+            "command": ["sh", "-lc", "git apply -"],
+            "stdin": "diff --git a/app.py b/app.py\n",
+            "workdir": "/testbed",
+        }
+    ]
+
+
+def test_apply_patch_to_container_rejects_empty_patch() -> None:
+    with pytest.raises(ValueError, match="patch"):
+        _apply_patch_to_container(
+            container_id="container-1",
+            patch="  \n",
+            docker_client=FakeDockerClient(),
+        )
+
+
 def _instance(instance_id: str, language: str) -> SweBenchInstance:
     return SweBenchInstance(
         instance_id=instance_id,
@@ -119,10 +150,28 @@ class FakeContainer:
 class FakeContainers:
     def __init__(self) -> None:
         self.run_arguments: dict[str, object] | None = None
+        self.executions: list[dict[str, object]] = []
 
     def run(self, **keyword_arguments: object) -> FakeContainer:
         self.run_arguments = keyword_arguments
         return FakeContainer()
+
+    def execute(
+        self,
+        container_id: str,
+        command: list[str],
+        stdin: str,
+        workdir: str,
+    ) -> dict[str, object]:
+        self.executions.append(
+            {
+                "container_id": container_id,
+                "command": command,
+                "stdin": stdin,
+                "workdir": workdir,
+            }
+        )
+        return {"exit_code": 0, "stdout": "applied", "stderr": ""}
 
 
 class FakeDockerClient:
