@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.activities.temporal import durable_activity
-from src.activities.workspace_manager import ToolExecutionRequest, WorkspaceInfo, run_tool
+from src.activities.workspace_manager import (
+    ToolExecutionRequest,
+    ToolResult,
+    WorkspaceInfo,
+    run_tool,
+)
 from src.llm.client import LLMClient, Message
 from src.llm.config import ModelRole
 from src.models.context import ContextPack
 from src.models.plan import PlanStep
 from src.models.task import TaskContract
-from src.models.worker import Confidence, WorkerResult, WorkerStatus
+from src.models.worker import Confidence, TestResult, WorkerResult, WorkerStatus
 from src.tools.definitions import (
     ApplyPatch,
     FindReferences,
@@ -101,6 +107,13 @@ class ImplementationAgentTurn(BaseModel):
     tool_calls: list[ImplementationToolCall] = Field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ImplementationEvidence:
+    tests_run: tuple[str, ...]
+    test_results: tuple[TestResult, ...]
+    saw_diff: bool
+
+
 @durable_activity(retries=1, timeout=600, backoff_seconds=5)
 async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerResult:
     llm_client = LLMClient()
@@ -116,6 +129,9 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
         Message(role="user", content=request.model_dump_json()),
     ]
     max_tool_rounds = int(os.getenv("IMPLEMENTATION_MAX_TOOL_ROUNDS", "12"))
+    tests_run: list[str] = []
+    test_results: list[TestResult] = []
+    saw_diff = False
     for _ in range(max_tool_rounds):
         agent_turn = await llm_client.generate_structured(
             role=ModelRole.IMPLEMENTATION,
@@ -125,7 +141,14 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
         if agent_turn.done:
             if agent_turn.worker_result is None:
                 raise ValueError("worker_result is required when implementation turn is done")
-            return agent_turn.worker_result
+            return _worker_result_with_evidence(
+                worker_result=agent_turn.worker_result,
+                evidence=ImplementationEvidence(
+                    tests_run=tuple(tests_run),
+                    test_results=tuple(test_results),
+                    saw_diff=saw_diff,
+                ),
+            )
 
         observations: list[str] = []
         for tool_call in agent_turn.tool_calls:
@@ -133,6 +156,14 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
             tool_result = await run_tool(
                 ToolExecutionRequest(workspace_info=request.workspace_info, tool=tool)
             )
+            match tool:
+                case RunTests(command=command):
+                    tests_run.append(command)
+                    test_results.append(_test_result_from_tool_result(command, tool_result))
+                case GitDiff():
+                    saw_diff = saw_diff or bool(tool_result.stdout.strip())
+                case _:
+                    pass
             observations.append(
                 f"tool={tool_call.tool_name} exit_code={tool_result.exit_code}\n"
                 f"stdout:\n{tool_result.stdout}\n"
@@ -162,6 +193,35 @@ def failed_worker_result(reason: str) -> WorkerResult:
         discovered_issues=[reason],
         confidence=Confidence.LOW,
         replan_suggestion=None,
+    )
+
+
+def _worker_result_with_evidence(
+    worker_result: WorkerResult,
+    evidence: ImplementationEvidence,
+) -> WorkerResult:
+    if worker_result.status != WorkerStatus.SUCCESS:
+        return worker_result
+    tests_run = list(dict.fromkeys([*worker_result.tests_run, *evidence.tests_run]))
+    test_results = [*worker_result.test_results, *evidence.test_results]
+    has_diff_evidence = evidence.saw_diff or bool(worker_result.diff_summary.strip())
+    if not has_diff_evidence and not test_results:
+        return failed_worker_result("success result missing diff or test evidence")
+    return worker_result.model_copy(
+        update={
+            "tests_run": tests_run,
+            "test_results": test_results,
+        }
+    )
+
+
+def _test_result_from_tool_result(command: str, tool_result: ToolResult) -> TestResult:
+    return TestResult(
+        command=command,
+        exit_code=tool_result.exit_code,
+        stdout_summary=tool_result.stdout,
+        stderr_summary=tool_result.stderr,
+        passed=tool_result.exit_code == 0,
     )
 
 

@@ -13,7 +13,7 @@ from src.models.context import ContextPack
 from src.models.plan import PlanStep, Risk
 from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerStatus
-from src.tools.definitions import RunTests, ToolName
+from src.tools.definitions import GitDiff, RunTests, ToolName
 
 
 class FakeImplementationClient:
@@ -163,6 +163,115 @@ async def test_implementation_turn_preserves_run_tests_timeout(
 
     assert worker_result.status == WorkerStatus.FAILED
     assert captured_timeout_seconds == [19]
+
+
+@pytest.mark.asyncio
+async def test_implementation_turn_adds_run_tests_result_to_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeSuccessAfterTestsClient:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        async def generate_structured(
+            self,
+            role: ModelRole,
+            messages: list[Message],
+            output_type: type[BaseModel],
+        ) -> BaseModel:
+            self.call_count += 1
+            if self.call_count == 1:
+                return output_type.model_validate(
+                    {
+                        "done": False,
+                        "tool_calls": [
+                            {
+                                "tool_name": "run_tests",
+                                "command": "pytest tests/test_app.py -q",
+                                "timeout_seconds": 30,
+                            },
+                            {
+                                "tool_name": "git_diff",
+                                "path": ".",
+                            },
+                        ],
+                    }
+                )
+            return output_type.model_validate(
+                {
+                    "done": True,
+                    "worker_result": {
+                        "status": "success",
+                        "patch_id": "patch-1",
+                        "diff_summary": "Updated app behavior.",
+                        "tests_run": [],
+                        "test_results": [],
+                        "discovered_issues": [],
+                        "confidence": "high",
+                        "replan_suggestion": None,
+                    },
+                }
+            )
+
+    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+        match request.tool:
+            case RunTests():
+                return ToolResult(stdout="1 passed", stderr="", exit_code=0, truncated=False)
+            case GitDiff():
+                return ToolResult(
+                    stdout="diff --git a/app.py b/app.py",
+                    stderr="",
+                    exit_code=0,
+                    truncated=False,
+                )
+            case _:
+                raise AssertionError(f"Unexpected tool: {request.tool}")
+
+    monkeypatch.setattr("src.activities.implementation.LLMClient", FakeSuccessAfterTestsClient)
+    monkeypatch.setattr("src.activities.implementation.run_tool", fake_run_tool)
+
+    worker_result = await run_implementation_turn(_implementation_request())
+
+    assert worker_result.status == WorkerStatus.SUCCESS
+    assert worker_result.tests_run == ["pytest tests/test_app.py -q"]
+    assert len(worker_result.test_results) == 1
+    assert worker_result.test_results[0].passed is True
+    assert worker_result.test_results[0].stdout_summary == "1 passed"
+
+
+@pytest.mark.asyncio
+async def test_implementation_turn_rejects_success_without_diff_or_test_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeUnsupportedSuccessClient:
+        async def generate_structured(
+            self,
+            role: ModelRole,
+            messages: list[Message],
+            output_type: type[BaseModel],
+        ) -> BaseModel:
+            return output_type.model_validate(
+                {
+                    "done": True,
+                    "worker_result": {
+                        "status": "success",
+                        "patch_id": "patch-1",
+                        "diff_summary": "",
+                        "tests_run": [],
+                        "test_results": [],
+                        "discovered_issues": [],
+                        "confidence": "high",
+                        "replan_suggestion": None,
+                    },
+                }
+            )
+
+    monkeypatch.setattr("src.activities.implementation.LLMClient", FakeUnsupportedSuccessClient)
+
+    worker_result = await run_implementation_turn(_implementation_request())
+
+    assert worker_result.status == WorkerStatus.FAILED
+    assert worker_result.discovered_issues == ["success result missing diff or test evidence"]
 
 
 def _implementation_request() -> ImplementationTurnRequest:
