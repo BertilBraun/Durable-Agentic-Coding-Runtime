@@ -98,6 +98,7 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
         if turn.done and turn.context_pack is not None:
             return turn.context_pack
 
+        turn_observations: list[str] = []
         for tool_call in turn.tool_calls:
             if tool_call_count >= max_tool_calls:
                 break
@@ -109,10 +110,12 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
                     repo_index=request.repo_index,
                 )
             )
-            observations.append(tool_result.stdout or tool_result.stderr)
+            observation = tool_result.stdout or tool_result.stderr
+            observations.append(observation)
+            turn_observations.append(observation)
             tool_call_count += 1
         messages.append(Message(role="assistant", content=turn.model_dump_json()))
-        messages.append(Message(role="user", content="\n".join(observations[-3:])))
+        messages.append(Message(role="user", content="\n".join(turn_observations)))
 
     return ContextPack(
         task_summary=request.gatherer_prompt,
