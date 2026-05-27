@@ -39,6 +39,13 @@ class WorkflowStatusResponse(BaseModel):
     result: dict[str, object] | None = None
 
 
+class WorkflowUsageSummary(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    total_cost_usd: float
+    call_count: int
+
+
 class EvaluationTaskResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -119,6 +126,7 @@ async def run_evaluation(
     temporal_api_url: str,
     output_path: Path,
     limit: int | None,
+    docker_client: object,
     supported_only: bool = False,
 ) -> EvaluationReport:
     instances = _select_evaluation_instances(
@@ -133,8 +141,8 @@ async def run_evaluation(
         if not _is_supported_instance(instance):
             task_results.append(_skipped_result(instance, "unsupported_language"))
             continue
-        task_results.append(await _run_framework_task(instance, temporal_api_url))
-        baseline_results.append(await _run_baseline_task(instance))
+        task_results.append(await _run_framework_task(instance, temporal_api_url, docker_client))
+        baseline_results.append(await _run_baseline_task(instance, docker_client))
 
     report = _build_report(task_results=task_results, baseline_results=baseline_results)
     output_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
@@ -247,6 +255,34 @@ def _run_oracle(
     return OracleResult(resolved=True, reason=None, command_results=command_results)
 
 
+def _evaluate_patch_with_oracle(
+    instance: SweBenchInstance,
+    patch: str,
+    docker_client: object,
+) -> OracleResult:
+    _pull_official_image(instance, docker_client)
+    container_id = _start_official_container(instance, docker_client)
+    materialized_patch = _materialize_patch(patch)
+    patch_application = _apply_patch_to_container(
+        container_id=container_id,
+        patch=materialized_patch,
+        docker_client=docker_client,
+    )
+    if not patch_application.applied:
+        return OracleResult(resolved=False, reason="patch_apply_failed")
+    return _run_oracle(
+        container_id=container_id,
+        instance=instance,
+        docker_client=docker_client,
+    )
+
+
+def _materialize_patch(patch: str) -> str:
+    if patch.startswith("@"):
+        return Path(patch[1:]).read_text(encoding="utf-8")
+    return patch
+
+
 def _run_oracle_command(
     container_id: str,
     test_identifier: str,
@@ -295,6 +331,7 @@ def _skipped_result(instance: SweBenchInstance, reason: str) -> EvaluationTaskRe
 async def _run_framework_task(
     instance: SweBenchInstance,
     temporal_api_url: str,
+    docker_client: object,
 ) -> EvaluationTaskResult:
     started_at = time.monotonic()
     async with httpx.AsyncClient(timeout=60) as http_client:
@@ -317,15 +354,45 @@ async def _run_framework_task(
             http_client, temporal_api_url, workflow_start.workflow_id
         )
 
-    resolved = workflow_status.status == "completed"
+    if workflow_status.status != "completed" or workflow_status.result is None:
+        return EvaluationTaskResult(
+            instance_id=instance.instance_id,
+            status=workflow_status.status,
+            resolved=False,
+            cost_usd=0.0,
+            llm_calls=0,
+            wall_clock_seconds=time.monotonic() - started_at,
+            reason="workflow_failed_or_incomplete",
+            patch=None,
+        )
+    workflow_usage = _usage_from_workflow_result(workflow_status.result)
+    try:
+        patch = _extract_patch_from_workflow_result(workflow_status.result)
+    except ValueError:
+        return EvaluationTaskResult(
+            instance_id=instance.instance_id,
+            status="failed",
+            resolved=False,
+            cost_usd=workflow_usage.total_cost_usd,
+            llm_calls=workflow_usage.call_count,
+            wall_clock_seconds=time.monotonic() - started_at,
+            reason="workflow_patch_missing",
+            patch=None,
+        )
+    oracle_result = _evaluate_patch_with_oracle(
+        instance=instance,
+        patch=patch,
+        docker_client=docker_client,
+    )
     return EvaluationTaskResult(
         instance_id=instance.instance_id,
-        status=workflow_status.status,
-        resolved=resolved,
-        cost_usd=0.0,
-        llm_calls=0,
+        status="resolved" if oracle_result.resolved else "failed",
+        resolved=oracle_result.resolved,
+        cost_usd=workflow_usage.total_cost_usd,
+        llm_calls=workflow_usage.call_count,
         wall_clock_seconds=time.monotonic() - started_at,
-        reason=None if resolved else "workflow_failed_or_incomplete",
+        reason=oracle_result.reason,
+        patch=patch,
     )
 
 
@@ -343,7 +410,10 @@ async def _poll_workflow(
         await asyncio.sleep(5)
 
 
-async def _run_baseline_task(instance: SweBenchInstance) -> EvaluationTaskResult:
+async def _run_baseline_task(
+    instance: SweBenchInstance,
+    docker_client: object,
+) -> EvaluationTaskResult:
     started_at = time.monotonic()
     llm_client = LLMClient()
     patch_response = await llm_client.complete(
@@ -357,14 +427,19 @@ async def _run_baseline_task(instance: SweBenchInstance) -> EvaluationTaskResult
         ],
     )
     patch = _extract_patch_from_llm_response(patch_response)
+    oracle_result = _evaluate_patch_with_oracle(
+        instance=instance,
+        patch=patch,
+        docker_client=docker_client,
+    )
     return EvaluationTaskResult(
         instance_id=instance.instance_id,
-        status="baseline_patch_generated",
-        resolved=False,
+        status="resolved" if oracle_result.resolved else "failed",
+        resolved=oracle_result.resolved,
         cost_usd=llm_client.usage_ledger.total_cost_usd,
         llm_calls=len(llm_client.usage_ledger.calls),
         wall_clock_seconds=time.monotonic() - started_at,
-        reason=None,
+        reason=oracle_result.reason,
         patch=patch,
     )
 
@@ -444,6 +519,19 @@ def _skip_reason_summaries(
     ]
 
 
+def _usage_from_workflow_result(workflow_result: dict[str, object]) -> WorkflowUsageSummary:
+    raw_usage = workflow_result.get("llm_usage")
+    if isinstance(raw_usage, dict):
+        return WorkflowUsageSummary.model_validate(raw_usage)
+    return WorkflowUsageSummary(total_cost_usd=0.0, call_count=0)
+
+
+def _docker_client() -> object:
+    import docker
+
+    return docker.from_env()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--instances", required=True)
@@ -458,6 +546,7 @@ def main() -> None:
             temporal_api_url=arguments.temporal_api_url,
             output_path=Path(arguments.output),
             limit=5 if arguments.five_task_subset else arguments.subset,
+            docker_client=_docker_client(),
             supported_only=arguments.five_task_subset,
         )
     )

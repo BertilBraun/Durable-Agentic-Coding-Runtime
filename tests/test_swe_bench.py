@@ -1,16 +1,24 @@
+from pathlib import Path
+from types import TracebackType
+
 import pytest
 from src.eval.swe_bench import (
     EvaluationTaskResult,
     SweBenchInstance,
     _apply_patch_to_container,
     _build_report,
+    _evaluate_patch_with_oracle,
     _extract_patch_from_llm_response,
     _extract_patch_from_workflow_result,
     _pull_official_image,
+    _run_baseline_task,
+    _run_framework_task,
     _run_oracle,
     _select_evaluation_instances,
     _start_official_container,
 )
+from src.llm.client import Message
+from src.llm.config import ModelRole
 
 
 def test_select_evaluation_instances_returns_five_supported_instances() -> None:
@@ -120,6 +128,142 @@ def test_build_report_includes_required_summary_fields() -> None:
     assert report.llm_calls_per_task.failed == 3.0
     assert report.skip_reasons[0].reason == "unsupported_language"
     assert report.skip_reasons[0].count == 1
+
+
+def test_evaluate_patch_with_oracle_resolves_after_successful_apply() -> None:
+    docker_client = FakeDockerClient()
+
+    result = _evaluate_patch_with_oracle(
+        instance=SweBenchInstance(
+            instance_id="python-1",
+            repo="owner/repo",
+            problem_statement="Fix the bug",
+            language="python",
+            fail_to_pass=["tests/test_bug.py::test_fixed"],
+            pass_to_pass=["tests/test_existing.py::test_existing"],
+            docker_image="sweb.eval.x86_64.python-1:latest",
+        ),
+        patch="diff --git a/app.py b/app.py\n",
+        docker_client=docker_client,
+    )
+
+    assert result.resolved is True
+    assert result.reason is None
+    assert docker_client.images.pulled_images == ["sweb.eval.x86_64.python-1:latest"]
+    assert docker_client.containers.executions[0]["command"] == ["sh", "-lc", "git apply -"]
+    assert docker_client.containers.executions[1]["command"] == [
+        "sh",
+        "-lc",
+        "pytest tests/test_bug.py::test_fixed",
+    ]
+
+
+def test_evaluate_patch_with_oracle_fails_when_patch_apply_fails() -> None:
+    docker_client = FakeDockerClient()
+    docker_client.containers.git_apply_exit_code = 1
+
+    result = _evaluate_patch_with_oracle(
+        instance=_instance("python-1", "python"),
+        patch="diff --git a/app.py b/app.py\n",
+        docker_client=docker_client,
+    )
+
+    assert result.resolved is False
+    assert result.reason == "patch_apply_failed"
+
+
+def test_evaluate_patch_with_oracle_reads_artifact_patch(
+    tmp_path: Path,
+) -> None:
+    docker_client = FakeDockerClient()
+    patch_path = tmp_path / "patch.diff"
+    patch_path.write_text("diff --git a/app.py b/app.py\n", encoding="utf-8")
+
+    result = _evaluate_patch_with_oracle(
+        instance=_instance("python-1", "python"),
+        patch=f"@{patch_path}",
+        docker_client=docker_client,
+    )
+
+    assert result.resolved is True
+    assert docker_client.containers.executions[0]["stdin"] == "diff --git a/app.py b/app.py\n"
+
+
+@pytest.mark.asyncio
+async def test_run_baseline_task_scores_generated_patch_with_oracle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker_client = FakeDockerClient()
+
+    class FakeBaselineClient:
+        def __init__(self) -> None:
+            self.usage_ledger = FakeUsageLedger()
+
+        async def complete(self, role: ModelRole, messages: list[Message]) -> str:
+            self.usage_ledger.calls.append("call")
+            return "```diff\ndiff --git a/app.py b/app.py\n```\n"
+
+    monkeypatch.setattr("src.eval.swe_bench.LLMClient", FakeBaselineClient)
+
+    result = await _run_baseline_task(
+        instance=_instance("python-1", "python"),
+        docker_client=docker_client,
+    )
+
+    assert result.status == "resolved"
+    assert result.resolved is True
+    assert result.llm_calls == 1
+    assert result.patch == "diff --git a/app.py b/app.py\n"
+
+
+@pytest.mark.asyncio
+async def test_run_framework_task_scores_workflow_patch_with_oracle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker_client = FakeDockerClient()
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: int) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(
+            self,
+            exception_type: type[BaseException] | None,
+            exception: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            return None
+
+        async def post(self, url: str, json: dict[str, object]) -> "FakeHttpResponse":
+            return FakeHttpResponse({"workflow_id": "workflow-1"})
+
+        async def get(self, url: str) -> "FakeHttpResponse":
+            return FakeHttpResponse(
+                {
+                    "status": "completed",
+                    "result": {
+                        "patch": "diff --git a/app.py b/app.py\n",
+                        "llm_usage": {"total_cost_usd": 1.25, "call_count": 7},
+                    },
+                }
+            )
+
+    monkeypatch.setattr("src.eval.swe_bench.httpx.AsyncClient", FakeAsyncClient)
+
+    result = await _run_framework_task(
+        instance=_instance("python-1", "python"),
+        temporal_api_url="http://temporal",
+        docker_client=docker_client,
+    )
+
+    assert result.status == "resolved"
+    assert result.resolved is True
+    assert result.cost_usd == 1.25
+    assert result.llm_calls == 7
+    assert result.patch == "diff --git a/app.py b/app.py\n"
 
 
 def test_pull_official_image_requires_instance_image() -> None:
@@ -305,6 +449,23 @@ def _task_result(
     )
 
 
+class FakeUsageLedger:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.total_cost_usd = 0.5
+
+
+class FakeHttpResponse:
+    def __init__(self, response_json: dict[str, object]) -> None:
+        self.response_json = response_json
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, object]:
+        return self.response_json
+
+
 class FakeImages:
     def __init__(self) -> None:
         self.pulled_images: list[str] = []
@@ -322,6 +483,7 @@ class FakeContainers:
         self.run_arguments: dict[str, object] | None = None
         self.executions: list[dict[str, object]] = []
         self.command_exit_codes: dict[str, int] = {}
+        self.git_apply_exit_code = 0
 
     def run(self, **keyword_arguments: object) -> FakeContainer:
         self.run_arguments = keyword_arguments
@@ -343,7 +505,10 @@ class FakeContainers:
             }
         )
         shell_command = command[-1]
-        exit_code = self.command_exit_codes.get(shell_command, 0)
+        if shell_command == "git apply -":
+            exit_code = self.git_apply_exit_code
+        else:
+            exit_code = self.command_exit_codes.get(shell_command, 0)
         return {"exit_code": exit_code, "stdout": "ok", "stderr": ""}
 
 
