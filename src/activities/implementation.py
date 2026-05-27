@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.activities.context_gatherer import ContextGatherRequest, gather_context
 from src.activities.temporal import durable_activity
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
@@ -16,13 +17,13 @@ from src.llm.client import LLMClient, Message
 from src.llm.config import ModelRole
 from src.models.context import ContextPack
 from src.models.plan import PlanStep
+from src.models.repo import RepoIndex
 from src.models.task import TaskContract
 from src.models.worker import Confidence, TestResult, WorkerResult, WorkerStatus
 from src.tools.definitions import (
     ApplyPatch,
     FindReferences,
     FindSymbol,
-    GatherContext,
     GitCommit,
     GitDiff,
     GitStatus,
@@ -44,6 +45,7 @@ class ImplementationTurnRequest(BaseModel):
     context_pack: ContextPack
     task_contract: TaskContract
     workspace_info: WorkspaceInfo
+    repo_index: RepoIndex
 
 
 class ImplementationToolCall(BaseModel):
@@ -152,6 +154,20 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
 
         observations: list[str] = []
         for tool_call in agent_turn.tool_calls:
+            if tool_call.tool_name == ToolName.GATHER_CONTEXT:
+                assert tool_call.prompt is not None, "gather_context prompt was not validated"
+                gathered_context = await gather_context(
+                    ContextGatherRequest(
+                        workspace_info=request.workspace_info,
+                        repo_index=request.repo_index,
+                        gatherer_prompt=tool_call.prompt,
+                    )
+                )
+                observations.append(
+                    f"tool={tool_call.tool_name} context_pack:\n"
+                    f"{gathered_context.model_dump_json()}"
+                )
+                continue
             tool = _tool_from_call(tool_call)
             tool_result = await run_tool(
                 ToolExecutionRequest(workspace_info=request.workspace_info, tool=tool)
@@ -277,4 +293,4 @@ def _tool_from_call(tool_call: ImplementationToolCall) -> Tool:
                 file_path=tool_call.file_path or ".",
             )
         case ToolName.GATHER_CONTEXT:
-            return GatherContext(prompt=tool_call.prompt or "")
+            raise AssertionError("gather_context must be dispatched before tool conversion")

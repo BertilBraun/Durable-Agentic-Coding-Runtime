@@ -1,5 +1,6 @@
 import pytest
 from pydantic import BaseModel, ValidationError
+from src.activities.context_gatherer import ContextGatherRequest
 from src.activities.implementation import (
     ImplementationAgentTurn,
     ImplementationToolCall,
@@ -11,6 +12,7 @@ from src.llm.client import Message
 from src.llm.config import ModelRole
 from src.models.context import ContextPack
 from src.models.plan import PlanStep, Risk
+from src.models.repo import RepoIndex
 from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerStatus
 from src.tools.definitions import GitDiff, RunTests, ToolName
@@ -76,6 +78,79 @@ async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.Monke
     assert worker_result.status == WorkerStatus.SUCCESS
     assert worker_result.confidence == Confidence.HIGH
     assert tool_names == ["ReadFileRange"]
+
+
+@pytest.mark.asyncio
+async def test_implementation_turn_dispatches_gather_context_without_run_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_messages: list[list[Message]] = []
+    captured_gather_prompts: list[str] = []
+
+    class FakeGatherContextClient:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        async def generate_structured(
+            self,
+            role: ModelRole,
+            messages: list[Message],
+            output_type: type[BaseModel],
+        ) -> BaseModel:
+            self.call_count += 1
+            captured_messages.append(messages)
+            if self.call_count == 1:
+                return output_type.model_validate(
+                    {
+                        "done": False,
+                        "tool_calls": [
+                            {
+                                "tool_name": "gather_context",
+                                "prompt": "Find auth callers",
+                            }
+                        ],
+                    }
+                )
+            return output_type.model_validate(
+                {
+                    "done": True,
+                    "worker_result": {
+                        "status": "blocked",
+                        "patch_id": None,
+                        "diff_summary": "Need implementation after context review.",
+                        "tests_run": [],
+                        "test_results": [],
+                        "discovered_issues": [],
+                        "confidence": "low",
+                        "replan_suggestion": "Use gathered auth context.",
+                    },
+                }
+            )
+
+    async def fake_gather_context(request: ContextGatherRequest) -> ContextPack:
+        captured_gather_prompts.append(request.gatherer_prompt)
+        return ContextPack(
+            task_summary="Auth context",
+            relevant_snippets=["src/auth.py: token handler"],
+            recent_observations=["found caller"],
+            failed_attempt_summaries=[],
+            available_tools=["read_file_range"],
+            budget_remaining=4,
+        )
+
+    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+        raise AssertionError(f"run_tool should not handle gather_context: {request.tool}")
+
+    monkeypatch.setattr("src.activities.implementation.LLMClient", FakeGatherContextClient)
+    monkeypatch.setattr("src.activities.implementation.gather_context", fake_gather_context)
+    monkeypatch.setattr("src.activities.implementation.run_tool", fake_run_tool)
+
+    worker_result = await run_implementation_turn(_implementation_request())
+
+    assert worker_result.status == WorkerStatus.BLOCKED
+    assert captured_gather_prompts == ["Find auth callers"]
+    assert "Auth context" in captured_messages[1][-1].content
+    assert "src/auth.py: token handler" in captured_messages[1][-1].content
 
 
 def test_implementation_tool_call_uses_tool_name_enum() -> None:
@@ -310,4 +385,5 @@ def _implementation_request() -> ImplementationTurnRequest:
             worktree_path="workspace",
             branch_name="branch",
         ),
+        repo_index=RepoIndex(),
     )

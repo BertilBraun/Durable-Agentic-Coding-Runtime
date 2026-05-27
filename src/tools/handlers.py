@@ -8,7 +8,6 @@ from src.tools.definitions import (
     ApplyPatch,
     FindReferences,
     FindSymbol,
-    GatherContext,
     GitCommit,
     GitDiff,
     GitStatus,
@@ -70,8 +69,6 @@ def command_for_tool(tool: Tool) -> list[str]:
             ]
         case FindReferences(symbol_name=symbol_name):
             return ["rg", symbol_name, "."]
-        case GatherContext(prompt=prompt):
-            return ["sh", "-lc", f"printf %s {shlex.quote(prompt)}"]
 
 
 def _validate_tool_paths(tool: Tool) -> None:

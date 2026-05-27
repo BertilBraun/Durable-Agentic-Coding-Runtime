@@ -45,6 +45,7 @@ async def implementation_workflow(
                 context_pack=context_pack,
                 task_contract=task_contract,
                 workspace_info=workspace_info,
+                repo_index=repo_index,
             ),
         )
         if worker_result.status == WorkerStatus.SUCCESS:
