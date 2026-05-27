@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.activities.temporal import durable_activity
 from src.activities.workspace_manager import WorkspaceInfo, run_tool
@@ -10,7 +10,14 @@ from src.llm.client import LLMClient, Message
 from src.llm.config import ModelRole
 from src.models.context import ContextPack
 from src.models.repo import RepoIndex
-from src.tools.definitions import FindReferences, FindSymbol, ReadFileRange, SearchText, Tool
+from src.tools.definitions import (
+    FindReferences,
+    FindSymbol,
+    ReadFileRange,
+    SearchText,
+    Tool,
+    ToolName,
+)
 
 
 class ContextGatherRequest(BaseModel):
@@ -24,7 +31,7 @@ class ContextGatherRequest(BaseModel):
 class ContextGathererToolCall(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    tool_name: str
+    tool_name: ToolName
     file_path: str | None = None
     start_line: int | None = None
     end_line: int | None = None
@@ -33,6 +40,21 @@ class ContextGathererToolCall(BaseModel):
     file_glob: str | None = None
     symbol_name: str | None = None
     language: str | None = None
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> ContextGathererToolCall:
+        match self.tool_name:
+            case ToolName.READ_FILE_RANGE:
+                _require_tool_fields(self, ("file_path", "start_line", "end_line"))
+            case ToolName.SEARCH_TEXT:
+                _require_tool_fields(self, ("pattern", "directory", "file_glob"))
+            case ToolName.FIND_SYMBOL:
+                _require_tool_fields(self, ("symbol_name", "language"))
+            case ToolName.FIND_REFERENCES:
+                _require_tool_fields(self, ("symbol_name", "file_path"))
+            case _:
+                raise ValueError(f"Context gatherer cannot call tool: {self.tool_name}")
+        return self
 
 
 class ContextGathererTurn(BaseModel):
@@ -98,23 +120,29 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
 
 def _tool_from_call(tool_call: ContextGathererToolCall) -> Tool:
     match tool_call.tool_name:
-        case "read_file_range":
+        case ToolName.READ_FILE_RANGE:
             return ReadFileRange(
                 file_path=tool_call.file_path or ".",
                 start_line=tool_call.start_line or 1,
                 end_line=tool_call.end_line or 200,
             )
-        case "search_text":
+        case ToolName.SEARCH_TEXT:
             return SearchText(
                 pattern=tool_call.pattern or "",
                 directory=tool_call.directory or ".",
                 file_glob=tool_call.file_glob or "*",
             )
-        case "find_symbol":
+        case ToolName.FIND_SYMBOL:
             return FindSymbol(name=tool_call.symbol_name or "", language=tool_call.language or "")
-        case "find_references":
+        case ToolName.FIND_REFERENCES:
             return FindReferences(
                 symbol_name=tool_call.symbol_name or "", file_path=tool_call.file_path or "."
             )
-        case _:
-            raise ValueError(f"Unknown context gatherer tool: {tool_call.tool_name}")
+
+
+def _require_tool_fields(tool_call: ContextGathererToolCall, field_names: tuple[str, ...]) -> None:
+    missing_fields = [
+        field_name for field_name in field_names if getattr(tool_call, field_name) is None
+    ]
+    if missing_fields:
+        raise ValueError(f"{tool_call.tool_name} missing required fields: {missing_fields}")

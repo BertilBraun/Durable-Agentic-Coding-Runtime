@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.activities.temporal import durable_activity
 from src.activities.workspace_manager import WorkspaceInfo, run_tool
@@ -26,6 +26,7 @@ from src.tools.definitions import (
     RunTypecheck,
     SearchText,
     Tool,
+    ToolName,
     WriteFile,
 )
 
@@ -42,7 +43,7 @@ class ImplementationTurnRequest(BaseModel):
 class ImplementationToolCall(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    tool_name: str
+    tool_name: ToolName
     file_path: str | None = None
     start_line: int | None = None
     end_line: int | None = None
@@ -59,6 +60,37 @@ class ImplementationToolCall(BaseModel):
     language: str | None = None
     symbol_name: str | None = None
     prompt: str | None = None
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> ImplementationToolCall:
+        match self.tool_name:
+            case ToolName.READ_FILE_RANGE:
+                _require_tool_fields(self, ("file_path", "start_line", "end_line"))
+            case ToolName.SEARCH_TEXT:
+                _require_tool_fields(self, ("pattern", "directory", "file_glob"))
+            case ToolName.WRITE_FILE:
+                _require_tool_fields(self, ("file_path", "content"))
+            case ToolName.APPLY_PATCH:
+                _require_tool_fields(self, ("patch",))
+            case (
+                ToolName.GIT_DIFF | ToolName.GIT_STATUS | ToolName.RUN_LINT | ToolName.RUN_TYPECHECK
+            ):
+                _require_tool_fields(self, ("path",))
+            case ToolName.GIT_COMMIT:
+                _require_tool_fields(self, ("message",))
+            case ToolName.RUN_TESTS:
+                _require_tool_fields(self, ("command", "timeout_seconds"))
+            case ToolName.FIND_SYMBOL:
+                _require_tool_fields(self, ("language",))
+                if self.name is None and self.symbol_name is None:
+                    raise ValueError("find_symbol requires name or symbol_name")
+            case ToolName.FIND_REFERENCES:
+                _require_tool_fields(self, ("file_path",))
+                if self.symbol_name is None and self.name is None:
+                    raise ValueError("find_references requires symbol_name or name")
+            case ToolName.GATHER_CONTEXT:
+                _require_tool_fields(self, ("prompt",))
+        return self
 
 
 class ImplementationAgentTurn(BaseModel):
@@ -129,50 +161,56 @@ def failed_worker_result(reason: str) -> WorkerResult:
     )
 
 
+def _require_tool_fields(tool_call: ImplementationToolCall, field_names: tuple[str, ...]) -> None:
+    missing_fields = [
+        field_name for field_name in field_names if getattr(tool_call, field_name) is None
+    ]
+    if missing_fields:
+        raise ValueError(f"{tool_call.tool_name} missing required fields: {missing_fields}")
+
+
 def _tool_from_call(tool_call: ImplementationToolCall) -> Tool:
     match tool_call.tool_name:
-        case "read_file_range":
+        case ToolName.READ_FILE_RANGE:
             return ReadFileRange(
                 file_path=tool_call.file_path or ".",
                 start_line=tool_call.start_line or 1,
                 end_line=tool_call.end_line or 200,
             )
-        case "search_text":
+        case ToolName.SEARCH_TEXT:
             return SearchText(
                 pattern=tool_call.pattern or "",
                 directory=tool_call.directory or ".",
                 file_glob=tool_call.file_glob or "*",
             )
-        case "write_file":
+        case ToolName.WRITE_FILE:
             return WriteFile(file_path=tool_call.file_path or "", content=tool_call.content or "")
-        case "apply_patch":
+        case ToolName.APPLY_PATCH:
             return ApplyPatch(patch=tool_call.patch or "")
-        case "git_diff":
+        case ToolName.GIT_DIFF:
             return GitDiff(path=tool_call.path or ".")
-        case "git_status":
+        case ToolName.GIT_STATUS:
             return GitStatus(path=tool_call.path or ".")
-        case "git_commit":
+        case ToolName.GIT_COMMIT:
             return GitCommit(message=tool_call.message or "agentic coding change")
-        case "run_tests":
+        case ToolName.RUN_TESTS:
             return RunTests(
                 command=tool_call.command or "",
                 timeout_seconds=tool_call.timeout_seconds or 300,
             )
-        case "run_lint":
+        case ToolName.RUN_LINT:
             return RunLint(path=tool_call.path or ".")
-        case "run_typecheck":
+        case ToolName.RUN_TYPECHECK:
             return RunTypecheck(path=tool_call.path or ".")
-        case "find_symbol":
+        case ToolName.FIND_SYMBOL:
             return FindSymbol(
                 name=tool_call.name or tool_call.symbol_name or "",
                 language=tool_call.language or "",
             )
-        case "find_references":
+        case ToolName.FIND_REFERENCES:
             return FindReferences(
                 symbol_name=tool_call.symbol_name or tool_call.name or "",
                 file_path=tool_call.file_path or ".",
             )
-        case "gather_context":
+        case ToolName.GATHER_CONTEXT:
             return GatherContext(prompt=tool_call.prompt or "")
-        case _:
-            raise ValueError(f"Unknown implementation tool: {tool_call.tool_name}")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import shlex
+from pathlib import PurePosixPath, PureWindowsPath
 
 from src.tools.definitions import (
     ApplyPatch,
@@ -22,6 +23,7 @@ from src.tools.definitions import (
 
 
 def command_for_tool(tool: Tool) -> list[str]:
+    _validate_tool_paths(tool)
     match tool:
         case ReadFileRange(file_path=file_path, start_line=start_line, end_line=end_line):
             quoted_path = shlex.quote(file_path)
@@ -70,3 +72,35 @@ def command_for_tool(tool: Tool) -> list[str]:
             return ["rg", symbol_name, "."]
         case GatherContext(prompt=prompt):
             return ["sh", "-lc", f"printf %s {shlex.quote(prompt)}"]
+
+
+def _validate_tool_paths(tool: Tool) -> None:
+    match tool:
+        case ReadFileRange(file_path=file_path):
+            _validate_workspace_relative_path(file_path)
+        case SearchText(directory=directory):
+            _validate_workspace_relative_path(directory)
+        case WriteFile(file_path=file_path):
+            _validate_workspace_relative_path(file_path)
+        case GitDiff(path=path):
+            _validate_workspace_relative_path(path)
+        case GitStatus(path=path):
+            _validate_workspace_relative_path(path)
+        case RunLint(path=path):
+            _validate_workspace_relative_path(path)
+        case RunTypecheck(path=path):
+            _validate_workspace_relative_path(path)
+        case FindReferences(file_path=file_path):
+            _validate_workspace_relative_path(file_path)
+        case _:
+            return
+
+
+def _validate_workspace_relative_path(path: str) -> None:
+    if path in ("", "."):
+        return
+    posix_path = PurePosixPath(path)
+    windows_path = PureWindowsPath(path)
+    has_parent_traversal = ".." in posix_path.parts or ".." in windows_path.parts
+    if posix_path.is_absolute() or windows_path.is_absolute() or has_parent_traversal:
+        raise ValueError(f"Path must be workspace-relative and cannot escape workspace: {path}")
