@@ -49,15 +49,36 @@ class EvaluationTaskResult(BaseModel):
     llm_calls: int
     wall_clock_seconds: float
     reason: str | None = None
+    patch: str | None = None
+
+
+class LlmCallsPerTask(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    resolved: float
+    failed: float
+
+
+class SkipReasonSummary(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    reason: str
+    count: int
 
 
 class EvaluationReport(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     task_results: list[EvaluationTaskResult]
+    baseline_results: list[EvaluationTaskResult]
+    resolved: int
+    failed: int
+    skipped: int
+    skip_reasons: list[SkipReasonSummary]
     resolved_percent: float
     skipped_percent: float
     cost_per_resolved_task: float
+    llm_calls_per_task: LlmCallsPerTask
     baseline_resolved_percent: float
     delta: float
 
@@ -97,7 +118,7 @@ async def run_evaluation(
     instances_path: Path,
     temporal_api_url: str,
     output_path: Path,
-    limit: int,
+    limit: int | None,
     supported_only: bool = False,
 ) -> EvaluationReport:
     instances = _select_evaluation_instances(
@@ -133,15 +154,19 @@ def _is_supported_instance(instance: SweBenchInstance) -> bool:
 
 def _select_evaluation_instances(
     instances: list[SweBenchInstance],
-    limit: int,
+    limit: int | None,
     supported_only: bool,
 ) -> list[SweBenchInstance]:
     selected_instances: list[SweBenchInstance] = []
+    eligible_count = 0
     for instance in instances:
-        if supported_only and not _is_supported_instance(instance):
+        supported_instance = _is_supported_instance(instance)
+        if supported_only and not supported_instance:
             continue
         selected_instances.append(instance)
-        if len(selected_instances) >= limit:
+        if supported_instance:
+            eligible_count += 1
+        if limit is not None and eligible_count >= limit:
             break
     return selected_instances
 
@@ -263,6 +288,7 @@ def _skipped_result(instance: SweBenchInstance, reason: str) -> EvaluationTaskRe
         llm_calls=0,
         wall_clock_seconds=0.0,
         reason=reason,
+        patch=None,
     )
 
 
@@ -320,7 +346,7 @@ async def _poll_workflow(
 async def _run_baseline_task(instance: SweBenchInstance) -> EvaluationTaskResult:
     started_at = time.monotonic()
     llm_client = LLMClient()
-    await llm_client.complete(
+    patch_response = await llm_client.complete(
         role=ModelRole.IMPLEMENTATION,
         messages=[
             Message(
@@ -330,6 +356,7 @@ async def _run_baseline_task(instance: SweBenchInstance) -> EvaluationTaskResult
             Message(role="user", content=instance.problem_statement),
         ],
     )
+    patch = _extract_patch_from_llm_response(patch_response)
     return EvaluationTaskResult(
         instance_id=instance.instance_id,
         status="baseline_patch_generated",
@@ -337,8 +364,19 @@ async def _run_baseline_task(instance: SweBenchInstance) -> EvaluationTaskResult
         cost_usd=llm_client.usage_ledger.total_cost_usd,
         llm_calls=len(llm_client.usage_ledger.calls),
         wall_clock_seconds=time.monotonic() - started_at,
-        reason="oracle_execution_not_configured",
+        reason=None,
+        patch=patch,
     )
+
+
+def _extract_patch_from_llm_response(response_content: str) -> str:
+    diff_fence_start = response_content.find("```diff")
+    if diff_fence_start >= 0:
+        patch_start = response_content.find("\n", diff_fence_start)
+        patch_end = response_content.find("```", patch_start + 1)
+        if patch_start >= 0 and patch_end >= 0:
+            return response_content[patch_start + 1 : patch_end]
+    return response_content
 
 
 def _build_report(
@@ -346,10 +384,16 @@ def _build_report(
     baseline_results: list[EvaluationTaskResult],
 ) -> EvaluationReport:
     total_count = len(task_results)
-    skipped_count = len(
-        [task_result for task_result in task_results if task_result.status == "skipped"]
-    )
+    skipped_results = [
+        task_result for task_result in task_results if task_result.status == "skipped"
+    ]
+    skipped_count = len(skipped_results)
     resolved_results = [task_result for task_result in task_results if task_result.resolved]
+    failed_results = [
+        task_result
+        for task_result in task_results
+        if task_result.status != "skipped" and not task_result.resolved
+    ]
     baseline_resolved_results = [
         task_result for task_result in baseline_results if task_result.resolved
     ]
@@ -360,12 +404,44 @@ def _build_report(
     cost_per_resolved_task = resolved_cost / max(len(resolved_results), 1)
     return EvaluationReport(
         task_results=task_results,
+        baseline_results=baseline_results,
+        resolved=len(resolved_results),
+        failed=len(failed_results),
+        skipped=skipped_count,
+        skip_reasons=_skip_reason_summaries(skipped_results),
         resolved_percent=resolved_percent,
         skipped_percent=(skipped_count / max(total_count, 1)) * 100,
         cost_per_resolved_task=cost_per_resolved_task,
+        llm_calls_per_task=LlmCallsPerTask(
+            resolved=_average_llm_calls(resolved_results),
+            failed=_average_llm_calls(failed_results),
+        ),
         baseline_resolved_percent=baseline_resolved_percent,
         delta=resolved_percent - baseline_resolved_percent,
     )
+
+
+def _average_llm_calls(task_results: list[EvaluationTaskResult]) -> float:
+    if not task_results:
+        return 0.0
+    return sum(task_result.llm_calls for task_result in task_results) / len(task_results)
+
+
+def _skip_reason_summaries(
+    skipped_results: list[EvaluationTaskResult],
+) -> list[SkipReasonSummary]:
+    reasons = sorted(
+        {task_result.reason for task_result in skipped_results if task_result.reason is not None}
+    )
+    return [
+        SkipReasonSummary(
+            reason=reason,
+            count=len(
+                [task_result for task_result in skipped_results if task_result.reason == reason]
+            ),
+        )
+        for reason in reasons
+    ]
 
 
 def main() -> None:
@@ -373,7 +449,7 @@ def main() -> None:
     parser.add_argument("--instances", required=True)
     parser.add_argument("--temporal-api-url", required=True)
     parser.add_argument("--output", default="swe_bench_results.json")
-    parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument("--subset", type=int, default=None)
     parser.add_argument("--five-task-subset", action="store_true")
     arguments = parser.parse_args()
     report = asyncio.run(
@@ -381,7 +457,7 @@ def main() -> None:
             instances_path=Path(arguments.instances),
             temporal_api_url=arguments.temporal_api_url,
             output_path=Path(arguments.output),
-            limit=arguments.limit,
+            limit=5 if arguments.five_task_subset else arguments.subset,
             supported_only=arguments.five_task_subset,
         )
     )

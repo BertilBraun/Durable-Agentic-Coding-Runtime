@@ -1,7 +1,10 @@
 import pytest
 from src.eval.swe_bench import (
+    EvaluationTaskResult,
     SweBenchInstance,
     _apply_patch_to_container,
+    _build_report,
+    _extract_patch_from_llm_response,
     _extract_patch_from_workflow_result,
     _pull_official_image,
     _run_oracle,
@@ -49,6 +52,74 @@ def test_select_evaluation_instances_can_keep_unsupported_instances() -> None:
         "unsupported-1",
         "python-1",
     ]
+
+
+def test_select_evaluation_instances_limit_counts_eligible_instances() -> None:
+    instances = [
+        _instance("unsupported-1", "rust"),
+        _instance("python-1", "python"),
+        _instance("unsupported-2", "go"),
+        _instance("python-2", "python"),
+        _instance("python-3", "python"),
+    ]
+
+    selected_instances = _select_evaluation_instances(
+        instances=instances,
+        limit=2,
+        supported_only=False,
+    )
+
+    assert [instance.instance_id for instance in selected_instances] == [
+        "unsupported-1",
+        "python-1",
+        "unsupported-2",
+        "python-2",
+    ]
+
+
+def test_select_evaluation_instances_without_limit_keeps_all_instances() -> None:
+    instances = [_instance("unsupported-1", "rust"), _instance("python-1", "python")]
+
+    selected_instances = _select_evaluation_instances(
+        instances=instances,
+        limit=None,
+        supported_only=False,
+    )
+
+    assert [instance.instance_id for instance in selected_instances] == [
+        "unsupported-1",
+        "python-1",
+    ]
+
+
+def test_extract_patch_from_llm_response_uses_diff_fence() -> None:
+    patch = _extract_patch_from_llm_response(
+        "Here is the patch:\n```diff\ndiff --git a/app.py b/app.py\n```\n"
+    )
+
+    assert patch == "diff --git a/app.py b/app.py\n"
+
+
+def test_build_report_includes_required_summary_fields() -> None:
+    report = _build_report(
+        task_results=[
+            _task_result("resolved-1", "completed", True, 2.0, 4, None),
+            _task_result("failed-1", "failed", False, 1.0, 3, "oracle_failed"),
+            _task_result("skipped-1", "skipped", False, 0.0, 0, "unsupported_language"),
+        ],
+        baseline_results=[
+            _task_result("baseline-1", "baseline_patch_generated", False, 0.5, 1, None)
+        ],
+    )
+
+    assert report.resolved == 1
+    assert report.failed == 1
+    assert report.skipped == 1
+    assert report.cost_per_resolved_task == 2.0
+    assert report.llm_calls_per_task.resolved == 4.0
+    assert report.llm_calls_per_task.failed == 3.0
+    assert report.skip_reasons[0].reason == "unsupported_language"
+    assert report.skip_reasons[0].count == 1
 
 
 def test_pull_official_image_requires_instance_image() -> None:
@@ -212,6 +283,25 @@ def _instance_without_image() -> SweBenchInstance:
         problem_statement="Fix the bug",
         language="python",
         docker_image=None,
+    )
+
+
+def _task_result(
+    instance_id: str,
+    status: str,
+    resolved: bool,
+    cost_usd: float,
+    llm_calls: int,
+    reason: str | None,
+) -> EvaluationTaskResult:
+    return EvaluationTaskResult(
+        instance_id=instance_id,
+        status=status,
+        resolved=resolved,
+        cost_usd=cost_usd,
+        llm_calls=llm_calls,
+        wall_clock_seconds=1.0,
+        reason=reason,
     )
 
 
