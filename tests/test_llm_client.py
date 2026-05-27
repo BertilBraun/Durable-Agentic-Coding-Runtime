@@ -42,6 +42,7 @@ class FakeAsyncOpenAI:
 
 @pytest.mark.asyncio
 async def test_structured_generation_parses_model_and_records_usage() -> None:
+    LLMClient.reset_global_usage()
     llm_client = LLMClient(
         model_configuration=ModelConfiguration(
             contract_builder_model="contract",
@@ -76,3 +77,7 @@ async def test_structured_generation_parses_model_and_records_usage() -> None:
     assert llm_client.usage_ledger.total_output_tokens == 4
     assert llm_client.last_input_token_count == 10
     assert llm_client.context_utilization() == 0.1
+    usage_summary = LLMClient.global_usage_summary()
+    assert usage_summary.call_count == 1
+    assert usage_summary.total_input_tokens == 10
+    assert usage_summary.total_output_tokens == 4

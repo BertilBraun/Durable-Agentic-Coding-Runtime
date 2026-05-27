@@ -11,7 +11,11 @@ from src.activities.human_approval import present_plan_to_human
 from src.activities.implementation import get_full_diff, run_implementation_turn
 from src.activities.planner import build_plan
 from src.activities.repo_indexer import build_repo_index
-from src.activities.report_builder import build_final_report
+from src.activities.report_builder import (
+    build_final_report,
+    collect_llm_usage_summary,
+    reset_llm_usage_summary,
+)
 from src.activities.reviewer import review_patch
 from src.activities.tool_executor import execute_tool
 from src.activities.workspace_manager import create_workspace, destroy_workspace, run_tool
@@ -30,6 +34,7 @@ def main() -> None:
             build_final_report,
             build_plan,
             build_repo_index,
+            collect_llm_usage_summary,
             create_workspace,
             destroy_workspace,
             execute_tool,
@@ -37,6 +42,7 @@ def main() -> None:
             get_full_diff,
             present_plan_to_human,
             review_patch,
+            reset_llm_usage_summary,
             run_implementation_turn,
             run_tool,
         ],

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
-from typing import Generic, Literal, Protocol, TypeVar
+from typing import ClassVar, Generic, Literal, Protocol, TypeVar
 
 from openai import AsyncOpenAI
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.llm.config import ModelConfiguration, ModelRole, load_model_configuration
 
@@ -32,7 +32,7 @@ class LLMUsage(BaseModel):
 class LLMUsageLedger(BaseModel):
     model_config = ConfigDict(frozen=False)
 
-    calls: list[LLMUsage] = []
+    calls: list[LLMUsage] = Field(default_factory=list)
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
@@ -44,6 +44,16 @@ class LLMUsageLedger(BaseModel):
         self.total_output_tokens += usage.output_tokens
         self.total_cache_read_tokens += usage.cache_read_tokens
         self.total_cost_usd += usage.cost_usd
+
+
+class LLMUsageSummary(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    call_count: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cache_read_tokens: int
+    total_cost_usd: float
 
 
 class ChatCompletionCreator(Protocol):
@@ -59,6 +69,8 @@ class AsyncOpenAIClient(Protocol):
 
 
 class LLMClient(Generic[StructuredOutput]):
+    _global_usage_ledger: ClassVar[LLMUsageLedger] = LLMUsageLedger()
+
     def __init__(
         self,
         model_configuration: ModelConfiguration | None = None,
@@ -128,8 +140,23 @@ class LLMClient(Generic[StructuredOutput]):
     def context_utilization(self) -> float:
         return self.last_input_token_count / self.last_context_limit
 
+    @classmethod
+    def reset_global_usage(cls) -> None:
+        cls._global_usage_ledger = LLMUsageLedger()
+
+    @classmethod
+    def global_usage_summary(cls) -> LLMUsageSummary:
+        return LLMUsageSummary(
+            call_count=len(cls._global_usage_ledger.calls),
+            total_input_tokens=cls._global_usage_ledger.total_input_tokens,
+            total_output_tokens=cls._global_usage_ledger.total_output_tokens,
+            total_cache_read_tokens=cls._global_usage_ledger.total_cache_read_tokens,
+            total_cost_usd=cls._global_usage_ledger.total_cost_usd,
+        )
+
     def _record_usage(self, role: ModelRole, usage: LLMUsage) -> None:
         self.usage_ledger.record(usage)
+        self._global_usage_ledger.record(usage)
         self.last_input_token_count = usage.input_tokens
         self.last_context_limit = self.model_configuration.context_limit_for_role(role)
 

@@ -6,7 +6,12 @@ from src.activities.human_approval import HumanPlanPresentationRequest, present_
 from src.activities.implementation import get_full_diff
 from src.activities.planner import PlanRequest, build_plan
 from src.activities.repo_indexer import build_repo_index
-from src.activities.report_builder import FinalReportRequest, build_final_report
+from src.activities.report_builder import (
+    FinalReportRequest,
+    build_final_report,
+    collect_llm_usage_summary,
+    reset_llm_usage_summary,
+)
 from src.activities.reviewer import ReviewRequest, review_patch
 from src.activities.workspace_manager import create_workspace, destroy_workspace, make_run_id
 from src.models.approval import ApprovalDecision, HumanApprovalSignal
@@ -19,6 +24,7 @@ from src.workflows.temporal import spawn_child, wait_for_child, wait_for_signal,
 async def main_workflow(request: dict[str, object]) -> dict[str, object]:
     task_request = TaskRequest.model_validate(request)
     run_id = task_request.run_id or make_run_id()
+    await reset_llm_usage_summary()
 
     contract = await build_contract(task_request)
     workspace_info = await create_workspace(run_id, task_request.repo_path)
@@ -100,6 +106,7 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
             worker_results=worker_results,
             final_verdict=final_verdict,
             workspace_info=workspace_info,
+            llm_usage=await collect_llm_usage_summary(),
         ),
     )
     await destroy_workspace(workspace_info)

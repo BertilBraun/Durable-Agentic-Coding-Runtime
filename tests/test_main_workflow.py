@@ -4,6 +4,7 @@ from src.activities.planner import PlanRequest
 from src.activities.report_builder import FinalReport, FinalReportRequest
 from src.activities.reviewer import ReviewRequest
 from src.activities.workspace_manager import WorkspaceInfo
+from src.llm.client import LLMUsageSummary
 from src.models.plan import Plan, PlanStep, Risk
 from src.models.repo import RepoIndex
 from src.models.review import ReviewDecision, ReviewVerdict
@@ -110,6 +111,19 @@ async def test_main_workflow_replans_after_needs_replan(
             worker_results=request.worker_results,
             final_verdict=request.final_verdict,
             workspace_info=request.workspace_info,
+            llm_usage=request.llm_usage,
+        )
+
+    async def fake_reset_llm_usage_summary() -> None:
+        return None
+
+    async def fake_collect_llm_usage_summary() -> LLMUsageSummary:
+        return LLMUsageSummary(
+            call_count=3,
+            total_input_tokens=100,
+            total_output_tokens=20,
+            total_cache_read_tokens=5,
+            total_cost_usd=0.12,
         )
 
     async def fake_destroy_workspace(workspace: WorkspaceInfo) -> None:
@@ -125,6 +139,13 @@ async def test_main_workflow_replans_after_needs_replan(
     monkeypatch.setattr("src.workflows.main_workflow.get_full_diff", fake_get_full_diff)
     monkeypatch.setattr("src.workflows.main_workflow.review_patch", fake_review_patch)
     monkeypatch.setattr("src.workflows.main_workflow.build_final_report", fake_build_final_report)
+    monkeypatch.setattr(
+        "src.workflows.main_workflow.reset_llm_usage_summary", fake_reset_llm_usage_summary
+    )
+    monkeypatch.setattr(
+        "src.workflows.main_workflow.collect_llm_usage_summary",
+        fake_collect_llm_usage_summary,
+    )
     monkeypatch.setattr("src.workflows.main_workflow.destroy_workspace", fake_destroy_workspace)
 
     report = await main_workflow(
@@ -136,6 +157,7 @@ async def test_main_workflow_replans_after_needs_replan(
     assert plan_requests[1].human_feedback == "Add the generated file update."
     assert len(plan_requests[1].worker_results) == 1
     assert report["worker_results"][-1]["status"] == WorkerStatus.SUCCESS
+    assert report["llm_usage"]["call_count"] == 3
 
 
 def _plan_with_step(step_id: str) -> Plan:
