@@ -100,7 +100,7 @@ class LLMClient(Generic[StructuredOutput]):
     ) -> StructuredOutput:
         if _fake_mode_enabled():
             model = self.model_configuration.model_for_role(role)
-            content = _fake_structured_content(output_type)
+            content = _fake_structured_content(output_type, messages)
             self.usage_ledger.record(
                 _fake_usage(role=role, model=model, messages=messages, content=content)
             )
@@ -131,7 +131,7 @@ def _fake_completion_content(role: ModelRole) -> str:
             return "{}"
 
 
-def _fake_structured_content(output_type: type[BaseModel]) -> str:
+def _fake_structured_content(output_type: type[BaseModel], messages: list[Message]) -> str:
     match output_type.__name__:
         case "TaskContract":
             return (
@@ -145,11 +145,12 @@ def _fake_structured_content(output_type: type[BaseModel]) -> str:
         case "Plan":
             return (
                 '{"summary":"Smoke test plan","steps":[{"id":"step_1",'
-                '"goal":"Complete a no-op implementation step","target_files":[],'
-                '"allowed_files":[],"tests_to_run":[],"expected_result":"Step completes",'
+                '"goal":"Add a deterministic smoke patch","target_files":["app.py","test_app.py"],'
+                '"allowed_files":["app.py","test_app.py"],"tests_to_run":["pytest -q"],'
+                '"expected_result":"Patch changes code and tests pass",'
                 '"risk":"low","requires_human_approval":false}],'
-                '"integration_tests":[],"rollback_strategy":"Discard workspace",'
-                '"definition_of_done":["Workflow completes"]}'
+                '"integration_tests":["pytest -q"],"rollback_strategy":"Discard workspace",'
+                '"definition_of_done":["Diff is non-empty","Smoke test passes"]}'
             )
         case "ContextGathererTurn":
             return (
@@ -159,12 +160,14 @@ def _fake_structured_content(output_type: type[BaseModel]) -> str:
                 '"tool_calls":[]}'
             )
         case "ImplementationAgentTurn":
-            return (
-                '{"done":true,"worker_result":{"status":"success","patch_id":"smoke",'
-                '"diff_summary":"No-op smoke implementation","tests_run":[],'
-                '"test_results":[],"discovered_issues":[],"confidence":"high",'
-                '"replan_suggestion":null},"tool_calls":[]}'
-            )
+            if _fake_implementation_has_observations(messages):
+                return (
+                    '{"done":true,"worker_result":{"status":"success","patch_id":"smoke",'
+                    '"diff_summary":"Added smoke subtract function and test.",'
+                    '"tests_run":[],"test_results":[],"discovered_issues":[],'
+                    '"confidence":"high","replan_suggestion":null},"tool_calls":[]}'
+                )
+            return _fake_implementation_tool_turn()
         case "ReviewVerdict":
             return (
                 '{"verdict":"accept","blocking_issues":[],"non_blocking_issues":[],'
@@ -174,6 +177,42 @@ def _fake_structured_content(output_type: type[BaseModel]) -> str:
             )
         case _:
             raise ValueError(f"No fake structured response for {output_type.__name__}")
+
+
+def _fake_implementation_has_observations(messages: list[Message]) -> bool:
+    return any("tool=run_tests" in message.content for message in messages)
+
+
+def _fake_implementation_tool_turn() -> str:
+    patch = (
+        "diff --git a/app.py b/app.py\n"
+        "--- a/app.py\n"
+        "+++ b/app.py\n"
+        "@@ -1,2 +1,5 @@\n"
+        " def add(first_number: int, second_number: int) -> int:\n"
+        "     return first_number + second_number\n"
+        "+\n"
+        "+def subtract(first_number: int, second_number: int) -> int:\n"
+        "+    return first_number - second_number\n"
+        "diff --git a/test_app.py b/test_app.py\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/test_app.py\n"
+        "@@ -0,0 +1,5 @@\n"
+        "+from app import subtract\n"
+        "+\n"
+        "+\n"
+        "+def test_subtract() -> None:\n"
+        "+    assert subtract(3, 1) == 2\n"
+    )
+    escaped_patch = patch.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return (
+        '{"done":false,"worker_result":null,"tool_calls":['
+        f'{{"tool_name":"apply_patch","patch":"{escaped_patch}"}},'
+        '{"tool_name":"run_tests","command":"pytest -q","timeout_seconds":60},'
+        '{"tool_name":"git_diff","path":"."}'
+        "]}"
+    )
 
 
 def _fake_usage(role: ModelRole, model: str, messages: list[Message], content: str) -> LLMUsage:

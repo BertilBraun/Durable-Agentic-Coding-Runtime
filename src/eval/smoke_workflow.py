@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict
 
 from src.models.task import TaskRequest
+from src.models.worker import WorkerResult
 
 
 class SmokeWorkflowInput(BaseModel):
@@ -49,6 +52,21 @@ class SmokeWorkflowResult(BaseModel):
 
     workflow_id: str
     status: str
+    changed_diff: bool = False
+    test_result_passed: bool = False
+
+
+class WorkflowCompletedEvent(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["workflow_completed"]
+    result: SmokeWorkflowFinalResult
+
+
+class SmokeWorkflowFinalResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    worker_results: list[WorkerResult]
 
 
 TERMINAL_STATUSES = frozenset({"completed", "failed"})
@@ -162,12 +180,61 @@ async def _poll_workflow(
         response.raise_for_status()
         workflow_status = WorkflowStatusResponse.model_validate(response.json())
         if workflow_status.status in TERMINAL_STATUSES:
-            return SmokeWorkflowResult(
-                workflow_id=workflow_status.workflow_id,
-                status=workflow_status.status,
-            )
+            if workflow_status.status == "completed":
+                completed_event = await _read_completed_event(
+                    http_client=http_client,
+                    temporal_api_url=temporal_api_url,
+                    workflow_id=workflow_id,
+                )
+                return _smoke_result_from_completed_event(
+                    completed_event.model_dump(mode="json"),
+                    workflow_id=workflow_id,
+                )
+            return SmokeWorkflowResult(workflow_id=workflow_status.workflow_id, status="failed")
         await asyncio.sleep(2)
     return SmokeWorkflowResult(workflow_id=workflow_id, status="timeout")
+
+
+async def _read_completed_event(
+    http_client: httpx.AsyncClient,
+    temporal_api_url: str,
+    workflow_id: str,
+) -> WorkflowCompletedEvent:
+    async with http_client.stream(
+        "GET",
+        f"{temporal_api_url.rstrip('/')}/workflows/{workflow_id}/stream",
+    ) as response:
+        response.raise_for_status()
+        async for line in response.aiter_lines():
+            if not line.startswith("data: "):
+                continue
+            event_payload = json.loads(line.removeprefix("data: "))
+            if event_payload.get("type") == "workflow_completed":
+                return WorkflowCompletedEvent.model_validate(event_payload)
+    raise ValueError(f"Workflow {workflow_id} stream ended without completion event")
+
+
+def _smoke_result_from_completed_event(
+    event_payload: dict[str, object],
+    workflow_id: str = "",
+) -> SmokeWorkflowResult:
+    completed_event = WorkflowCompletedEvent.model_validate(event_payload)
+    changed_diff = any(
+        worker_result.diff_summary.strip() and "no-op" not in worker_result.diff_summary.lower()
+        for worker_result in completed_event.result.worker_results
+    )
+    test_result_passed = any(
+        test_result.passed
+        for worker_result in completed_event.result.worker_results
+        for test_result in worker_result.test_results
+    )
+    status = "completed" if changed_diff and test_result_passed else "verification_failed"
+    return SmokeWorkflowResult(
+        workflow_id=workflow_id,
+        status=status,
+        changed_diff=changed_diff,
+        test_result_passed=test_result_passed,
+    )
 
 
 def main() -> None:
