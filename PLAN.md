@@ -1419,11 +1419,14 @@ This section is the current execution checkpoint for continuing implementation. 
 Latest commits:
 
 ```text
-01dc851 Add auto-reloading for agent worker in development
-438368a Add Temporal workflow smoke runner
-944372d Add deterministic LLM smoke mode
-07c742b Require tree-sitter for repo indexing
-9f2b2dc Initial durable agent runtime scaffold
+2dc8e86 Complete SWE-bench evaluation report
+15d5b81 Stop agents near context limit
+ea10d90 Replan after worker replan signal
+8a54970 Assert validated tool call fields
+7cdd6af Use per-turn context observations
+bfe99d7 Require observed diff evidence
+1b2917d Dispatch gather context activity
+8d27b12 Extract SWE-bench workflow patches
 ```
 
 The `Temporal-Light` dependency is tracked as a Git submodule via `.gitmodules`.
@@ -1445,121 +1448,163 @@ Data contracts:
 LLM layer:
 
 - `src/llm/config.py` defines `ModelRole` and env-based model routing.
-- `src/llm/client.py` centralizes all OpenAI-compatible calls.
-- Structured output parsing and usage ledger are implemented.
-- `LLM_FAKE_MODE=1` provides deterministic structured responses for smoke workflows only.
+- `src/llm/client.py` centralizes all OpenAI-compatible calls with structured output parsing and usage ledger.
+- `LLMClient` tracks `last_input_token_count` and exposes `context_utilization()` using configured model context limits.
+- `LLM_FAKE_MODE=1` provides deterministic structured responses for smoke workflows.
 
 Tools and workspace:
 
-- Typed tool dataclasses in `src/tools/definitions.py`.
-- Command conversion in `src/tools/handlers.py`.
-- Docker-backed `WorkspaceManager` in `src/activities/workspace_manager.py`.
-- Each tool invocation runs in a fresh workspace container.
-- `RunTests.timeout_seconds` is passed to Docker wait.
-- `GitCommit` stages new files before commit.
+- Typed tool dataclasses in `src/tools/definitions.py` with `ToolName` enum.
+- Path validation in `src/tools/handlers.py` blocks absolute paths and parent traversal.
+- Docker-backed workspace manager in `src/activities/workspace_manager.py`; each tool invocation runs in a fresh container.
+- Large tool outputs (>20 KB) are written to the artifacts volume and returned as `ArtifactReference`.
 
 Repository indexing:
 
-- `src/activities/repo_indexer.py` uses tree-sitter as a required dependency.
-- Python and JavaScript/TypeScript/TSX/JSX file indexing are implemented.
-- Top-level Python classes/functions and JS/TS declarations/arrow exports are indexed.
-- Non-tree-sitter fallback parsing was removed intentionally.
+- `src/activities/repo_indexer.py` uses tree-sitter (required dependency) for Python and TypeScript/JavaScript/TSX/JSX.
+- `FindSymbol` and `FindReferences` use the in-memory `RepoIndex` built at workflow start.
 
 Activities:
 
-- Contract builder, complexity assessor, planner, context gatherer, implementation turn, reviewer, report builder, human plan presentation, tool executor, and workspace manager activities exist.
-- Activity wrapper serializes Pydantic/dataclass arguments and return values to JSON-safe Temporal-Light event payloads while preserving typed values in workflow code.
+- Contract builder, complexity assessor, planner, context gatherer, implementation turn, reviewer, report builder, human plan presentation, tool executor, and workspace manager activities.
+- Activity wrapper serializes Pydantic/dataclass inputs and outputs to JSON-safe Temporal-Light event payloads.
+- `run_implementation_turn` dispatches `gather_context` as an activity and injects the returned `ContextPack` as a structured observation.
+- `gather_context` feeds only the current turn's tool observations back to the cheap-model agent while retaining all observations for fallback context packs.
+- Implementation and context gatherer tool conversion assert validated fields instead of silently substituting defaults.
 
 Workflows:
 
-- `main_workflow` runs contract -> workspace -> repo index -> plan -> optional human approval -> child implementation workflows -> final diff -> review -> final report -> destroy workspace.
-- `implementation_workflow` gathers context, runs bounded implementation turns, and returns `WorkerResult`.
+- `main_workflow`: contract → workspace → repo index → plan → optional human approval loop → child implementation workflows → final diff → review → final report → destroy workspace.
+- `implementation_workflow`: gather context → bounded implementation turns (max 12 rounds) → step-level review on success → return `WorkerResult`.
 - Child workflow integration uses Temporal-Light `spawn_child` and `wait_for_child`.
+- `main_workflow` handles `WorkerStatus.NEEDS_REPLAN` by calling `build_plan` again with accumulated worker results and then running the revised plan from the start.
+- `main_workflow` stops executing further steps when a child returns `FAILED` or `BLOCKED`; the final report includes the terminal worker result.
+- Implementation and context gatherer agents stop explicitly when context utilization exceeds 80 percent instead of attempting silent compression.
 
-Evaluation and smoke tooling:
+Implementation evidence:
 
-- `src/eval/smoke_workflow.py` runs a deterministic live Temporal-Light smoke workflow with `LLM_FAKE_MODE=1`.
-- `src/eval/swe_bench.py` is scaffolded but not yet a complete SWE-bench Verified oracle runner.
+- Successful `WorkerResult` requires either `saw_diff=True` (a `GitDiff` call returned non-empty output) or at least one `TestResult`; bare LLM claims and narrative `diff_summary` text without evidence are rejected.
+- `diff_summary` in `WorkerResult` is LLM-generated free text describing what changed — it is not a raw git diff.
 
-Verified so far:
+Smoke test:
 
-- `python -m ruff check src tests`
-- `python -m pytest -q`
-- Docker workspace integration test with `RUN_DOCKER_TESTS=1`.
-- `docker build -t durable-agentic-worker:latest .`
-- `docker run --rm durable-agentic-worker:latest python -m ruff check /app/src`
-- Live Temporal-Light smoke workflow completed through `src/eval/smoke_workflow.py`.
+- `src/eval/smoke_workflow.py` creates a real repo, runs a fake-mode workflow, and asserts a non-empty diff and passing test result.
 
-### 22.3 Known Gaps
+SWE-bench harness (`src/eval/swe_bench.py`):
 
-The runtime is not yet solving real coding tasks with a real LLM. The current smoke test is deterministic and no-op by design.
+- Typed models: `SweBenchInstance`, `EvaluationTaskResult`, `EvaluationReport`.
+- Language filter: skips non-Python/TypeScript tasks.
+- `--subset N` selects the first N eligible tasks; the default run processes all selected instances.
+- Baseline runner makes a single implementation-model call and extracts a unified diff patch from the response.
+- Official SWE-bench Docker image pull and container start per instance.
+- Patch application inside containers.
+- Oracle test execution (`FAIL_TO_PASS` / `PASS_TO_PASS`).
+- Patch extraction from completed workflow artifact volume.
+- JSON evaluation reports include `resolved`, `failed`, `skipped`, skip-reason breakdown, `cost_per_resolved_task`, and resolved/failed `llm_calls_per_task`.
 
-High-priority gaps:
+### 22.3 Current Gaps
 
-- Implementation agent tool calls are structurally typed but still use free-form `tool_name: str`; convert this to `ToolName` and typed argument models.
-- Tool command execution lacks full path safety and command safety validation.
-- `FindSymbol` and `FindReferences` still use command-line text search rather than the in-memory `RepoIndex`.
-- `ContextGatherer` does not yet robustly use indexed symbols and references.
-- Worker result test evidence is not connected to actual `RunTests` outputs.
-- Final report does not include LLM usage ledger, artifact references, patch path, or full evidence summary.
-- Artifacts are modeled but large stdout/stderr/diffs are not yet written to `/artifacts`.
-- Human approval plan presentation writes a JSON file, but there is no ergonomic CLI/helper for sending approval signals.
-- `destroy_workspace` runs only on normal workflow completion; failure cleanup needs a recovery path.
-- Workspace creation uses a cloned working copy, not a true Git worktree from the source repository.
-- Agent worker compose env still includes `TEMPORAL_API_URL`, but the current worker uses `TEMPORAL_DATABASE_URL` because Temporal-Light workers connect to Postgres directly.
-- `swe_bench.py` does not yet pull official SWE-bench images, apply generated patches, run `FAIL_TO_PASS` / `PASS_TO_PASS`, or record real resolved metrics.
+Real-LLM validation:
 
-### 22.4 Next Implementation Plan
+- The system has still not run against a real LLM on a real repository. All end-to-end verification remains fake-mode/unit-test based.
+- The next high-leverage milestone is a live smoke run with non-fake model calls and a small local repository.
 
-Work in small commits. Keep `ruff format`, `ruff check`, and focused tests green before each commit.
+Evaluation gaps:
 
-1. Harden tool schemas and dispatch.
+- SWE-bench baseline currently generates and stores a patch, but baseline oracle execution is not yet wired into `run_evaluation`.
+- Framework task evaluation still treats workflow completion as resolved; it does not yet extract the workflow patch, apply it in the official SWE-bench image, and run the oracle in the main evaluation loop.
+- Cost accounting in SWE-bench framework results is still placeholder until workflow reports expose the LLM usage ledger.
 
-   - Replace implementation/context gatherer `tool_name: str` with `ToolName`.
-   - Add typed Pydantic tool-call models for each tool-call payload that crosses LLM/activity boundaries.
-   - Validate paths are workspace-relative and cannot escape the workspace.
-   - Add tests for invalid absolute paths, parent traversal, unknown tools, and timeout propagation.
+Lower-priority gaps:
 
-2. Make symbol tools use `RepoIndex`.
+- Human approval CLI helper for sending signals to a waiting workflow is missing.
+- `destroy_workspace` runs only on normal completion; failure cleanup has no recovery path.
+- Workspace uses a cloned copy, not a true git worktree from the source repository.
 
-   - Add a typed `ToolExecutionRequest` containing `WorkspaceInfo`, optional `RepoIndex`, and tool.
-   - Implement `FindSymbol` and `FindReferences` using the indexed repository data where possible.
-   - Keep text search only where references genuinely require scanning file contents.
-   - Add focused tests for Python and TSX symbols and references.
+### 22.3a Completed This Checkpoint
 
-3. Store artifacts for large outputs.
+All high-priority bugs, design changes, and SWE-bench report work listed below were completed in commits `1b2917d` through `2dc8e86`.
 
-   - Add an artifact writer activity/helper that writes large stdout/stderr/diff/test logs to `/artifacts/<run_id>/...`.
-   - Return compact `ArtifactReference` values in tool/test/review outputs.
-   - Truncate event-log payloads deterministically.
-   - Add tests that large command output creates an artifact reference.
+High-priority bugs:
 
-4. Improve implementation evidence.
+- **`GatherContext` dispatch is broken.** When the implementation agent emits a `GATHER_CONTEXT` tool call, `_tool_from_call` returns a `GatherContext` object which routes through `command_for_tool` in `handlers.py`. That handler returns `["sh", "-lc", "printf %s <prompt>"]` — it echoes the prompt text back as stdout. The result is useless. `GATHER_CONTEXT` must be intercepted in `run_implementation_turn` before `run_tool` and dispatched to the `gather_context()` activity instead. The `GatherContext` case in `handlers.py` should be removed entirely.
 
-   - Convert `RunTests` outputs into `TestResult` entries.
-   - Require successful implementation turns to include at least diff/test evidence unless the plan step explicitly has no code changes.
-   - Run step-level review inside `implementation_workflow` before returning success.
-   - Add fake-mode and unit tests for success, failed test, blocked, and needs-replan paths.
+- **`diff_summary` evidence check accepts any non-empty string.** `_worker_result_with_evidence` checks `bool(worker_result.diff_summary.strip())` as evidence of a real diff. Since `diff_summary` is LLM-generated text, a model can write "no changes were needed" and pass the check. The only trustworthy diff evidence is `saw_diff=True` from an actual `GitDiff` tool call that returned non-empty output.
 
-5. Make final report useful.
+- **Context gatherer observation accumulation is wrong.** In `gather_context`, `observations` accumulates across all turns, but `messages.append(Message(role="user", content="\n".join(observations[-3:])))` feeds only the last 3 entries from the full accumulated list, not the results from the most recent turn. The model sees a stale and incomplete picture of what just happened.
 
-   - Include full diff summary, changed files, tests run, review verdict, artifact references, LLM usage totals, and workspace/branch metadata.
-   - Persist patch/diff artifact to `/artifacts`.
-   - Add a test for final report content.
+- **Silent `or` defaults in `_tool_from_call` mask post-validation bugs.** Both `implementation.py` and `context_gatherer.py` use `or ""` / `or "."` fallbacks when constructing tool objects from validated calls. Since the validator has already required these fields, a `None` value at this point is a bug — it should raise, not silently substitute a default.
 
-6. Upgrade the smoke test from no-op to real patch.
+Design gaps:
 
-   - Extend fake mode so the implementation worker writes a tiny patch to the smoke repository and runs a test.
-   - Smoke workflow should verify a changed diff and test result, not just workflow completion.
-   - Keep the current no-op smoke path only if useful as a fast sanity check.
+- **`main_workflow` ignores `NEEDS_REPLAN` status.** After each `wait_for_child`, the returned `WorkerResult.status` is never checked. If a step returns `NEEDS_REPLAN` with a `replan_suggestion`, the workflow continues with the original plan unchanged. The correct behavior: call `build_plan` again with the accumulated results and `replan_suggestion` as feedback, then continue with the remaining steps of the revised plan.
 
-7. Continue SWE-bench harness.
+- **No context window management.** There is no mechanism to detect when an agent is approaching its context limit. When the context fills up, the LLM degrades silently — truncated history, confused reasoning. Instead: after each LLM call, check `input_tokens / model_context_limit` against a threshold (0.80). Subagents (context gatherer, implementation worker) should stop at the threshold and return a valid partial result with `status=BLOCKED` and a `replan_suggestion` describing what was done and what remains. No magic compression; explicit clean stop.
 
-   - Define typed SWE-bench instance/result/oracle models.
-   - Implement official image pull/start, patch extraction/application, oracle command execution, baseline execution, JSON report writing.
-   - Add a five-task filtered subset mode.
+SWE-bench work:
 
-### 22.5 Commands for Next Session
+- Baseline patch generation and JSON evaluation report fields were implemented.
+- Full oracle execution for baseline and framework patches remains in the current gaps list above.
+
+### 22.4 Completed Checkpoint Plan
+
+Work in small commits. Keep `ruff format`, `ruff check`, and `pytest -q` green before each commit.
+
+1. Fix `GatherContext` dispatch.
+
+   - In `run_implementation_turn`, intercept `ToolName.GATHER_CONTEXT` before `run_tool` and call `gather_context()` activity directly.
+   - Inject the returned `ContextPack` as a structured observation into the message history.
+   - Remove the `GatherContext` case from `handlers.py`.
+   - Add a test that a `GATHER_CONTEXT` tool call in a fake implementation turn produces a `ContextPack` observation and does not invoke `run_tool`.
+
+2. Fix implementation evidence check.
+
+   - Replace the `bool(worker_result.diff_summary.strip())` check in `_worker_result_with_evidence` with `evidence.saw_diff`.
+   - `diff_summary` is narrative text; only `saw_diff` reflects an actual observed file change.
+   - Update affected tests.
+
+3. Fix context gatherer observation accumulation.
+
+   - Collect observations per turn into a local list; append only that turn's observations to messages.
+   - The `observations` list across the whole session can be kept for the fallback `ContextPack.relevant_snippets`.
+   - Add a test that observations from turn N do not appear in the message sent at turn N-1.
+
+4. Replace silent `or` defaults with assertions.
+
+   - In `_tool_from_call` in both `implementation.py` and `context_gatherer.py`, replace `field or default` fallbacks with `assert field is not None` (these values were validated earlier; `None` here is a bug).
+   - Add tests that confirm the validator catches missing fields before `_tool_from_call` is reached.
+
+5. Handle `NEEDS_REPLAN` in `main_workflow`.
+
+   - After each `wait_for_child`, check `worker_result.status`.
+   - If `NEEDS_REPLAN`, call `build_plan` with the current `contract`, `repo_index`, accumulated `worker_results`, and `worker_result.replan_suggestion` as `human_feedback`.
+   - Continue with the revised plan's steps from the beginning (the replanner decides which steps remain).
+   - Add a fake-mode test that a `NEEDS_REPLAN` result triggers a second `build_plan` call.
+
+6. Implement context window budget tracking.
+
+   - Add a `context_utilization() -> float` method to `LLMClient` that returns `last_input_tokens / model_context_limit` after each call. Model context limits are defined alongside model role routing in `src/llm/config.py`.
+   - In `run_implementation_turn`: after each LLM call, if utilization > 0.80, return immediately with `WorkerStatus.BLOCKED` and a `replan_suggestion` summarizing completed tool calls and what was still pending.
+   - In `gather_context`: after each LLM call, if utilization > 0.80, return the best-effort `ContextPack` from observations gathered so far.
+   - Add tests for the early-exit path.
+
+7. Complete SWE-bench evaluation harness.
+
+   - Implement baseline runner: for each eligible task, make a single LLM call with the problem statement and extract a patch.
+   - Write JSON evaluation report with `resolved`, `failed`, `skipped`, `cost_per_resolved_task`, and `llm_calls_per_task`.
+   - Add a five-task smoke run mode (`--subset 5`) for fast local validation.
+
+### 22.5 Next Implementation Plan
+
+Work in small commits. Keep `ruff format`, `ruff check`, and `pytest -q` green before each commit.
+
+1. Wire SWE-bench oracle execution into the main evaluation loop for both framework and baseline patches.
+2. Expose LLM usage ledger totals in workflow final reports so evaluation cost metrics are real instead of placeholders.
+3. Run the first non-fake live smoke workflow against a small local repository and document the result.
+4. Add cleanup/recovery handling so `destroy_workspace` runs after workflow failures.
+5. Build a small CLI helper for sending human approval signals to waiting workflows.
+
+### 22.6 Commands for Next Session
 
 Start or verify Temporal-Light:
 
