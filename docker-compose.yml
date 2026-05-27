@@ -1,0 +1,24 @@
+services:
+  agent-worker:
+    build: .
+    environment:
+      - TEMPORAL_API_URL=${TEMPORAL_API_URL}
+      - TEMPORAL_DATABASE_URL=${TEMPORAL_DATABASE_URL}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.anthropic.com/v1}
+      - MODEL_CONTRACT_BUILDER=${MODEL_CONTRACT_BUILDER:-claude-opus-4-7}
+      - MODEL_PLANNER=${MODEL_PLANNER:-claude-opus-4-7}
+      - MODEL_COMPLEXITY_ASSESSOR=${MODEL_COMPLEXITY_ASSESSOR:-claude-opus-4-7}
+      - MODEL_CONTEXT_GATHERER=${MODEL_CONTEXT_GATHERER:-claude-haiku-4-5-20251001}
+      - MODEL_IMPLEMENTATION=${MODEL_IMPLEMENTATION:-claude-sonnet-4-6}
+      - MODEL_REVIEWER=${MODEL_REVIEWER:-claude-sonnet-4-6}
+      - MODEL_SUMMARIZER=${MODEL_SUMMARIZER:-claude-haiku-4-5-20251001}
+      - WORKSPACE_IMAGE=${WORKSPACE_IMAGE:-durable-agentic-workspace:latest}
+    volumes:
+      - artifacts:/artifacts
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.agentic-workspaces:/app/.agentic-workspaces
+    depends_on: []
+
+volumes:
+  artifacts:

@@ -1,0 +1,9 @@
+.agentic-workspaces
+.git
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+tests
+Temporal-Light/.pytest_cache
+Temporal-Light/**/__pycache__
