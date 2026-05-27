@@ -62,6 +62,9 @@ class FakeImplementationClient:
             }
         )
 
+    def context_utilization(self) -> float:
+        return 0.0
+
 
 @pytest.mark.asyncio
 async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,6 +130,9 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
                     },
                 }
             )
+
+        def context_utilization(self) -> float:
+            return 0.0
 
     async def fake_gather_context(request: ContextGatherRequest) -> ContextPack:
         captured_gather_prompts.append(request.gatherer_prompt)
@@ -235,6 +241,9 @@ async def test_implementation_turn_preserves_run_tests_timeout(
                 }
             )
 
+        def context_utilization(self) -> float:
+            return 0.0
+
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         match request.tool:
             case RunTests(timeout_seconds=timeout_seconds):
@@ -301,6 +310,9 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
                 }
             )
 
+        def context_utilization(self) -> float:
+            return 0.0
+
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         match request.tool:
             case RunTests():
@@ -354,6 +366,9 @@ async def test_implementation_turn_rejects_success_without_diff_or_test_evidence
                 }
             )
 
+        def context_utilization(self) -> float:
+            return 0.0
+
     monkeypatch.setattr("src.activities.implementation.LLMClient", FakeUnsupportedSuccessClient)
 
     worker_result = await run_implementation_turn(_implementation_request())
@@ -389,12 +404,57 @@ async def test_implementation_turn_rejects_success_with_only_diff_summary(
                 }
             )
 
+        def context_utilization(self) -> float:
+            return 0.0
+
     monkeypatch.setattr("src.activities.implementation.LLMClient", FakeNarrativeDiffClient)
 
     worker_result = await run_implementation_turn(_implementation_request())
 
     assert worker_result.status == WorkerStatus.FAILED
     assert worker_result.discovered_issues == ["success result missing diff or test evidence"]
+
+
+@pytest.mark.asyncio
+async def test_implementation_turn_blocks_when_context_budget_is_high(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeHighContextClient:
+        async def generate_structured(
+            self,
+            role: ModelRole,
+            messages: list[Message],
+            output_type: type[BaseModel],
+        ) -> BaseModel:
+            return output_type.model_validate(
+                {
+                    "done": False,
+                    "tool_calls": [
+                        {
+                            "tool_name": "read_file_range",
+                            "file_path": "src/app.py",
+                            "start_line": 1,
+                            "end_line": 5,
+                        }
+                    ],
+                }
+            )
+
+        def context_utilization(self) -> float:
+            return 0.81
+
+    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+        raise AssertionError(f"run_tool should not run after budget block: {request.tool}")
+
+    monkeypatch.setattr("src.activities.implementation.LLMClient", FakeHighContextClient)
+    monkeypatch.setattr("src.activities.implementation.run_tool", fake_run_tool)
+
+    worker_result = await run_implementation_turn(_implementation_request())
+
+    assert worker_result.status == WorkerStatus.BLOCKED
+    assert worker_result.confidence == Confidence.LOW
+    assert worker_result.replan_suggestion is not None
+    assert "read_file_range" in worker_result.replan_suggestion
 
 
 def _implementation_request() -> ImplementationTurnRequest:

@@ -68,6 +68,8 @@ class LLMClient(Generic[StructuredOutput]):
         self.model_configuration = model_configuration or load_model_configuration()
         self.usage_ledger = usage_ledger or LLMUsageLedger()
         self.async_openai_client = async_openai_client
+        self.last_input_token_count = 0
+        self.last_context_limit = 1
         if self.async_openai_client is None and not _fake_mode_enabled():
             self.async_openai_client = AsyncOpenAI(
                 api_key=os.getenv("LLM_API_KEY"),
@@ -78,8 +80,9 @@ class LLMClient(Generic[StructuredOutput]):
         model = self.model_configuration.model_for_role(role)
         if _fake_mode_enabled():
             content = _fake_completion_content(role)
-            self.usage_ledger.record(
-                _fake_usage(role=role, model=model, messages=messages, content=content)
+            self._record_usage(
+                role=role,
+                usage=_fake_usage(role=role, model=model, messages=messages, content=content),
             )
             return content
         if self.async_openai_client is None:
@@ -89,7 +92,10 @@ class LLMClient(Generic[StructuredOutput]):
             messages=[message.model_dump(mode="json") for message in messages],
         )
         content = _extract_content(response)
-        self.usage_ledger.record(_usage_from_response(role=role, model=model, response=response))
+        self._record_usage(
+            role=role,
+            usage=_usage_from_response(role=role, model=model, response=response),
+        )
         return content
 
     async def generate_structured(
@@ -101,8 +107,9 @@ class LLMClient(Generic[StructuredOutput]):
         if _fake_mode_enabled():
             model = self.model_configuration.model_for_role(role)
             content = _fake_structured_content(output_type, messages)
-            self.usage_ledger.record(
-                _fake_usage(role=role, model=model, messages=messages, content=content)
+            self._record_usage(
+                role=role,
+                usage=_fake_usage(role=role, model=model, messages=messages, content=content),
             )
             return output_type.model_validate_json(content)
         structured_messages = [
@@ -117,6 +124,14 @@ class LLMClient(Generic[StructuredOutput]):
         ]
         content = await self.complete(role=role, messages=structured_messages)
         return output_type.model_validate_json(content)
+
+    def context_utilization(self) -> float:
+        return self.last_input_token_count / self.last_context_limit
+
+    def _record_usage(self, role: ModelRole, usage: LLMUsage) -> None:
+        self.usage_ledger.record(usage)
+        self.last_input_token_count = usage.input_tokens
+        self.last_context_limit = self.model_configuration.context_limit_for_role(role)
 
 
 def _fake_mode_enabled() -> bool:

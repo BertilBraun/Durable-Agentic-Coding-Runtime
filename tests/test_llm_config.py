@@ -1,5 +1,10 @@
 from pytest import MonkeyPatch
-from src.llm.config import ModelConfiguration, ModelRole, load_model_configuration
+from src.llm.config import (
+    ModelConfiguration,
+    ModelContextLimit,
+    ModelRole,
+    load_model_configuration,
+)
 
 
 def test_model_configuration_uses_default_models(monkeypatch: MonkeyPatch) -> None:
@@ -17,6 +22,7 @@ def test_model_configuration_uses_default_models(monkeypatch: MonkeyPatch) -> No
         "claude-haiku-4-5-20251001"
     )
     assert model_configuration.model_for_role(ModelRole.IMPLEMENTATION) == "claude-sonnet-4-6"
+    assert model_configuration.context_limit_for_role(ModelRole.IMPLEMENTATION) == 200_000
 
 
 def test_model_configuration_uses_environment_override(monkeypatch: MonkeyPatch) -> None:
@@ -36,6 +42,15 @@ def test_model_configuration_is_frozen() -> None:
         implementation_model="e",
         reviewer_model="f",
         summarizer_model="g",
+        model_context_limits=[
+            ModelContextLimit(model="a", context_limit_tokens=100),
+            ModelContextLimit(model="b", context_limit_tokens=100),
+            ModelContextLimit(model="c", context_limit_tokens=100),
+            ModelContextLimit(model="d", context_limit_tokens=100),
+            ModelContextLimit(model="e", context_limit_tokens=100),
+            ModelContextLimit(model="f", context_limit_tokens=100),
+            ModelContextLimit(model="g", context_limit_tokens=100),
+        ],
     )
 
     try:

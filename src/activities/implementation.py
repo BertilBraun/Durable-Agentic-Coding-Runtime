@@ -134,12 +134,20 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
     tests_run: list[str] = []
     test_results: list[TestResult] = []
     saw_diff = False
+    completed_tool_calls: list[str] = []
     for _ in range(max_tool_rounds):
         agent_turn = await llm_client.generate_structured(
             role=ModelRole.IMPLEMENTATION,
             messages=messages,
             output_type=ImplementationAgentTurn,
         )
+        if llm_client.context_utilization() > 0.80:
+            return _context_budget_blocked_worker_result(
+                completed_tool_calls=completed_tool_calls,
+                pending_tool_calls=[
+                    tool_call.tool_name.value for tool_call in agent_turn.tool_calls
+                ],
+            )
         if agent_turn.done:
             if agent_turn.worker_result is None:
                 raise ValueError("worker_result is required when implementation turn is done")
@@ -167,11 +175,13 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
                     f"tool={tool_call.tool_name} context_pack:\n"
                     f"{gathered_context.model_dump_json()}"
                 )
+                completed_tool_calls.append(tool_call.tool_name.value)
                 continue
             tool = _tool_from_call(tool_call)
             tool_result = await run_tool(
                 ToolExecutionRequest(workspace_info=request.workspace_info, tool=tool)
             )
+            completed_tool_calls.append(tool_call.tool_name.value)
             match tool:
                 case RunTests(command=command):
                     tests_run.append(command)
@@ -189,6 +199,27 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
         messages.append(Message(role="user", content="\n\n".join(observations)))
 
     return failed_worker_result("maximum implementation tool rounds reached")
+
+
+def _context_budget_blocked_worker_result(
+    completed_tool_calls: list[str],
+    pending_tool_calls: list[str],
+) -> WorkerResult:
+    completed_summary = ", ".join(completed_tool_calls) if completed_tool_calls else "none"
+    pending_summary = ", ".join(pending_tool_calls) if pending_tool_calls else "none"
+    return WorkerResult(
+        status=WorkerStatus.BLOCKED,
+        patch_id=None,
+        diff_summary="Implementation stopped before exceeding the context window budget.",
+        tests_run=[],
+        test_results=[],
+        discovered_issues=["context utilization exceeded 80 percent"],
+        confidence=Confidence.LOW,
+        replan_suggestion=(
+            "Context budget exceeded. Completed tool calls: "
+            f"{completed_summary}. Pending tool calls: {pending_summary}."
+        ),
+    )
 
 
 @durable_activity(retries=0, timeout=120)

@@ -3,7 +3,7 @@ from typing import ClassVar
 
 import pytest
 from src.llm.client import LLMClient, LLMUsageLedger, Message
-from src.llm.config import ModelConfiguration, ModelRole
+from src.llm.config import ModelConfiguration, ModelContextLimit, ModelRole
 from src.models.approval import ComplexityVerdict
 
 
@@ -51,6 +51,15 @@ async def test_structured_generation_parses_model_and_records_usage() -> None:
             implementation_model="implementation",
             reviewer_model="review",
             summarizer_model="summary",
+            model_context_limits=[
+                ModelContextLimit(model="contract", context_limit_tokens=100),
+                ModelContextLimit(model="planner", context_limit_tokens=100),
+                ModelContextLimit(model="complexity", context_limit_tokens=100),
+                ModelContextLimit(model="context", context_limit_tokens=100),
+                ModelContextLimit(model="implementation", context_limit_tokens=100),
+                ModelContextLimit(model="review", context_limit_tokens=100),
+                ModelContextLimit(model="summary", context_limit_tokens=100),
+            ],
         ),
         usage_ledger=LLMUsageLedger(),
         async_openai_client=FakeAsyncOpenAI(),
@@ -65,3 +74,5 @@ async def test_structured_generation_parses_model_and_records_usage() -> None:
     assert verdict.requires_human_approval is False
     assert llm_client.usage_ledger.total_input_tokens == 10
     assert llm_client.usage_ledger.total_output_tokens == 4
+    assert llm_client.last_input_token_count == 10
+    assert llm_client.context_utilization() == 0.1

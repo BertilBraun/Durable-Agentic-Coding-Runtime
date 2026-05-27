@@ -122,6 +122,9 @@ async def test_context_gatherer_sends_only_current_turn_observations(
                 }
             )
 
+        def context_utilization(self) -> float:
+            return 0.0
+
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         return ToolResult(stdout=tool_outputs.pop(0), stderr="", exit_code=0, truncated=False)
 
@@ -135,6 +138,47 @@ async def test_context_gatherer_sends_only_current_turn_observations(
     assert "turn two second" in third_call_last_user_message
     assert "turn one first" not in third_call_last_user_message
     assert "turn one second" not in third_call_last_user_message
+
+
+@pytest.mark.asyncio
+async def test_context_gatherer_returns_best_effort_when_context_budget_is_high(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeHighContextGathererClient:
+        async def generate_structured(
+            self,
+            role: ModelRole,
+            messages: list[Message],
+            output_type: type[BaseModel],
+        ) -> BaseModel:
+            return output_type.model_validate(
+                {
+                    "done": False,
+                    "tool_calls": [
+                        {
+                            "tool_name": "search_text",
+                            "pattern": "handler",
+                            "directory": ".",
+                            "file_glob": "*.py",
+                        }
+                    ],
+                }
+            )
+
+        def context_utilization(self) -> float:
+            return 0.81
+
+    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+        raise AssertionError(f"run_tool should not run after budget stop: {request.tool}")
+
+    monkeypatch.setattr("src.activities.context_gatherer.LLMClient", FakeHighContextGathererClient)
+    monkeypatch.setattr("src.activities.context_gatherer.run_tool", fake_run_tool)
+
+    context_pack = await gather_context(_context_gather_request())
+
+    assert context_pack.task_summary == "Find relevant code"
+    assert context_pack.relevant_snippets == []
+    assert context_pack.budget_remaining == 0
 
 
 def _context_gather_request() -> ContextGatherRequest:

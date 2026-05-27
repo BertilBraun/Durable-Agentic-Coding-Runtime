@@ -95,6 +95,8 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
             messages=messages,
             output_type=ContextGathererTurn,
         )
+        if llm_client.context_utilization() > 0.80:
+            return _best_effort_context_pack(request, observations)
         if turn.done and turn.context_pack is not None:
             return turn.context_pack
 
@@ -117,6 +119,13 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
         messages.append(Message(role="assistant", content=turn.model_dump_json()))
         messages.append(Message(role="user", content="\n".join(turn_observations)))
 
+    return _best_effort_context_pack(request, observations)
+
+
+def _best_effort_context_pack(
+    request: ContextGatherRequest,
+    observations: list[str],
+) -> ContextPack:
     return ContextPack(
         task_summary=request.gatherer_prompt,
         relevant_snippets=observations,

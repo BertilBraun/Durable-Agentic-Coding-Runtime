@@ -17,6 +17,13 @@ class ModelRole(StrEnum):
     SUMMARIZER = "summarizer"
 
 
+class ModelContextLimit(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    model: str
+    context_limit_tokens: int
+
+
 class ModelConfiguration(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -27,6 +34,7 @@ class ModelConfiguration(BaseModel):
     implementation_model: str
     reviewer_model: str
     summarizer_model: str
+    model_context_limits: list[ModelContextLimit]
 
     def model_for_role(self, role: ModelRole) -> str:
         match role:
@@ -45,6 +53,13 @@ class ModelConfiguration(BaseModel):
             case ModelRole.SUMMARIZER:
                 return self.summarizer_model
 
+    def context_limit_for_role(self, role: ModelRole) -> int:
+        model = self.model_for_role(role)
+        for model_context_limit in self.model_context_limits:
+            if model_context_limit.model == model:
+                return model_context_limit.context_limit_tokens
+        raise ValueError(f"Context limit is required for model: {model}")
+
 
 def load_model_configuration() -> ModelConfiguration:
     return ModelConfiguration(
@@ -58,4 +73,12 @@ def load_model_configuration() -> ModelConfiguration:
         implementation_model=os.getenv("MODEL_IMPLEMENTATION", "claude-sonnet-4-6"),
         reviewer_model=os.getenv("MODEL_REVIEWER", "claude-sonnet-4-6"),
         summarizer_model=os.getenv("MODEL_SUMMARIZER", "claude-haiku-4-5-20251001"),
+        model_context_limits=[
+            ModelContextLimit(model="claude-opus-4-7", context_limit_tokens=200_000),
+            ModelContextLimit(model="claude-sonnet-4-6", context_limit_tokens=200_000),
+            ModelContextLimit(
+                model="claude-haiku-4-5-20251001",
+                context_limit_tokens=200_000,
+            ),
+        ],
     )
