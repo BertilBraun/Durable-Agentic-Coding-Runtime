@@ -143,6 +143,27 @@ except ImportError:
 
 ---
 
+## Imports
+
+All imports go at the top of the module. Never import inside a function, a `try/except` block, or a `match` case.
+
+Use the imported type in annotations — never fall back to `object` when the real type is available.
+
+```python
+# correct
+import docker
+
+def _docker_client() -> docker.DockerClient:
+    return docker.from_env()
+
+# wrong
+def _docker_client() -> object:
+    import docker
+    return docker.from_env()
+```
+
+---
+
 ## match/case over isinstance chains
 
 ```python

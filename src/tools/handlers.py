@@ -69,6 +69,8 @@ def command_for_tool(tool: Tool) -> list[str]:
             ]
         case FindReferences(symbol_name=symbol_name):
             return ["rg", symbol_name, "."]
+        case _:
+            raise ValueError(f"No command defined for tool: {type(tool).__name__}")
 
 
 def _validate_tool_paths(tool: Tool) -> None:

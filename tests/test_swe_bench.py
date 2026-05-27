@@ -1,3 +1,5 @@
+import base64
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 
@@ -150,7 +152,7 @@ def test_evaluate_patch_with_oracle_resolves_after_successful_apply() -> None:
     assert result.resolved is True
     assert result.reason is None
     assert docker_client.images.pulled_images == ["sweb.eval.x86_64.python-1:latest"]
-    assert docker_client.containers.executions[0]["command"] == ["sh", "-lc", "git apply -"]
+    assert "git apply" in docker_client.containers.executions[0]["command"][-1]
     assert docker_client.containers.executions[1]["command"] == [
         "sh",
         "-lc",
@@ -176,8 +178,9 @@ def test_evaluate_patch_with_oracle_reads_artifact_patch(
     tmp_path: Path,
 ) -> None:
     docker_client = FakeDockerClient()
+    patch_content = "diff --git a/app.py b/app.py\n"
     patch_path = tmp_path / "patch.diff"
-    patch_path.write_text("diff --git a/app.py b/app.py\n", encoding="utf-8")
+    patch_path.write_text(patch_content, encoding="utf-8")
 
     result = _evaluate_patch_with_oracle(
         instance=_instance("python-1", "python"),
@@ -186,7 +189,9 @@ def test_evaluate_patch_with_oracle_reads_artifact_patch(
     )
 
     assert result.resolved is True
-    assert docker_client.containers.executions[0]["stdin"] == "diff --git a/app.py b/app.py\n"
+    apply_shell_command = docker_client.containers.executions[0]["command"][-1]
+    encoded = apply_shell_command.split("echo ")[1].split(" |")[0]
+    assert base64.b64decode(encoded).decode() == patch_content
 
 
 @pytest.mark.asyncio
@@ -302,25 +307,22 @@ def test_start_official_container_uses_testbed_workdir() -> None:
     }
 
 
-def test_apply_patch_to_container_streams_patch_to_git_apply() -> None:
+def test_apply_patch_to_container_encodes_patch_for_git_apply() -> None:
     docker_client = FakeDockerClient()
+    patch_content = "diff --git a/app.py b/app.py\n"
 
     result = _apply_patch_to_container(
         container_id="container-1",
-        patch="diff --git a/app.py b/app.py\n",
+        patch=patch_content,
         docker_client=docker_client,
     )
 
     assert result.exit_code == 0
     assert result.applied is True
-    assert docker_client.containers.executions == [
-        {
-            "container_id": "container-1",
-            "command": ["sh", "-lc", "git apply -"],
-            "stdin": "diff --git a/app.py b/app.py\n",
-            "workdir": "/testbed",
-        }
-    ]
+    apply_shell_command = docker_client.containers.executions[0]["command"][-1]
+    assert "git apply -" in apply_shell_command
+    encoded = apply_shell_command.split("echo ")[1].split(" |")[0]
+    assert base64.b64decode(encoded).decode() == patch_content
 
 
 def test_apply_patch_to_container_rejects_empty_patch() -> None:
@@ -474,8 +476,37 @@ class FakeImages:
         self.pulled_images.append(image)
 
 
+@dataclass
+class FakeExecResult:
+    exit_code: int
+    output: tuple[bytes | None, bytes | None]
+
+
 class FakeContainer:
     id = "container-1"
+
+    def __init__(self, containers: "FakeContainers") -> None:
+        self._containers = containers
+
+    def exec_run(
+        self,
+        command: list[str],
+        workdir: str | None = None,
+        demux: bool = False,
+    ) -> FakeExecResult:
+        self._containers.executions.append({"command": command, "workdir": workdir})
+        shell_command = command[-1] if isinstance(command, list) else command
+        if "git apply" in shell_command:
+            exit_code = self._containers.git_apply_exit_code
+        else:
+            exit_code = self._containers.command_exit_codes.get(shell_command, 0)
+        return FakeExecResult(exit_code=exit_code, output=(b"ok", b""))
+
+    def stop(self, timeout: int = 10) -> None:
+        pass
+
+    def remove(self, force: bool = False) -> None:
+        pass
 
 
 class FakeContainers:
@@ -487,29 +518,10 @@ class FakeContainers:
 
     def run(self, **keyword_arguments: object) -> FakeContainer:
         self.run_arguments = keyword_arguments
-        return FakeContainer()
+        return FakeContainer(self)
 
-    def execute(
-        self,
-        container_id: str,
-        command: list[str],
-        stdin: str,
-        workdir: str,
-    ) -> dict[str, object]:
-        self.executions.append(
-            {
-                "container_id": container_id,
-                "command": command,
-                "stdin": stdin,
-                "workdir": workdir,
-            }
-        )
-        shell_command = command[-1]
-        if shell_command == "git apply -":
-            exit_code = self.git_apply_exit_code
-        else:
-            exit_code = self.command_exit_codes.get(shell_command, 0)
-        return {"exit_code": exit_code, "stdout": "ok", "stderr": ""}
+    def get(self, container_id: str) -> FakeContainer:
+        return FakeContainer(self)
 
 
 class FakeDockerClient:

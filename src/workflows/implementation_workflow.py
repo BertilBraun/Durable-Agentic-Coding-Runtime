@@ -56,7 +56,11 @@ async def implementation_workflow(
                 worker_result=worker_result,
             )
             return reviewed_result.model_dump(mode="json")
-        if worker_result.status == WorkerStatus.NEEDS_REPLAN:
+        if worker_result.status in (
+            WorkerStatus.FAILED,
+            WorkerStatus.BLOCKED,
+            WorkerStatus.NEEDS_REPLAN,
+        ):
             return worker_result.model_dump(mode="json")
 
     return failed_worker_result("maximum implementation iterations reached").model_dump(mode="json")

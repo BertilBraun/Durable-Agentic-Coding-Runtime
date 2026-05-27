@@ -169,6 +169,8 @@ def _tool_from_call(tool_call: ContextGathererToolCall) -> Tool:
                 symbol_name=tool_call.symbol_name,
                 file_path=tool_call.file_path,
             )
+        case _:
+            raise AssertionError(f"Unhandled tool in context gatherer: {tool_call.tool_name}")
 
 
 def _require_tool_fields(tool_call: ContextGathererToolCall, field_names: tuple[str, ...]) -> None:

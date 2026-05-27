@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import time
 from pathlib import Path
 
+import docker
+import docker.models.containers
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -126,7 +129,7 @@ async def run_evaluation(
     temporal_api_url: str,
     output_path: Path,
     limit: int | None,
-    docker_client: object,
+    docker_client: docker.DockerClient,
     supported_only: bool = False,
 ) -> EvaluationReport:
     instances = _select_evaluation_instances(
@@ -179,12 +182,14 @@ def _select_evaluation_instances(
     return selected_instances
 
 
-def _pull_official_image(instance: SweBenchInstance, docker_client: object) -> None:
+def _pull_official_image(instance: SweBenchInstance, docker_client: docker.DockerClient) -> None:
     image = _official_image(instance)
     docker_client.images.pull(image)
 
 
-def _start_official_container(instance: SweBenchInstance, docker_client: object) -> str:
+def _start_official_container(
+    instance: SweBenchInstance, docker_client: docker.DockerClient
+) -> str:
     image = _official_image(instance)
     container = docker_client.containers.run(
         image=image,
@@ -193,6 +198,12 @@ def _start_official_container(instance: SweBenchInstance, docker_client: object)
         working_dir=SWE_BENCH_WORKDIR,
     )
     return str(container.id)
+
+
+def _stop_and_remove_container(container_id: str, docker_client: docker.DockerClient) -> None:
+    container = docker_client.containers.get(container_id)
+    container.stop(timeout=10)
+    container.remove(force=True)
 
 
 def _official_image(instance: SweBenchInstance) -> str:
@@ -204,29 +215,32 @@ def _official_image(instance: SweBenchInstance) -> str:
 def _apply_patch_to_container(
     container_id: str,
     patch: str,
-    docker_client: object,
+    docker_client: docker.DockerClient,
 ) -> PatchApplicationResult:
     if not patch.strip():
         raise ValueError("SWE-bench patch cannot be empty")
-    execution_result = docker_client.containers.execute(
-        container_id=container_id,
-        command=["sh", "-lc", "git apply -"],
-        stdin=patch,
+    encoded_patch = base64.b64encode(patch.encode()).decode()
+    container = docker_client.containers.get(container_id)
+    result = container.exec_run(
+        ["sh", "-lc", f"echo {encoded_patch} | base64 -d | git apply -"],
         workdir=SWE_BENCH_WORKDIR,
+        demux=True,
     )
-    exit_code = int(execution_result["exit_code"])
+    stdout_bytes, stderr_bytes = result.output
+    stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+    stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
     return PatchApplicationResult(
-        applied=exit_code == 0,
-        exit_code=exit_code,
-        stdout=str(execution_result["stdout"]),
-        stderr=str(execution_result["stderr"]),
+        applied=result.exit_code == 0,
+        exit_code=result.exit_code,
+        stdout=stdout,
+        stderr=stderr,
     )
 
 
 def _run_oracle(
     container_id: str,
     instance: SweBenchInstance,
-    docker_client: object,
+    docker_client: docker.DockerClient,
 ) -> OracleResult:
     command_results: list[OracleCommandResult] = []
     fail_to_pass_results = [
@@ -258,23 +272,26 @@ def _run_oracle(
 def _evaluate_patch_with_oracle(
     instance: SweBenchInstance,
     patch: str,
-    docker_client: object,
+    docker_client: docker.DockerClient,
 ) -> OracleResult:
     _pull_official_image(instance, docker_client)
     container_id = _start_official_container(instance, docker_client)
-    materialized_patch = _materialize_patch(patch)
-    patch_application = _apply_patch_to_container(
-        container_id=container_id,
-        patch=materialized_patch,
-        docker_client=docker_client,
-    )
-    if not patch_application.applied:
-        return OracleResult(resolved=False, reason="patch_apply_failed")
-    return _run_oracle(
-        container_id=container_id,
-        instance=instance,
-        docker_client=docker_client,
-    )
+    try:
+        materialized_patch = _materialize_patch(patch)
+        patch_application = _apply_patch_to_container(
+            container_id=container_id,
+            patch=materialized_patch,
+            docker_client=docker_client,
+        )
+        if not patch_application.applied:
+            return OracleResult(resolved=False, reason="patch_apply_failed")
+        return _run_oracle(
+            container_id=container_id,
+            instance=instance,
+            docker_client=docker_client,
+        )
+    finally:
+        _stop_and_remove_container(container_id, docker_client)
 
 
 def _materialize_patch(patch: str) -> str:
@@ -286,20 +303,23 @@ def _materialize_patch(patch: str) -> str:
 def _run_oracle_command(
     container_id: str,
     test_identifier: str,
-    docker_client: object,
+    docker_client: docker.DockerClient,
 ) -> OracleCommandResult:
     command = f"pytest {test_identifier}"
-    execution_result = docker_client.containers.execute(
-        container_id=container_id,
-        command=["sh", "-lc", command],
-        stdin="",
+    container = docker_client.containers.get(container_id)
+    result = container.exec_run(
+        ["sh", "-lc", command],
         workdir=SWE_BENCH_WORKDIR,
+        demux=True,
     )
+    stdout_bytes, stderr_bytes = result.output
+    stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+    stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
     return OracleCommandResult(
         command=command,
-        exit_code=int(execution_result["exit_code"]),
-        stdout=str(execution_result["stdout"]),
-        stderr=str(execution_result["stderr"]),
+        exit_code=result.exit_code,
+        stdout=stdout,
+        stderr=stderr,
     )
 
 
@@ -331,7 +351,7 @@ def _skipped_result(instance: SweBenchInstance, reason: str) -> EvaluationTaskRe
 async def _run_framework_task(
     instance: SweBenchInstance,
     temporal_api_url: str,
-    docker_client: object,
+    docker_client: docker.DockerClient,
 ) -> EvaluationTaskResult:
     started_at = time.monotonic()
     async with httpx.AsyncClient(timeout=60) as http_client:
@@ -343,6 +363,7 @@ async def _run_framework_task(
                     "request": {
                         "raw_request": instance.problem_statement,
                         "repo_path": instance.repo,
+                        "docker_image": instance.docker_image,
                         "run_id": instance.instance_id,
                     }
                 },
@@ -412,7 +433,7 @@ async def _poll_workflow(
 
 async def _run_baseline_task(
     instance: SweBenchInstance,
-    docker_client: object,
+    docker_client: docker.DockerClient,
 ) -> EvaluationTaskResult:
     started_at = time.monotonic()
     llm_client = LLMClient()
@@ -526,9 +547,7 @@ def _usage_from_workflow_result(workflow_result: dict[str, object]) -> WorkflowU
     return WorkflowUsageSummary(total_cost_usd=0.0, call_count=0)
 
 
-def _docker_client() -> object:
-    import docker
-
+def _docker_client() -> docker.DockerClient:
     return docker.from_env()
 
 

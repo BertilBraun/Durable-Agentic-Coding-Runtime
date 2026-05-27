@@ -141,6 +141,63 @@ async def test_implementation_workflow_fails_successful_step_rejected_by_review(
     assert result["discovered_issues"] == ["missing regression test"]
 
 
+@pytest.mark.asyncio
+async def test_implementation_workflow_returns_blocked_result_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    turn_calls = 0
+
+    async def fake_build_repo_index(workspace_info: object) -> RepoIndex:
+        return RepoIndex()
+
+    async def fake_gather_context(request: object) -> ContextPack:
+        return ContextPack(
+            task_summary="Implement behavior",
+            relevant_snippets=[],
+            recent_observations=[],
+            failed_attempt_summaries=[],
+            available_tools=[],
+            budget_remaining=1,
+        )
+
+    async def fake_run_implementation_turn(request: object) -> WorkerResult:
+        nonlocal turn_calls
+        turn_calls += 1
+        return WorkerResult(
+            status=WorkerStatus.BLOCKED,
+            patch_id=None,
+            diff_summary="Context budget exceeded.",
+            tests_run=[],
+            test_results=[],
+            discovered_issues=["context utilization exceeded 80 percent"],
+            confidence=Confidence.LOW,
+            replan_suggestion="Split the step.",
+        )
+
+    async def fake_review_patch(request: object) -> ReviewVerdict:
+        raise AssertionError("blocked worker results should not be reviewed as successes")
+
+    monkeypatch.setattr(
+        "src.workflows.implementation_workflow.build_repo_index", fake_build_repo_index
+    )
+    monkeypatch.setattr("src.workflows.implementation_workflow.gather_context", fake_gather_context)
+    monkeypatch.setattr(
+        "src.workflows.implementation_workflow.run_implementation_turn",
+        fake_run_implementation_turn,
+    )
+    monkeypatch.setattr("src.workflows.implementation_workflow.review_patch", fake_review_patch)
+
+    result = await implementation_workflow(
+        step=_plan_step().model_dump(mode="json"),
+        workspace=_workspace(),
+        contract=_task_contract().model_dump(mode="json"),
+    )
+
+    assert turn_calls == 1
+    assert result["status"] == WorkerStatus.BLOCKED
+    assert result["replan_suggestion"] == "Split the step."
+
+
 def _plan_step() -> PlanStep:
     return PlanStep(
         id="step_1",

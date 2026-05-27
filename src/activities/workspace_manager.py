@@ -7,17 +7,29 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import docker
+import docker.models.containers
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
 from src.activities.temporal import durable_activity
 from src.models.context import ArtifactKind, ArtifactReference
 from src.models.repo import Language, RepoIndex, Symbol
 from src.tools.definitions import (
+    ApplyPatch,
     FindReferences,
     FindSymbol,
+    GatherContext,
+    GitCommit,
+    GitDiff,
+    GitStatus,
+    ReadFileRange,
+    RunLint,
     RunTests,
+    RunTypecheck,
+    SearchText,
     Tool,
     ToolName,
+    WriteFile,
     tool_definition_for_tool,
 )
 from src.tools.handlers import command_for_tool
@@ -38,6 +50,8 @@ class WorkspaceInfo(BaseModel):
     volume_name: str
     worktree_path: str
     branch_name: str
+    workspace_image: str | None = None
+    container_repo_path: str = CONTAINER_WORKSPACE_PATH
 
 
 class ToolResult(BaseModel):
@@ -77,30 +91,56 @@ class ToolExecutionRequest(BaseModel):
 
 
 @durable_activity(retries=0, timeout=300)
-async def create_workspace(run_id: str, repo_path: str) -> WorkspaceInfo:
+async def create_workspace(
+    run_id: str, repo_path: str, docker_image: str | None = None
+) -> WorkspaceInfo:
     docker_client = _docker_client()
     volume_name = f"agentic-coding-{run_id}"
     branch_name = f"agentic-coding/{run_id}"
     docker_client.volumes.create(name=volume_name)
-    repository_source_path = os.path.abspath(repo_path)
     workspace_root = Path(os.getenv("WORKSPACE_ROOT", ".agentic-workspaces")).resolve()
     worktree_path = workspace_root / run_id / "repository"
     if worktree_path.exists():
         shutil.rmtree(worktree_path)
+    worktree_path.mkdir(parents=True, exist_ok=True)
+
+    if docker_image is not None:
+        # SWE-bench path: repo is pre-materialized at /testbed inside the official image.
+        # Pull the image, copy /testbed to the host worktree, then branch for agent changes.
+        docker_client.images.pull(docker_image)
+        docker_client.containers.run(
+            image=docker_image,
+            command=[
+                "sh",
+                "-lc",
+                f"cp -rp /testbed/. /target/ && cd /target && git checkout -b {branch_name}",
+            ],
+            remove=True,
+            volumes={str(worktree_path): {"bind": "/target", "mode": "rw"}},
+        )
+        return WorkspaceInfo(
+            run_id=run_id,
+            volume_name=volume_name,
+            worktree_path=str(worktree_path),
+            branch_name=branch_name,
+            workspace_image=docker_image,
+            container_repo_path="/testbed",
+        )
+
+    repository_source_path = os.path.abspath(repo_path)
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [
-        "sh",
-        "-lc",
-        (
-            "rm -rf /target/repository && "
-            "git clone /source /target/repository && "
-            "cd /target/repository && "
-            f"git checkout -b {branch_name}"
-        ),
-    ]
     docker_client.containers.run(
         image=_workspace_image(),
-        command=command,
+        command=[
+            "sh",
+            "-lc",
+            (
+                "rm -rf /target/repository && "
+                "git clone /source /target/repository && "
+                "cd /target/repository && "
+                f"git checkout -b {branch_name}"
+            ),
+        ],
         remove=True,
         volumes={
             repository_source_path: {"bind": "/source", "mode": "ro"},
@@ -121,14 +161,15 @@ async def run_tool(request: ToolExecutionRequest) -> ToolResult:
     if indexed_result is not None:
         return indexed_result
     docker_client = _docker_client()
+    container_repo_path = request.workspace_info.container_repo_path
     container = docker_client.containers.run(
-        image=_workspace_image(),
+        image=request.workspace_info.workspace_image or _workspace_image(),
         command=command_for_tool(request.tool),
         detach=True,
-        working_dir=CONTAINER_WORKSPACE_PATH,
+        working_dir=container_repo_path,
         volumes={
             request.workspace_info.worktree_path: {
-                "bind": CONTAINER_WORKSPACE_PATH,
+                "bind": container_repo_path,
                 "mode": "rw",
             }
         },
@@ -164,51 +205,33 @@ async def run_tool(request: ToolExecutionRequest) -> ToolResult:
 def _tool_from_serialized_payload(tool_name: ToolName, payload: dict[str, Any]) -> Tool:
     match tool_name:
         case ToolName.READ_FILE_RANGE:
-            from src.tools.definitions import ReadFileRange
-
             return ReadFileRange(**payload)
         case ToolName.SEARCH_TEXT:
-            from src.tools.definitions import SearchText
-
             return SearchText(**payload)
         case ToolName.WRITE_FILE:
-            from src.tools.definitions import WriteFile
-
             return WriteFile(**payload)
         case ToolName.APPLY_PATCH:
-            from src.tools.definitions import ApplyPatch
-
             return ApplyPatch(**payload)
         case ToolName.GIT_DIFF:
-            from src.tools.definitions import GitDiff
-
             return GitDiff(**payload)
         case ToolName.GIT_STATUS:
-            from src.tools.definitions import GitStatus
-
             return GitStatus(**payload)
         case ToolName.GIT_COMMIT:
-            from src.tools.definitions import GitCommit
-
             return GitCommit(**payload)
         case ToolName.RUN_TESTS:
             return RunTests(**payload)
         case ToolName.RUN_LINT:
-            from src.tools.definitions import RunLint
-
             return RunLint(**payload)
         case ToolName.RUN_TYPECHECK:
-            from src.tools.definitions import RunTypecheck
-
             return RunTypecheck(**payload)
         case ToolName.FIND_SYMBOL:
             return FindSymbol(**payload)
         case ToolName.FIND_REFERENCES:
             return FindReferences(**payload)
         case ToolName.GATHER_CONTEXT:
-            from src.tools.definitions import GatherContext
-
             return GatherContext(**payload)
+        case _:
+            raise ValueError(f"Cannot deserialize unknown tool: {tool_name}")
 
 
 def _indexed_tool_result(request: ToolExecutionRequest) -> ToolResult | None:
@@ -295,9 +318,7 @@ def _workspace_image() -> str:
     return os.getenv(WORKSPACE_IMAGE_ENVIRONMENT_NAME, DEFAULT_WORKSPACE_IMAGE)
 
 
-def _docker_client() -> object:
-    import docker
-
+def _docker_client() -> docker.DockerClient:
     return docker.from_env()
 
 

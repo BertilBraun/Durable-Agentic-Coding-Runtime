@@ -351,3 +351,5 @@ def _tool_from_call(tool_call: ImplementationToolCall) -> Tool:
             )
         case ToolName.GATHER_CONTEXT:
             raise AssertionError("gather_context must be dispatched before tool conversion")
+        case _:
+            raise AssertionError(f"Unhandled tool in _tool_from_call: {tool_call.tool_name}")

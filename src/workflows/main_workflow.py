@@ -27,7 +27,9 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
     await reset_llm_usage_summary()
 
     contract = await build_contract(task_request)
-    workspace_info = await create_workspace(run_id, task_request.repo_path)
+    workspace_info = await create_workspace(
+        run_id, task_request.repo_path, task_request.docker_image
+    )
     repo_index = await build_repo_index(workspace_info)
 
     plan = await build_plan(
@@ -101,6 +103,7 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
     )
     final_report = await build_final_report(
         FinalReportRequest(
+            patch=diff,
             contract=contract,
             plan=plan,
             worker_results=worker_results,

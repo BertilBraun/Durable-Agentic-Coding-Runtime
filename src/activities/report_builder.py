@@ -15,6 +15,7 @@ class FinalReport(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     status: str
+    patch: str
     contract: TaskContract
     plan: Plan
     worker_results: list[WorkerResult] = Field(default_factory=list)
@@ -26,6 +27,7 @@ class FinalReport(BaseModel):
 class FinalReportRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    patch: str
     contract: TaskContract
     plan: Plan
     worker_results: list[WorkerResult] = Field(default_factory=list)
@@ -38,6 +40,7 @@ class FinalReportRequest(BaseModel):
 async def build_final_report(request: FinalReportRequest) -> FinalReport:
     return FinalReport(
         status=request.final_verdict.verdict.value,
+        patch=request.patch,
         contract=request.contract,
         plan=request.plan,
         worker_results=request.worker_results,

@@ -11,6 +11,7 @@ from src.models.review import ReviewDecision, ReviewVerdict
 from src.models.task import TaskContract, TaskRequest, TaskType
 from src.models.worker import Confidence, WorkerResult, WorkerStatus
 from src.workflows.main_workflow import main_workflow
+from temporal_light.exceptions import WorkflowSuspended
 
 
 @pytest.mark.asyncio
@@ -61,7 +62,9 @@ async def test_main_workflow_replans_after_needs_replan(
     async def fake_build_contract(task_request: TaskRequest) -> TaskContract:
         return contract
 
-    async def fake_create_workspace(run_id: str, repo_path: str) -> WorkspaceInfo:
+    async def fake_create_workspace(
+        run_id: str, repo_path: str, docker_image: str | None = None
+    ) -> WorkspaceInfo:
         return workspace_info
 
     async def fake_build_repo_index(workspace: WorkspaceInfo) -> RepoIndex:
@@ -106,6 +109,7 @@ async def test_main_workflow_replans_after_needs_replan(
     async def fake_build_final_report(request: FinalReportRequest) -> FinalReport:
         return FinalReport(
             status="accept",
+            patch=request.patch,
             contract=request.contract,
             plan=request.plan,
             worker_results=request.worker_results,
@@ -158,6 +162,86 @@ async def test_main_workflow_replans_after_needs_replan(
     assert len(plan_requests[1].worker_results) == 1
     assert report["worker_results"][-1]["status"] == WorkerStatus.SUCCESS
     assert report["llm_usage"]["call_count"] == 3
+    assert report["patch"] == "diff --git a/generated.py b/generated.py"
+
+
+@pytest.mark.asyncio
+async def test_main_workflow_does_not_destroy_workspace_while_suspended_on_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destroyed_workspaces: list[WorkspaceInfo] = []
+    spawned_step_ids: list[str] = []
+    workspace_info = WorkspaceInfo(
+        run_id="run-1",
+        volume_name="volume",
+        worktree_path="workspace",
+        branch_name="branch",
+    )
+    contract = TaskContract(
+        task_type=TaskType.BUGFIX,
+        goal="Fix generated output",
+        acceptance_criteria=[],
+        non_goals=[],
+        affected_areas=[],
+        risk_areas=[],
+        tests_expected=[],
+        open_questions=[],
+    )
+
+    async def fake_reset_llm_usage_summary() -> None:
+        return None
+
+    async def fake_build_contract(task_request: TaskRequest) -> TaskContract:
+        return contract
+
+    async def fake_create_workspace(
+        run_id: str, repo_path: str, docker_image: str | None = None
+    ) -> WorkspaceInfo:
+        return workspace_info
+
+    async def fake_build_repo_index(workspace: WorkspaceInfo) -> RepoIndex:
+        return RepoIndex()
+
+    async def fake_build_plan(request: PlanRequest) -> Plan:
+        return _plan_with_step("step-1")
+
+    async def fake_assess_complexity(task_contract: TaskContract) -> ComplexityVerdict:
+        return ComplexityVerdict(requires_human_approval=False, reasoning="Narrow bugfix.")
+
+    async def fake_spawn_child(
+        workflow_name: str,
+        step: dict[str, object],
+        workspace: dict[str, object],
+        contract: dict[str, object],
+    ) -> str:
+        spawned_step_ids.append(str(step["id"]))
+        return "child-1"
+
+    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
+        raise WorkflowSuspended("Workflow waiting for child.")
+
+    async def fake_destroy_workspace(workspace: WorkspaceInfo) -> None:
+        destroyed_workspaces.append(workspace)
+
+    monkeypatch.setattr(
+        "src.workflows.main_workflow.reset_llm_usage_summary", fake_reset_llm_usage_summary
+    )
+    monkeypatch.setattr("src.workflows.main_workflow.build_contract", fake_build_contract)
+    monkeypatch.setattr("src.workflows.main_workflow.create_workspace", fake_create_workspace)
+    monkeypatch.setattr("src.workflows.main_workflow.build_repo_index", fake_build_repo_index)
+    monkeypatch.setattr("src.workflows.main_workflow.build_plan", fake_build_plan)
+    monkeypatch.setattr("src.workflows.main_workflow.assess_complexity", fake_assess_complexity)
+    monkeypatch.setattr("src.workflows.main_workflow.spawn_child", fake_spawn_child)
+    monkeypatch.setattr("src.workflows.main_workflow.wait_for_child", fake_wait_for_child)
+    monkeypatch.setattr("src.workflows.main_workflow.destroy_workspace", fake_destroy_workspace)
+
+    with pytest.raises(WorkflowSuspended, match=r"Workflow waiting for child\."):
+        await main_workflow(
+            {"raw_request": "fix generated output", "repo_path": "C:/repo", "run_id": "run-1"}
+        )
+
+    assert spawned_step_ids == ["step-1"]
+    assert destroyed_workspaces == []
 
 
 def _plan_with_step(step_id: str) -> Plan:

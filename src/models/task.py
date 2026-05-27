@@ -21,6 +21,7 @@ class TaskRequest(BaseModel):
     raw_request: str
     repo_path: str
     run_id: str | None = None
+    docker_image: str | None = None
 
 
 class TaskContract(BaseModel):
