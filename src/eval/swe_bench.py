@@ -71,8 +71,13 @@ async def run_evaluation(
     temporal_api_url: str,
     output_path: Path,
     limit: int,
+    supported_only: bool = False,
 ) -> EvaluationReport:
-    instances = _load_instances(instances_path)[:limit]
+    instances = _select_evaluation_instances(
+        instances=_load_instances(instances_path),
+        limit=limit,
+        supported_only=supported_only,
+    )
     task_results: list[EvaluationTaskResult] = []
     baseline_results: list[EvaluationTaskResult] = []
 
@@ -97,6 +102,21 @@ def _is_supported_instance(instance: SweBenchInstance) -> bool:
     if instance.language is None:
         return True
     return instance.language.lower() in SUPPORTED_LANGUAGES
+
+
+def _select_evaluation_instances(
+    instances: list[SweBenchInstance],
+    limit: int,
+    supported_only: bool,
+) -> list[SweBenchInstance]:
+    selected_instances: list[SweBenchInstance] = []
+    for instance in instances:
+        if supported_only and not _is_supported_instance(instance):
+            continue
+        selected_instances.append(instance)
+        if len(selected_instances) >= limit:
+            break
+    return selected_instances
 
 
 def _skipped_result(instance: SweBenchInstance, reason: str) -> EvaluationTaskResult:
@@ -219,6 +239,7 @@ def main() -> None:
     parser.add_argument("--temporal-api-url", required=True)
     parser.add_argument("--output", default="swe_bench_results.json")
     parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument("--five-task-subset", action="store_true")
     arguments = parser.parse_args()
     report = asyncio.run(
         run_evaluation(
@@ -226,6 +247,7 @@ def main() -> None:
             temporal_api_url=arguments.temporal_api_url,
             output_path=Path(arguments.output),
             limit=arguments.limit,
+            supported_only=arguments.five_task_subset,
         )
     )
     print(report.model_dump_json(indent=2))
