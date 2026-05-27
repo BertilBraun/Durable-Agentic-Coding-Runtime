@@ -1,14 +1,17 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 from src.activities.context_gatherer import (
+    ContextGathererToolCall,
     ContextGathererTurn,
     ContextGatherRequest,
+    _tool_from_call,
     gather_context,
 )
 from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceInfo
 from src.llm.client import Message
 from src.llm.config import ModelRole
 from src.models.repo import RepoIndex
+from src.tools.definitions import ToolName
 
 
 def test_context_gatherer_rejects_unknown_tool() -> None:
@@ -52,6 +55,18 @@ def test_context_gatherer_rejects_missing_required_payload_field() -> None:
                 ],
             }
         )
+
+
+def test_context_gatherer_tool_conversion_asserts_post_validation_missing_field() -> None:
+    tool_call = ContextGathererToolCall.model_construct(
+        tool_name=ToolName.SEARCH_TEXT,
+        pattern=None,
+        directory=".",
+        file_glob="*.py",
+    )
+
+    with pytest.raises(AssertionError, match="search_text pattern was not validated"):
+        _tool_from_call(tool_call)
 
 
 @pytest.mark.asyncio

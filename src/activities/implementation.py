@@ -252,45 +252,71 @@ def _require_tool_fields(tool_call: ImplementationToolCall, field_names: tuple[s
 def _tool_from_call(tool_call: ImplementationToolCall) -> Tool:
     match tool_call.tool_name:
         case ToolName.READ_FILE_RANGE:
+            assert tool_call.file_path is not None, "read_file_range file_path was not validated"
+            assert tool_call.start_line is not None, "read_file_range start_line was not validated"
+            assert tool_call.end_line is not None, "read_file_range end_line was not validated"
             return ReadFileRange(
-                file_path=tool_call.file_path or ".",
-                start_line=tool_call.start_line or 1,
-                end_line=tool_call.end_line or 200,
+                file_path=tool_call.file_path,
+                start_line=tool_call.start_line,
+                end_line=tool_call.end_line,
             )
         case ToolName.SEARCH_TEXT:
+            assert tool_call.pattern is not None, "search_text pattern was not validated"
+            assert tool_call.directory is not None, "search_text directory was not validated"
+            assert tool_call.file_glob is not None, "search_text file_glob was not validated"
             return SearchText(
-                pattern=tool_call.pattern or "",
-                directory=tool_call.directory or ".",
-                file_glob=tool_call.file_glob or "*",
+                pattern=tool_call.pattern,
+                directory=tool_call.directory,
+                file_glob=tool_call.file_glob,
             )
         case ToolName.WRITE_FILE:
-            return WriteFile(file_path=tool_call.file_path or "", content=tool_call.content or "")
+            assert tool_call.file_path is not None, "write_file file_path was not validated"
+            assert tool_call.content is not None, "write_file content was not validated"
+            return WriteFile(file_path=tool_call.file_path, content=tool_call.content)
         case ToolName.APPLY_PATCH:
-            return ApplyPatch(patch=tool_call.patch or "")
+            assert tool_call.patch is not None, "apply_patch patch was not validated"
+            return ApplyPatch(patch=tool_call.patch)
         case ToolName.GIT_DIFF:
-            return GitDiff(path=tool_call.path or ".")
+            assert tool_call.path is not None, "git_diff path was not validated"
+            return GitDiff(path=tool_call.path)
         case ToolName.GIT_STATUS:
-            return GitStatus(path=tool_call.path or ".")
+            assert tool_call.path is not None, "git_status path was not validated"
+            return GitStatus(path=tool_call.path)
         case ToolName.GIT_COMMIT:
-            return GitCommit(message=tool_call.message or "agentic coding change")
+            assert tool_call.message is not None, "git_commit message was not validated"
+            return GitCommit(message=tool_call.message)
         case ToolName.RUN_TESTS:
+            assert tool_call.command is not None, "run_tests command was not validated"
+            assert tool_call.timeout_seconds is not None, (
+                "run_tests timeout_seconds was not validated"
+            )
             return RunTests(
-                command=tool_call.command or "",
-                timeout_seconds=tool_call.timeout_seconds or 300,
+                command=tool_call.command,
+                timeout_seconds=tool_call.timeout_seconds,
             )
         case ToolName.RUN_LINT:
-            return RunLint(path=tool_call.path or ".")
+            assert tool_call.path is not None, "run_lint path was not validated"
+            return RunLint(path=tool_call.path)
         case ToolName.RUN_TYPECHECK:
-            return RunTypecheck(path=tool_call.path or ".")
+            assert tool_call.path is not None, "run_typecheck path was not validated"
+            return RunTypecheck(path=tool_call.path)
         case ToolName.FIND_SYMBOL:
+            symbol_name = tool_call.name if tool_call.name is not None else tool_call.symbol_name
+            assert symbol_name is not None, "find_symbol name was not validated"
+            assert tool_call.language is not None, "find_symbol language was not validated"
             return FindSymbol(
-                name=tool_call.name or tool_call.symbol_name or "",
-                language=tool_call.language or "",
+                name=symbol_name,
+                language=tool_call.language,
             )
         case ToolName.FIND_REFERENCES:
+            symbol_name = (
+                tool_call.symbol_name if tool_call.symbol_name is not None else tool_call.name
+            )
+            assert symbol_name is not None, "find_references symbol_name was not validated"
+            assert tool_call.file_path is not None, "find_references file_path was not validated"
             return FindReferences(
-                symbol_name=tool_call.symbol_name or tool_call.name or "",
-                file_path=tool_call.file_path or ".",
+                symbol_name=symbol_name,
+                file_path=tool_call.file_path,
             )
         case ToolName.GATHER_CONTEXT:
             raise AssertionError("gather_context must be dispatched before tool conversion")

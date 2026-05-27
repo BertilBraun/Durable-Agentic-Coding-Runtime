@@ -5,6 +5,7 @@ from src.activities.implementation import (
     ImplementationAgentTurn,
     ImplementationToolCall,
     ImplementationTurnRequest,
+    _tool_from_call,
     run_implementation_turn,
 )
 from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceInfo
@@ -194,6 +195,18 @@ def test_implementation_tool_call_rejects_missing_required_payload_field() -> No
                 ],
             }
         )
+
+
+def test_implementation_tool_conversion_asserts_post_validation_missing_field() -> None:
+    tool_call = ImplementationToolCall.model_construct(
+        tool_name=ToolName.READ_FILE_RANGE,
+        file_path=None,
+        start_line=1,
+        end_line=5,
+    )
+
+    with pytest.raises(AssertionError, match="read_file_range file_path was not validated"):
+        _tool_from_call(tool_call)
 
 
 @pytest.mark.asyncio

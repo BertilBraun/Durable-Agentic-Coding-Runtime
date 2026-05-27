@@ -130,22 +130,35 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
 def _tool_from_call(tool_call: ContextGathererToolCall) -> Tool:
     match tool_call.tool_name:
         case ToolName.READ_FILE_RANGE:
+            assert tool_call.file_path is not None, "read_file_range file_path was not validated"
+            assert tool_call.start_line is not None, "read_file_range start_line was not validated"
+            assert tool_call.end_line is not None, "read_file_range end_line was not validated"
             return ReadFileRange(
-                file_path=tool_call.file_path or ".",
-                start_line=tool_call.start_line or 1,
-                end_line=tool_call.end_line or 200,
+                file_path=tool_call.file_path,
+                start_line=tool_call.start_line,
+                end_line=tool_call.end_line,
             )
         case ToolName.SEARCH_TEXT:
+            assert tool_call.pattern is not None, "search_text pattern was not validated"
+            assert tool_call.directory is not None, "search_text directory was not validated"
+            assert tool_call.file_glob is not None, "search_text file_glob was not validated"
             return SearchText(
-                pattern=tool_call.pattern or "",
-                directory=tool_call.directory or ".",
-                file_glob=tool_call.file_glob or "*",
+                pattern=tool_call.pattern,
+                directory=tool_call.directory,
+                file_glob=tool_call.file_glob,
             )
         case ToolName.FIND_SYMBOL:
-            return FindSymbol(name=tool_call.symbol_name or "", language=tool_call.language or "")
+            assert tool_call.symbol_name is not None, "find_symbol symbol_name was not validated"
+            assert tool_call.language is not None, "find_symbol language was not validated"
+            return FindSymbol(name=tool_call.symbol_name, language=tool_call.language)
         case ToolName.FIND_REFERENCES:
+            assert tool_call.symbol_name is not None, (
+                "find_references symbol_name was not validated"
+            )
+            assert tool_call.file_path is not None, "find_references file_path was not validated"
             return FindReferences(
-                symbol_name=tool_call.symbol_name or "", file_path=tool_call.file_path or "."
+                symbol_name=tool_call.symbol_name,
+                file_path=tool_call.file_path,
             )
 
 
