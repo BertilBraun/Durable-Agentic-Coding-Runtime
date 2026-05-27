@@ -220,7 +220,7 @@ def _worker_result_with_evidence(
         return worker_result
     tests_run = list(dict.fromkeys([*worker_result.tests_run, *evidence.tests_run]))
     test_results = [*worker_result.test_results, *evidence.test_results]
-    has_diff_evidence = evidence.saw_diff or bool(worker_result.diff_summary.strip())
+    has_diff_evidence = evidence.saw_diff
     if not has_diff_evidence and not test_results:
         return failed_worker_result("success result missing diff or test evidence")
     return worker_result.model_copy(

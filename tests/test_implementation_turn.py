@@ -49,14 +49,14 @@ class FakeImplementationClient:
             {
                 "done": True,
                 "worker_result": {
-                    "status": "success",
-                    "patch_id": "patch-1",
+                    "status": "blocked",
+                    "patch_id": None,
                     "diff_summary": "Read target file.",
                     "tests_run": [],
                     "test_results": [],
                     "discovered_issues": [],
-                    "confidence": "high",
-                    "replan_suggestion": None,
+                    "confidence": "low",
+                    "replan_suggestion": "Need an edit or test to complete the step.",
                 },
             }
         )
@@ -75,8 +75,8 @@ async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.Monke
 
     worker_result = await run_implementation_turn(_implementation_request())
 
-    assert worker_result.status == WorkerStatus.SUCCESS
-    assert worker_result.confidence == Confidence.HIGH
+    assert worker_result.status == WorkerStatus.BLOCKED
+    assert worker_result.confidence == Confidence.LOW
     assert tool_names == ["ReadFileRange"]
 
 
@@ -342,6 +342,41 @@ async def test_implementation_turn_rejects_success_without_diff_or_test_evidence
             )
 
     monkeypatch.setattr("src.activities.implementation.LLMClient", FakeUnsupportedSuccessClient)
+
+    worker_result = await run_implementation_turn(_implementation_request())
+
+    assert worker_result.status == WorkerStatus.FAILED
+    assert worker_result.discovered_issues == ["success result missing diff or test evidence"]
+
+
+@pytest.mark.asyncio
+async def test_implementation_turn_rejects_success_with_only_diff_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeNarrativeDiffClient:
+        async def generate_structured(
+            self,
+            role: ModelRole,
+            messages: list[Message],
+            output_type: type[BaseModel],
+        ) -> BaseModel:
+            return output_type.model_validate(
+                {
+                    "done": True,
+                    "worker_result": {
+                        "status": "success",
+                        "patch_id": "patch-1",
+                        "diff_summary": "No changes were needed.",
+                        "tests_run": [],
+                        "test_results": [],
+                        "discovered_issues": [],
+                        "confidence": "high",
+                        "replan_suggestion": None,
+                    },
+                }
+            )
+
+    monkeypatch.setattr("src.activities.implementation.LLMClient", FakeNarrativeDiffClient)
 
     worker_result = await run_implementation_turn(_implementation_request())
 
