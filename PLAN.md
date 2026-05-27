@@ -1407,3 +1407,192 @@ See `CODING_STANDARDS.md`. Summary:
 - No abbreviations in names.
 - `ruff format` + `ruff check` clean before every commit.
 - Python 3.10+.
+
+---
+
+## 22. Current Implementation Status and Next Plan
+
+This section is the current execution checkpoint for continuing implementation. It complements the architecture in Section 21.
+
+### 22.1 Current Git State
+
+Latest commits:
+
+```text
+01dc851 Add auto-reloading for agent worker in development
+438368a Add Temporal workflow smoke runner
+944372d Add deterministic LLM smoke mode
+07c742b Require tree-sitter for repo indexing
+9f2b2dc Initial durable agent runtime scaffold
+```
+
+The `Temporal-Light` dependency is tracked as a Git submodule via `.gitmodules`.
+
+### 22.2 Implemented
+
+Project scaffold and packaging:
+
+- `pyproject.toml` with Python 3.10+ dependencies.
+- `Dockerfile`, `workspace.Dockerfile`, `docker-compose.yml`, and `docker-compose.override.yml`.
+- `.gitignore`, `.dockerignore`, `.env.example`.
+- Agent worker code auto-reloads in development through `docker-compose.override.yml`.
+
+Data contracts:
+
+- Frozen Pydantic models under `src/models/` for tasks, plans, repository indexes, context packs, worker results, reviews, and approval signals.
+- Python 3.10-compatible `StrEnum` base in `src/runtime_enums.py`.
+
+LLM layer:
+
+- `src/llm/config.py` defines `ModelRole` and env-based model routing.
+- `src/llm/client.py` centralizes all OpenAI-compatible calls.
+- Structured output parsing and usage ledger are implemented.
+- `LLM_FAKE_MODE=1` provides deterministic structured responses for smoke workflows only.
+
+Tools and workspace:
+
+- Typed tool dataclasses in `src/tools/definitions.py`.
+- Command conversion in `src/tools/handlers.py`.
+- Docker-backed `WorkspaceManager` in `src/activities/workspace_manager.py`.
+- Each tool invocation runs in a fresh workspace container.
+- `RunTests.timeout_seconds` is passed to Docker wait.
+- `GitCommit` stages new files before commit.
+
+Repository indexing:
+
+- `src/activities/repo_indexer.py` uses tree-sitter as a required dependency.
+- Python and JavaScript/TypeScript/TSX/JSX file indexing are implemented.
+- Top-level Python classes/functions and JS/TS declarations/arrow exports are indexed.
+- Non-tree-sitter fallback parsing was removed intentionally.
+
+Activities:
+
+- Contract builder, complexity assessor, planner, context gatherer, implementation turn, reviewer, report builder, human plan presentation, tool executor, and workspace manager activities exist.
+- Activity wrapper serializes Pydantic/dataclass arguments and return values to JSON-safe Temporal-Light event payloads while preserving typed values in workflow code.
+
+Workflows:
+
+- `main_workflow` runs contract -> workspace -> repo index -> plan -> optional human approval -> child implementation workflows -> final diff -> review -> final report -> destroy workspace.
+- `implementation_workflow` gathers context, runs bounded implementation turns, and returns `WorkerResult`.
+- Child workflow integration uses Temporal-Light `spawn_child` and `wait_for_child`.
+
+Evaluation and smoke tooling:
+
+- `src/eval/smoke_workflow.py` runs a deterministic live Temporal-Light smoke workflow with `LLM_FAKE_MODE=1`.
+- `src/eval/swe_bench.py` is scaffolded but not yet a complete SWE-bench Verified oracle runner.
+
+Verified so far:
+
+- `python -m ruff check src tests`
+- `python -m pytest -q`
+- Docker workspace integration test with `RUN_DOCKER_TESTS=1`.
+- `docker build -t durable-agentic-worker:latest .`
+- `docker run --rm durable-agentic-worker:latest python -m ruff check /app/src`
+- Live Temporal-Light smoke workflow completed through `src/eval/smoke_workflow.py`.
+
+### 22.3 Known Gaps
+
+The runtime is not yet solving real coding tasks with a real LLM. The current smoke test is deterministic and no-op by design.
+
+High-priority gaps:
+
+- Implementation agent tool calls are structurally typed but still use free-form `tool_name: str`; convert this to `ToolName` and typed argument models.
+- Tool command execution lacks full path safety and command safety validation.
+- `FindSymbol` and `FindReferences` still use command-line text search rather than the in-memory `RepoIndex`.
+- `ContextGatherer` does not yet robustly use indexed symbols and references.
+- Worker result test evidence is not connected to actual `RunTests` outputs.
+- Final report does not include LLM usage ledger, artifact references, patch path, or full evidence summary.
+- Artifacts are modeled but large stdout/stderr/diffs are not yet written to `/artifacts`.
+- Human approval plan presentation writes a JSON file, but there is no ergonomic CLI/helper for sending approval signals.
+- `destroy_workspace` runs only on normal workflow completion; failure cleanup needs a recovery path.
+- Workspace creation uses a cloned working copy, not a true Git worktree from the source repository.
+- Agent worker compose env still includes `TEMPORAL_API_URL`, but the current worker uses `TEMPORAL_DATABASE_URL` because Temporal-Light workers connect to Postgres directly.
+- `swe_bench.py` does not yet pull official SWE-bench images, apply generated patches, run `FAIL_TO_PASS` / `PASS_TO_PASS`, or record real resolved metrics.
+
+### 22.4 Next Implementation Plan
+
+Work in small commits. Keep `ruff format`, `ruff check`, and focused tests green before each commit.
+
+1. Harden tool schemas and dispatch.
+
+   - Replace implementation/context gatherer `tool_name: str` with `ToolName`.
+   - Add typed Pydantic tool-call models for each tool-call payload that crosses LLM/activity boundaries.
+   - Validate paths are workspace-relative and cannot escape the workspace.
+   - Add tests for invalid absolute paths, parent traversal, unknown tools, and timeout propagation.
+
+2. Make symbol tools use `RepoIndex`.
+
+   - Add a typed `ToolExecutionRequest` containing `WorkspaceInfo`, optional `RepoIndex`, and tool.
+   - Implement `FindSymbol` and `FindReferences` using the indexed repository data where possible.
+   - Keep text search only where references genuinely require scanning file contents.
+   - Add focused tests for Python and TSX symbols and references.
+
+3. Store artifacts for large outputs.
+
+   - Add an artifact writer activity/helper that writes large stdout/stderr/diff/test logs to `/artifacts/<run_id>/...`.
+   - Return compact `ArtifactReference` values in tool/test/review outputs.
+   - Truncate event-log payloads deterministically.
+   - Add tests that large command output creates an artifact reference.
+
+4. Improve implementation evidence.
+
+   - Convert `RunTests` outputs into `TestResult` entries.
+   - Require successful implementation turns to include at least diff/test evidence unless the plan step explicitly has no code changes.
+   - Run step-level review inside `implementation_workflow` before returning success.
+   - Add fake-mode and unit tests for success, failed test, blocked, and needs-replan paths.
+
+5. Make final report useful.
+
+   - Include full diff summary, changed files, tests run, review verdict, artifact references, LLM usage totals, and workspace/branch metadata.
+   - Persist patch/diff artifact to `/artifacts`.
+   - Add a test for final report content.
+
+6. Upgrade the smoke test from no-op to real patch.
+
+   - Extend fake mode so the implementation worker writes a tiny patch to the smoke repository and runs a test.
+   - Smoke workflow should verify a changed diff and test result, not just workflow completion.
+   - Keep the current no-op smoke path only if useful as a fast sanity check.
+
+7. Continue SWE-bench harness.
+
+   - Define typed SWE-bench instance/result/oracle models.
+   - Implement official image pull/start, patch extraction/application, oracle command execution, baseline execution, JSON report writing.
+   - Add a five-task filtered subset mode.
+
+### 22.5 Commands for Next Session
+
+Start or verify Temporal-Light:
+
+```powershell
+$env:POSTGRES_USER='tl'
+$env:POSTGRES_PASSWORD='changeme'
+$env:API_PORT='8080'
+docker compose -f Temporal-Light\docker-compose.yml -f Temporal-Light\docker-compose.override.yml up -d postgres migrate api
+Invoke-WebRequest -UseBasicParsing http://localhost:8080/workflows
+```
+
+Build workspace and worker images:
+
+```powershell
+docker build -f workspace.Dockerfile -t durable-agentic-workspace:latest .
+docker build -t durable-agentic-worker:latest .
+```
+
+Run local verification:
+
+```powershell
+python -m ruff format src tests
+python -m ruff check src tests
+python -m pytest -q
+$env:RUN_DOCKER_TESTS='1'; python -m pytest tests/test_workspace_manager_integration.py -q
+python -m src.eval.smoke_workflow --temporal-api-url http://localhost:8080 --temporal-database-url postgresql://tl:changeme@localhost:5432/temporal_light --workspace-image durable-agentic-workspace:latest --timeout-seconds 120
+```
+
+Run agent worker via compose with auto-reload:
+
+```powershell
+$env:TEMPORAL_DATABASE_URL='postgresql://tl:changeme@host.docker.internal:5432/temporal_light'
+$env:TEMPORAL_API_URL='http://host.docker.internal:8080'
+$env:WORKSPACE_IMAGE='durable-agentic-workspace:latest'
+docker compose up --build agent-worker
+```
