@@ -27,6 +27,12 @@ class FakeContainer:
         self.removed = force
 
 
+class WaitFailingContainer(FakeContainer):
+    def wait(self, timeout: int | None = None) -> dict[str, int]:
+        self.timeout_seconds = timeout
+        raise TimeoutError("container timed out")
+
+
 class FakeContainers:
     def __init__(self, container: FakeContainer) -> None:
         self.container = container
@@ -61,6 +67,33 @@ async def test_run_tool_applies_tool_timeout(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     assert result.exit_code == 0
+    assert container.timeout_seconds == 17
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
+async def test_run_tool_removes_container_when_wait_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container = WaitFailingContainer()
+    monkeypatch.setattr(
+        "src.activities.workspace_manager._docker_client",
+        lambda: FakeDockerClient(container),
+    )
+
+    with pytest.raises(TimeoutError, match="container timed out"):
+        await run_tool(
+            ToolExecutionRequest(
+                workspace_info=WorkspaceInfo(
+                    run_id="run-1",
+                    volume_name="volume",
+                    worktree_path="workspace",
+                    branch_name="branch",
+                ),
+                tool=RunTests(command="pytest", timeout_seconds=17),
+            ),
+        )
+
     assert container.timeout_seconds == 17
     assert container.removed is True
 

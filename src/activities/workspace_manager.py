@@ -174,10 +174,12 @@ async def run_tool(request: ToolExecutionRequest) -> ToolResult:
             }
         },
     )
-    wait_result = container.wait(timeout=_tool_timeout_seconds(request.tool))
-    stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-    stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
-    container.remove(force=True)
+    try:
+        wait_result = container.wait(timeout=_tool_timeout_seconds(request.tool))
+        stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
+        stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+    finally:
+        container.remove(force=True)
     stdout_reference = _write_large_output_artifact(
         request=request,
         stream_name="stdout",
