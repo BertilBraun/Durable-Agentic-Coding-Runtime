@@ -69,6 +69,7 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
             step=plan_step.model_dump(mode="json"),
             workspace=workspace_info.model_dump(mode="json"),
             contract=contract.model_dump(mode="json"),
+            repo_index=repo_index.model_dump(mode="json"),
         )
         child_result = await wait_for_child(child_id)
         worker_result = WorkerResult.model_validate(child_result)

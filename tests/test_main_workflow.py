@@ -84,7 +84,9 @@ async def test_main_workflow_replans_after_needs_replan(
         step: dict[str, object],
         workspace: dict[str, object],
         contract: dict[str, object],
+        repo_index: dict[str, object],
     ) -> str:
+        assert repo_index == RepoIndex().model_dump(mode="json")
         spawned_step_ids.append(str(step["id"]))
         return f"child-{len(spawned_step_ids)}"
 
@@ -213,7 +215,9 @@ async def test_main_workflow_does_not_destroy_workspace_while_suspended_on_child
         step: dict[str, object],
         workspace: dict[str, object],
         contract: dict[str, object],
+        repo_index: dict[str, object],
     ) -> str:
+        assert repo_index == RepoIndex().model_dump(mode="json")
         spawned_step_ids.append(str(step["id"]))
         return "child-1"
 

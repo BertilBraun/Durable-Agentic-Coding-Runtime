@@ -14,9 +14,6 @@ async def test_implementation_workflow_reviews_successful_step(
 ) -> None:
     review_requests: list[object] = []
 
-    async def fake_build_repo_index(workspace_info: object) -> RepoIndex:
-        return RepoIndex()
-
     async def fake_gather_context(request: object) -> ContextPack:
         return ContextPack(
             task_summary="Implement behavior",
@@ -55,9 +52,6 @@ async def test_implementation_workflow_reviews_successful_step(
             recommended_next_action="accept",
         )
 
-    monkeypatch.setattr(
-        "src.workflows.implementation_workflow.build_repo_index", fake_build_repo_index
-    )
     monkeypatch.setattr("src.workflows.implementation_workflow.gather_context", fake_gather_context)
     monkeypatch.setattr(
         "src.workflows.implementation_workflow.run_implementation_turn",
@@ -70,6 +64,7 @@ async def test_implementation_workflow_reviews_successful_step(
         step=_plan_step().model_dump(mode="json"),
         workspace=_workspace(),
         contract=_task_contract().model_dump(mode="json"),
+        repo_index=RepoIndex().model_dump(mode="json"),
     )
 
     assert result["status"] == WorkerStatus.SUCCESS
@@ -80,9 +75,6 @@ async def test_implementation_workflow_reviews_successful_step(
 async def test_implementation_workflow_fails_successful_step_rejected_by_review(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_build_repo_index(workspace_info: object) -> RepoIndex:
-        return RepoIndex()
-
     async def fake_gather_context(request: object) -> ContextPack:
         return ContextPack(
             task_summary="Implement behavior",
@@ -120,9 +112,6 @@ async def test_implementation_workflow_fails_successful_step_rejected_by_review(
             recommended_next_action="revise",
         )
 
-    monkeypatch.setattr(
-        "src.workflows.implementation_workflow.build_repo_index", fake_build_repo_index
-    )
     monkeypatch.setattr("src.workflows.implementation_workflow.gather_context", fake_gather_context)
     monkeypatch.setattr(
         "src.workflows.implementation_workflow.run_implementation_turn",
@@ -135,6 +124,7 @@ async def test_implementation_workflow_fails_successful_step_rejected_by_review(
         step=_plan_step().model_dump(mode="json"),
         workspace=_workspace(),
         contract=_task_contract().model_dump(mode="json"),
+        repo_index=RepoIndex().model_dump(mode="json"),
     )
 
     assert result["status"] == WorkerStatus.FAILED
@@ -146,9 +136,6 @@ async def test_implementation_workflow_returns_blocked_result_immediately(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     turn_calls = 0
-
-    async def fake_build_repo_index(workspace_info: object) -> RepoIndex:
-        return RepoIndex()
 
     async def fake_gather_context(request: object) -> ContextPack:
         return ContextPack(
@@ -177,9 +164,6 @@ async def test_implementation_workflow_returns_blocked_result_immediately(
     async def fake_review_patch(request: object) -> ReviewVerdict:
         raise AssertionError("blocked worker results should not be reviewed as successes")
 
-    monkeypatch.setattr(
-        "src.workflows.implementation_workflow.build_repo_index", fake_build_repo_index
-    )
     monkeypatch.setattr("src.workflows.implementation_workflow.gather_context", fake_gather_context)
     monkeypatch.setattr(
         "src.workflows.implementation_workflow.run_implementation_turn",
@@ -191,6 +175,7 @@ async def test_implementation_workflow_returns_blocked_result_immediately(
         step=_plan_step().model_dump(mode="json"),
         workspace=_workspace(),
         contract=_task_contract().model_dump(mode="json"),
+        repo_index=RepoIndex().model_dump(mode="json"),
     )
 
     assert turn_calls == 1

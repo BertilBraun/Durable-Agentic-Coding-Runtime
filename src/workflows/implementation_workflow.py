@@ -9,10 +9,10 @@ from src.activities.implementation import (
     get_full_diff,
     run_implementation_turn,
 )
-from src.activities.repo_indexer import build_repo_index
 from src.activities.reviewer import ReviewRequest, review_patch
 from src.activities.workspace_manager import WorkspaceInfo
 from src.models.plan import PlanStep
+from src.models.repo import RepoIndex
 from src.models.review import ReviewDecision, ReviewVerdict
 from src.models.task import TaskContract
 from src.models.worker import WorkerResult, WorkerStatus
@@ -24,15 +24,16 @@ async def implementation_workflow(
     step: dict[str, object],
     workspace: dict[str, object],
     contract: dict[str, object],
+    repo_index: dict[str, object],
 ) -> dict[str, object]:
     plan_step = PlanStep.model_validate(step)
     workspace_info = WorkspaceInfo.model_validate(workspace)
     task_contract = TaskContract.model_validate(contract)
-    repo_index = await build_repo_index(workspace_info)
+    repository_index = RepoIndex.model_validate(repo_index)
     context_pack = await gather_context(
         ContextGatherRequest(
             workspace_info=workspace_info,
-            repo_index=repo_index,
+            repo_index=repository_index,
             gatherer_prompt=plan_step.goal,
         ),
     )
@@ -45,7 +46,7 @@ async def implementation_workflow(
                 context_pack=context_pack,
                 task_contract=task_contract,
                 workspace_info=workspace_info,
-                repo_index=repo_index,
+                repo_index=repository_index,
             ),
         )
         if worker_result.status == WorkerStatus.SUCCESS:
