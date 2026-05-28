@@ -15,7 +15,7 @@ from src.models.plan import PlanStep
 from src.models.repo import RepoIndex
 from src.models.review import ReviewDecision, ReviewVerdict
 from src.models.task import TaskContract
-from src.models.worker import WorkerResult, WorkerStatus
+from src.models.worker import Confidence, WorkerResult, WorkerStatus
 from src.workflows.temporal import workflow
 
 
@@ -94,6 +94,18 @@ def _worker_result_from_review(
     match review_verdict.verdict:
         case ReviewDecision.ACCEPT:
             return worker_result
-        case ReviewDecision.REVISE | ReviewDecision.REJECT | ReviewDecision.NEEDS_HUMAN:
+        case ReviewDecision.REVISE:
+            issues = review_verdict.blocking_issues or [review_verdict.recommended_next_action]
+            return WorkerResult(
+                status=WorkerStatus.NEEDS_REPLAN,
+                patch_id=worker_result.patch_id,
+                diff_summary=worker_result.diff_summary,
+                tests_run=worker_result.tests_run,
+                test_results=worker_result.test_results,
+                discovered_issues=issues,
+                confidence=Confidence.LOW,
+                replan_suggestion="; ".join(issues),
+            )
+        case ReviewDecision.REJECT | ReviewDecision.NEEDS_HUMAN:
             issues = review_verdict.blocking_issues or [review_verdict.recommended_next_action]
             return failed_worker_result("; ".join(issues))

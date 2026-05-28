@@ -5,7 +5,10 @@ from src.models.repo import RepoIndex
 from src.models.review import ReviewDecision, ReviewVerdict
 from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerResult, WorkerStatus
-from src.workflows.implementation_workflow import implementation_workflow
+from src.workflows.implementation_workflow import (
+    _worker_result_from_review,
+    implementation_workflow,
+)
 
 
 @pytest.mark.asyncio
@@ -181,6 +184,34 @@ async def test_implementation_workflow_returns_blocked_result_immediately(
     assert turn_calls == 1
     assert result["status"] == WorkerStatus.BLOCKED
     assert result["replan_suggestion"] == "Split the step."
+
+
+def test_revise_review_verdict_requests_replan_with_blocking_feedback() -> None:
+    worker_result = WorkerResult(
+        status=WorkerStatus.SUCCESS,
+        patch_id="patch-1",
+        diff_summary="Changed behavior.",
+        tests_run=[],
+        test_results=[],
+        discovered_issues=[],
+        confidence=Confidence.HIGH,
+        replan_suggestion=None,
+    )
+    review_verdict = ReviewVerdict(
+        verdict=ReviewDecision.REVISE,
+        blocking_issues=["missing regression test", "update generated fixture"],
+        non_blocking_issues=[],
+        evidence=[],
+        missing_tests=["regression test"],
+        regression_risks=[],
+        minimality_assessment="incomplete",
+        recommended_next_action="revise patch",
+    )
+
+    result = _worker_result_from_review(worker_result, review_verdict)
+
+    assert result.status == WorkerStatus.NEEDS_REPLAN
+    assert result.replan_suggestion == "missing regression test; update generated fixture"
 
 
 def _plan_step() -> PlanStep:
