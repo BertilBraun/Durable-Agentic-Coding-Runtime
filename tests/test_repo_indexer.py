@@ -64,3 +64,10 @@ async def test_repo_indexer_finds_javascript_exported_symbols(tmp_path: Path) ->
 def test_repo_indexer_has_no_non_tree_sitter_symbol_fallbacks() -> None:
     assert not hasattr(repo_indexer, "_python_symbols")
     assert not hasattr(repo_indexer, "_javascript_family_symbols")
+
+
+def test_build_repo_index_is_durable_activity() -> None:
+    assert getattr(build_repo_index, "__is_activity__", False) is True
+    activity_policy = build_repo_index.__activity_policy__
+    assert activity_policy.max_retries == 1
+    assert activity_policy.timeout_seconds == 120

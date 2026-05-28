@@ -7,6 +7,7 @@ import tree_sitter_python
 from tree_sitter import Language as TreeSitterLanguage
 from tree_sitter import Node, Parser
 
+from src.activities.temporal import durable_activity
 from src.activities.workspace_manager import WorkspaceInfo
 from src.models.repo import FileEntry, Language, RepoIndex, Symbol, SymbolKind
 
@@ -25,6 +26,7 @@ SKIPPED_DIRECTORY_NAMES = frozenset(
 )
 
 
+@durable_activity(retries=1, timeout=120)
 async def build_repo_index(workspace_info: WorkspaceInfo) -> RepoIndex:
     workspace_path = Path(workspace_info.worktree_path)
     file_entries: list[FileEntry] = []
