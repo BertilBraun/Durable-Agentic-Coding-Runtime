@@ -331,7 +331,9 @@ def _write_large_output_artifact(
 ) -> ArtifactReference | None:
     if len(output) <= MAX_OUTPUT_CHARACTERS:
         return None
-    artifact_path = Path(_artifacts_root()) / request.workspace_info.run_id / f"{stream_name}.log"
+    tool_name = tool_definition_for_tool(request.tool).name.value
+    artifact_filename = f"{tool_name}-{uuid.uuid4()}-{stream_name}.log"
+    artifact_path = Path(_artifacts_root()) / request.workspace_info.run_id / artifact_filename
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_text(output, encoding="utf-8")
     return ArtifactReference(

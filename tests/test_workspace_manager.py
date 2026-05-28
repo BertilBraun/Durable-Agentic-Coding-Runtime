@@ -46,6 +46,19 @@ class FakeDockerClient:
         self.containers = FakeContainers(container)
 
 
+class CyclingContainers:
+    def __init__(self, containers: list[FakeContainer]) -> None:
+        self.containers = containers
+
+    def run(self, **keyword_arguments: object) -> FakeContainer:
+        return self.containers.pop(0)
+
+
+class CyclingDockerClient:
+    def __init__(self, containers: list[FakeContainer]) -> None:
+        self.containers = CyclingContainers(containers)
+
+
 @pytest.mark.asyncio
 async def test_run_tool_applies_tool_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     container = FakeContainer()
@@ -127,8 +140,11 @@ async def test_run_tool_writes_large_stdout_to_artifact(
     assert len(result.artifacts) == 1
     artifact_reference = result.artifacts[0]
     assert artifact_reference.kind == ArtifactKind.TEST_OUTPUT
-    assert artifact_reference.path.endswith("/artifacts/run-large/stdout.log")
-    assert Path(artifact_reference.path).read_text(encoding="utf-8") == "x" * 20_001
+    artifact_path = Path(artifact_reference.path)
+    assert artifact_path.parent.name == "run-large"
+    assert artifact_path.name.startswith("run_tests-")
+    assert artifact_path.name.endswith("-stdout.log")
+    assert artifact_path.read_text(encoding="utf-8") == "x" * 20_001
 
 
 @pytest.mark.asyncio
@@ -160,8 +176,52 @@ async def test_run_tool_writes_large_stderr_to_artifact(
     assert len(result.artifacts) == 1
     artifact_reference = result.artifacts[0]
     assert artifact_reference.kind == ArtifactKind.LOG
-    assert artifact_reference.path.endswith("/artifacts/run-large/stderr.log")
-    assert Path(artifact_reference.path).read_text(encoding="utf-8") == "e" * 20_001
+    artifact_path = Path(artifact_reference.path)
+    assert artifact_path.parent.name == "run-large"
+    assert artifact_path.name.startswith("git_status-")
+    assert artifact_path.name.endswith("-stderr.log")
+    assert artifact_path.read_text(encoding="utf-8") == "e" * 20_001
+
+
+@pytest.mark.asyncio
+async def test_run_tool_large_output_artifacts_do_not_collide_within_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    containers = [
+        FakeContainer(stdout=b"a" * 20_001),
+        FakeContainer(stdout=b"b" * 20_001),
+    ]
+    monkeypatch.setenv("ARTIFACTS_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setattr(
+        "src.activities.workspace_manager._docker_client",
+        lambda: CyclingDockerClient(containers),
+    )
+    workspace_info = WorkspaceInfo(
+        run_id="run-large",
+        volume_name="volume",
+        worktree_path="workspace",
+        branch_name="branch",
+    )
+
+    first_result = await run_tool(
+        ToolExecutionRequest(
+            workspace_info=workspace_info,
+            tool=RunTests(command="pytest tests/test_a.py", timeout_seconds=17),
+        ),
+    )
+    second_result = await run_tool(
+        ToolExecutionRequest(
+            workspace_info=workspace_info,
+            tool=RunTests(command="pytest tests/test_b.py", timeout_seconds=17),
+        ),
+    )
+
+    first_path = Path(first_result.artifacts[0].path)
+    second_path = Path(second_result.artifacts[0].path)
+    assert first_path != second_path
+    assert first_path.read_text(encoding="utf-8") == "a" * 20_001
+    assert second_path.read_text(encoding="utf-8") == "b" * 20_001
 
 
 def test_tool_execution_request_preserves_tool_type_after_json_round_trip() -> None:
