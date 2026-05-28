@@ -63,8 +63,7 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
     worker_results: list[WorkerResult] = []
     pending_plan_steps = plan.steps
     while pending_plan_steps:
-        plan_step = pending_plan_steps[0]
-        pending_plan_steps = pending_plan_steps[1:]
+        plan_step = pending_plan_steps.pop(0)
         child_id = await spawn_child(
             "implementation_workflow",
             step=plan_step.model_dump(mode="json"),

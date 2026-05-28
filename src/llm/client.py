@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import ClassVar, Generic, Literal, Protocol, TypeVar
+from typing import ClassVar, Literal, Protocol, TypeVar
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field
@@ -68,7 +68,7 @@ class AsyncOpenAIClient(Protocol):
     chat: ChatCompletionNamespace
 
 
-class LLMClient(Generic[StructuredOutput]):
+class LLMClient:
     _global_usage_ledger: ClassVar[LLMUsageLedger] = LLMUsageLedger()
 
     def __init__(
