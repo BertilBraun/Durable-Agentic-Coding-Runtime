@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from pydantic import BaseModel, ValidationError
 from src.activities.context_gatherer import ContextGatherRequest
@@ -458,6 +460,53 @@ async def test_implementation_turn_blocks_when_context_budget_is_high(
     assert worker_result.confidence == Confidence.LOW
     assert worker_result.replan_suggestion is not None
     assert "read_file_range" in worker_result.replan_suggestion
+
+
+@pytest.mark.asyncio
+async def test_implementation_turn_user_message_excludes_repo_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_user_payloads: list[dict[str, object]] = []
+
+    class FakePromptClient:
+        async def generate_structured(
+            self,
+            role: ModelRole,
+            messages: list[Message],
+            output_type: type[BaseModel],
+        ) -> BaseModel:
+            captured_user_payloads.append(json.loads(messages[1].content))
+            return output_type.model_validate(
+                {
+                    "done": True,
+                    "worker_result": {
+                        "status": "blocked",
+                        "patch_id": None,
+                        "diff_summary": "Prompt inspected.",
+                        "tests_run": [],
+                        "test_results": [],
+                        "discovered_issues": [],
+                        "confidence": "low",
+                        "replan_suggestion": "Continue.",
+                    },
+                }
+            )
+
+        def context_utilization(self) -> float:
+            return 0.0
+
+    monkeypatch.setattr("src.activities.implementation.LLMClient", FakePromptClient)
+
+    await run_implementation_turn(_implementation_request())
+
+    assert captured_user_payloads == [
+        {
+            "plan_step": _implementation_request().plan_step.model_dump(mode="json"),
+            "context_pack": _implementation_request().context_pack.model_dump(mode="json"),
+            "task_contract": _implementation_request().task_contract.model_dump(mode="json"),
+            "workspace_info": _implementation_request().workspace_info.model_dump(mode="json"),
+        }
+    ]
 
 
 def _implementation_request() -> ImplementationTurnRequest:

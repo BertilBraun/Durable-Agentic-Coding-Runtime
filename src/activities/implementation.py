@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 
@@ -128,7 +129,7 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
                 "when the step is complete, blocked, failed, or needs replanning."
             ),
         ),
-        Message(role="user", content=request.model_dump_json()),
+        Message(role="user", content=json.dumps(_llm_user_payload(request))),
     ]
     max_tool_rounds = int(os.getenv("IMPLEMENTATION_MAX_TOOL_ROUNDS", "12"))
     tests_run: list[str] = []
@@ -203,6 +204,15 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
         messages.append(Message(role="user", content="\n\n".join(observations)))
 
     return failed_worker_result("maximum implementation tool rounds reached")
+
+
+def _llm_user_payload(request: ImplementationTurnRequest) -> dict[str, object]:
+    return {
+        "plan_step": request.plan_step.model_dump(mode="json"),
+        "context_pack": request.context_pack.model_dump(mode="json"),
+        "task_contract": request.task_contract.model_dump(mode="json"),
+        "workspace_info": request.workspace_info.model_dump(mode="json"),
+    }
 
 
 def _context_budget_blocked_worker_result(
