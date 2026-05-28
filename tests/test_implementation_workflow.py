@@ -186,6 +186,55 @@ async def test_implementation_workflow_returns_blocked_result_immediately(
     assert result["replan_suggestion"] == "Split the step."
 
 
+@pytest.mark.asyncio
+async def test_implementation_workflow_retries_failed_results_until_iteration_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    turn_calls = 0
+
+    async def fake_gather_context(request: object) -> ContextPack:
+        return ContextPack(
+            task_summary="Implement behavior",
+            relevant_snippets=[],
+            recent_observations=[],
+            failed_attempt_summaries=[],
+            available_tools=[],
+            budget_remaining=1,
+        )
+
+    async def fake_run_implementation_turn(request: object) -> WorkerResult:
+        nonlocal turn_calls
+        turn_calls += 1
+        return WorkerResult(
+            status=WorkerStatus.FAILED,
+            patch_id=None,
+            diff_summary="Attempt failed.",
+            tests_run=[],
+            test_results=[],
+            discovered_issues=["transient tool failure"],
+            confidence=Confidence.LOW,
+            replan_suggestion=None,
+        )
+
+    monkeypatch.setenv("IMPL_MAX_ITERATIONS", "3")
+    monkeypatch.setattr("src.workflows.implementation_workflow.gather_context", fake_gather_context)
+    monkeypatch.setattr(
+        "src.workflows.implementation_workflow.run_implementation_turn",
+        fake_run_implementation_turn,
+    )
+
+    result = await implementation_workflow(
+        step=_plan_step().model_dump(mode="json"),
+        workspace=_workspace(),
+        contract=_task_contract().model_dump(mode="json"),
+        repo_index=RepoIndex().model_dump(mode="json"),
+    )
+
+    assert turn_calls == 3
+    assert result["status"] == WorkerStatus.FAILED
+    assert result["discovered_issues"] == ["maximum implementation iterations reached"]
+
+
 def test_revise_review_verdict_requests_replan_with_blocking_feedback() -> None:
     worker_result = WorkerResult(
         status=WorkerStatus.SUCCESS,
