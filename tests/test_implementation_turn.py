@@ -69,9 +69,11 @@ class FakeImplementationClient:
 @pytest.mark.asyncio
 async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     tool_names: list[str] = []
+    repo_indexes: list[RepoIndex | None] = []
 
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         tool_names.append(type(request.tool).__name__)
+        repo_indexes.append(request.repo_index)
         return ToolResult(stdout="file content", stderr="", exit_code=0, truncated=False)
 
     monkeypatch.setattr("src.activities.implementation.LLMClient", FakeImplementationClient)
@@ -82,6 +84,7 @@ async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.Monke
     assert worker_result.status == WorkerStatus.BLOCKED
     assert worker_result.confidence == Confidence.LOW
     assert tool_names == ["ReadFileRange"]
+    assert repo_indexes == [RepoIndex()]
 
 
 @pytest.mark.asyncio

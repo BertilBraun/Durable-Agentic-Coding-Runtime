@@ -179,7 +179,11 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
                 continue
             tool = _tool_from_call(tool_call)
             tool_result = await run_tool(
-                ToolExecutionRequest(workspace_info=request.workspace_info, tool=tool)
+                ToolExecutionRequest(
+                    workspace_info=request.workspace_info,
+                    tool=tool,
+                    repo_index=request.repo_index,
+                )
             )
             completed_tool_calls.append(tool_call.tool_name.value)
             match tool:
