@@ -6,6 +6,7 @@ from src.activities.temporal import durable_activity
 from src.activities.workspace_manager import WorkspaceInfo
 from src.llm.client import LLMClient, Message
 from src.llm.config import ModelRole
+from src.llm.prompts import system_prompt_for_role
 from src.models.plan import PlanStep
 from src.models.review import ReviewVerdict
 from src.models.task import TaskContract
@@ -31,11 +32,7 @@ async def review_patch(request: ReviewRequest) -> ReviewVerdict:
         messages=[
             Message(
                 role="system",
-                content=(
-                    "Review the patch for contract compliance, test adequacy, minimality, "
-                    "regression risk, and blocking issues. Ground the verdict in the diff "
-                    "and test evidence."
-                ),
+                content=system_prompt_for_role(ModelRole.REVIEWER),
             ),
             Message(role="user", content=request.model_dump_json()),
         ],

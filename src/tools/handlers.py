@@ -60,13 +60,8 @@ def command_for_tool(tool: Tool) -> list[str]:
             return ["ruff", "check", path]
         case RunTypecheck(path=path):
             return ["sh", "-lc", f"python -m mypy {shlex.quote(path)}"]
-        case FindSymbol(name=name):
-            quoted_name = shlex.quote(name)
-            return [
-                "sh",
-                "-lc",
-                f"rg 'class {quoted_name}|def {quoted_name}|function {quoted_name}' .",
-            ]
+        case FindSymbol():
+            raise AssertionError("FindSymbol must be served from the repo index, not via Docker")
         case FindReferences(symbol_name=symbol_name):
             return ["rg", symbol_name, "."]
         case _:

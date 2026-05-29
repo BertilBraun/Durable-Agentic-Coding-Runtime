@@ -34,6 +34,43 @@ The return type is always the concrete type the caller passed in — never `Base
 
 ---
 
+## Trust Typed Provider APIs
+
+Use precise third-party SDK types in protocols, helper signatures, and return values. Let those types remove impossible branches.
+
+```python
+# correct
+from openai.types.chat import ChatCompletion, ParsedChatCompletion
+
+def _extract_parsed(response: ParsedChatCompletion[T]) -> T: ...
+
+# wrong
+def _extract_parsed(response: object, output_type: type[T]) -> T:
+    if isinstance(response, dict):
+        ...
+```
+
+Do not add broad `object`, `Any`, `dict`, `getattr`, or `isinstance` fallbacks for shapes that the SDK type already guarantees. If a provider violates its declared type, let the boundary fail clearly instead of turning the client into a permissive parser.
+
+---
+
+## Test Doubles Stay Out of Production Code
+
+Production modules must not contain fake-mode branches, canned LLM responses, fake clients, or test fixtures. Use dependency injection and test-local fakes instead.
+
+```python
+# correct
+llm_client = LLMClient(async_openai_client=fake_openai_client)
+
+# wrong
+if os.getenv("LLM_FAKE_MODE") == "1":
+    return '{"status":"success"}'
+```
+
+Temporary smoke harnesses may have explicit fake implementations, but they must live under `tests/`, `examples/`, or an evaluation harness module, not in the production client.
+
+---
+
 ## No String Keys
 
 Never use raw dicts or string key access to pass structured data between functions. Always use a dataclass, Pydantic model, or NamedTuple.

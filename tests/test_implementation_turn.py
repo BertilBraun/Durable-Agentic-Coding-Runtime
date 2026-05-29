@@ -4,7 +4,11 @@ import pytest
 from pydantic import BaseModel, ValidationError
 from src.activities.context_gatherer import ContextGatherRequest
 from src.activities.implementation import (
+    DEFAULT_READ_FILE_END_LINE,
+    DEFAULT_RUN_TESTS_TIMEOUT_SECONDS,
+    IMPLEMENTATION_AVAILABLE_TOOLS,
     ImplementationAgentTurn,
+    ImplementationGenerationResult,
     ImplementationToolCall,
     ImplementationTurnRequest,
     _tool_from_call,
@@ -18,7 +22,7 @@ from src.models.plan import PlanStep, Risk
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerStatus
-from src.tools.definitions import GitDiff, RunTests, ToolName
+from src.tools.definitions import GitDiff, GitStatus, ReadFileRange, RunTests, ToolName
 
 
 class FakeImplementationClient:
@@ -78,7 +82,24 @@ async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.Monke
         repo_indexes.append(request.repo_index)
         return ToolResult(stdout="file content", stderr="", exit_code=0, truncated=False)
 
-    monkeypatch.setattr("src.activities.implementation.LLMClient", FakeImplementationClient)
+    fake_client = FakeImplementationClient()
+
+    async def fake_generate_implementation_agent_turn(
+        request: object,
+    ) -> ImplementationGenerationResult:
+        return ImplementationGenerationResult(
+            agent_turn=await fake_client.generate_structured(
+                role=ModelRole.IMPLEMENTATION,
+                messages=request.messages,
+                output_type=ImplementationAgentTurn,
+            ),
+            context_utilization=fake_client.context_utilization(),
+        )
+
+    monkeypatch.setattr(
+        "src.activities.implementation.generate_implementation_agent_turn",
+        fake_generate_implementation_agent_turn,
+    )
     monkeypatch.setattr("src.activities.implementation.run_tool", fake_run_tool)
 
     worker_result = await run_implementation_turn(_implementation_request())
@@ -153,7 +174,24 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         raise AssertionError(f"run_tool should not handle gather_context: {request.tool}")
 
-    monkeypatch.setattr("src.activities.implementation.LLMClient", FakeGatherContextClient)
+    fake_client = FakeGatherContextClient()
+
+    async def fake_generate_implementation_agent_turn(
+        request: object,
+    ) -> ImplementationGenerationResult:
+        return ImplementationGenerationResult(
+            agent_turn=await fake_client.generate_structured(
+                role=ModelRole.IMPLEMENTATION,
+                messages=request.messages,
+                output_type=ImplementationAgentTurn,
+            ),
+            context_utilization=fake_client.context_utilization(),
+        )
+
+    monkeypatch.setattr(
+        "src.activities.implementation.generate_implementation_agent_turn",
+        fake_generate_implementation_agent_turn,
+    )
     monkeypatch.setattr("src.activities.implementation.gather_context", fake_gather_context)
     monkeypatch.setattr("src.activities.implementation.run_tool", fake_run_tool)
 
@@ -218,6 +256,63 @@ def test_implementation_tool_conversion_asserts_post_validation_missing_field() 
 
     with pytest.raises(AssertionError, match="read_file_range file_path was not validated"):
         _tool_from_call(tool_call)
+
+
+def test_implementation_read_file_range_defaults_to_initial_file_window() -> None:
+    agent_turn = ImplementationAgentTurn.model_validate(
+        {
+            "done": False,
+            "tool_calls": [
+                {
+                    "tool_name": "read_file_range",
+                    "file_path": "app/main.py",
+                }
+            ],
+        }
+    )
+
+    tool = _tool_from_call(agent_turn.tool_calls[0])
+
+    assert tool == ReadFileRange(
+        file_path="app/main.py",
+        start_line=1,
+        end_line=DEFAULT_READ_FILE_END_LINE,
+    )
+
+
+def test_implementation_run_tests_defaults_timeout() -> None:
+    agent_turn = ImplementationAgentTurn.model_validate(
+        {
+            "done": False,
+            "tool_calls": [
+                {
+                    "tool_name": "run_tests",
+                    "command": "pytest -q",
+                }
+            ],
+        }
+    )
+
+    tool = _tool_from_call(agent_turn.tool_calls[0])
+
+    assert tool == RunTests(command="pytest -q", timeout_seconds=DEFAULT_RUN_TESTS_TIMEOUT_SECONDS)
+
+
+def test_implementation_git_status_defaults_path() -> None:
+    agent_turn = ImplementationAgentTurn.model_validate(
+        {
+            "done": False,
+            "tool_calls": [
+                {
+                    "tool_name": "git_status",
+                }
+            ],
+        }
+    )
+
+    tool = _tool_from_call(agent_turn.tool_calls[0])
+
+    assert tool == GitStatus(path=".")
 
 
 @pytest.mark.asyncio
@@ -332,7 +427,24 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
             case _:
                 raise AssertionError(f"Unexpected tool: {request.tool}")
 
-    monkeypatch.setattr("src.activities.implementation.LLMClient", FakeSuccessAfterTestsClient)
+    fake_client = FakeSuccessAfterTestsClient()
+
+    async def fake_generate_implementation_agent_turn(
+        request: object,
+    ) -> ImplementationGenerationResult:
+        return ImplementationGenerationResult(
+            agent_turn=await fake_client.generate_structured(
+                role=ModelRole.IMPLEMENTATION,
+                messages=request.messages,
+                output_type=ImplementationAgentTurn,
+            ),
+            context_utilization=fake_client.context_utilization(),
+        )
+
+    monkeypatch.setattr(
+        "src.activities.implementation.generate_implementation_agent_turn",
+        fake_generate_implementation_agent_turn,
+    )
     monkeypatch.setattr("src.activities.implementation.run_tool", fake_run_tool)
 
     worker_result = await run_implementation_turn(_implementation_request())
@@ -505,6 +617,7 @@ async def test_implementation_turn_user_message_excludes_repo_index(
             "context_pack": _implementation_request().context_pack.model_dump(mode="json"),
             "task_contract": _implementation_request().task_contract.model_dump(mode="json"),
             "workspace_info": _implementation_request().workspace_info.model_dump(mode="json"),
+            "available_tools": list(IMPLEMENTATION_AVAILABLE_TOOLS),
         }
     ]
 

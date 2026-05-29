@@ -6,6 +6,9 @@ from pydantic import BaseModel, ConfigDict
 
 from src.runtime_enums import StrEnum
 
+DEFAULT_CONTEXT_LIMIT_TOKENS = 200_000
+CONTEXT_UTILIZATION_STOP_THRESHOLD = 0.80
+
 
 class ModelRole(StrEnum):
     CONTRACT_BUILDER = "contract_builder"
@@ -52,6 +55,8 @@ class ModelConfiguration(BaseModel):
                 return self.reviewer_model
             case ModelRole.SUMMARIZER:
                 return self.summarizer_model
+            case _:
+                raise AssertionError(f"No model configured for role: {role}")
 
     def context_limit_for_role(self, role: ModelRole) -> int:
         model = self.model_for_role(role)
@@ -62,23 +67,40 @@ class ModelConfiguration(BaseModel):
 
 
 def load_model_configuration() -> ModelConfiguration:
-    return ModelConfiguration(
-        contract_builder_model=os.getenv("MODEL_CONTRACT_BUILDER", "claude-opus-4-7"),
-        planner_model=os.getenv("MODEL_PLANNER", "claude-opus-4-7"),
-        complexity_assessor_model=os.getenv("MODEL_COMPLEXITY_ASSESSOR", "claude-opus-4-7"),
-        context_gatherer_model=os.getenv(
-            "MODEL_CONTEXT_GATHERER",
-            "claude-haiku-4-5-20251001",
-        ),
-        implementation_model=os.getenv("MODEL_IMPLEMENTATION", "claude-sonnet-4-6"),
-        reviewer_model=os.getenv("MODEL_REVIEWER", "claude-sonnet-4-6"),
-        summarizer_model=os.getenv("MODEL_SUMMARIZER", "claude-haiku-4-5-20251001"),
-        model_context_limits=[
-            ModelContextLimit(model="claude-opus-4-7", context_limit_tokens=200_000),
-            ModelContextLimit(model="claude-sonnet-4-6", context_limit_tokens=200_000),
-            ModelContextLimit(
-                model="claude-haiku-4-5-20251001",
-                context_limit_tokens=200_000,
-            ),
-        ],
+    contract_builder_model = os.getenv("MODEL_CONTRACT_BUILDER", "claude-opus-4-7")
+    planner_model = os.getenv("MODEL_PLANNER", "claude-opus-4-7")
+    complexity_assessor_model = os.getenv("MODEL_COMPLEXITY_ASSESSOR", "claude-opus-4-7")
+    context_gatherer_model = os.getenv(
+        "MODEL_CONTEXT_GATHERER",
+        "claude-haiku-4-5-20251001",
     )
+    implementation_model = os.getenv("MODEL_IMPLEMENTATION", "claude-sonnet-4-6")
+    reviewer_model = os.getenv("MODEL_REVIEWER", "claude-sonnet-4-6")
+    summarizer_model = os.getenv("MODEL_SUMMARIZER", "claude-haiku-4-5-20251001")
+    return ModelConfiguration(
+        contract_builder_model=contract_builder_model,
+        planner_model=planner_model,
+        complexity_assessor_model=complexity_assessor_model,
+        context_gatherer_model=context_gatherer_model,
+        implementation_model=implementation_model,
+        reviewer_model=reviewer_model,
+        summarizer_model=summarizer_model,
+        model_context_limits=_context_limits_for_models(
+            [
+                contract_builder_model,
+                planner_model,
+                complexity_assessor_model,
+                context_gatherer_model,
+                implementation_model,
+                reviewer_model,
+                summarizer_model,
+            ]
+        ),
+    )
+
+
+def _context_limits_for_models(models: list[str]) -> list[ModelContextLimit]:
+    return [
+        ModelContextLimit(model=model, context_limit_tokens=DEFAULT_CONTEXT_LIMIT_TOKENS)
+        for model in sorted(set(models))
+    ]

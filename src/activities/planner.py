@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict
 from src.activities.temporal import durable_activity
 from src.llm.client import LLMClient, Message
 from src.llm.config import ModelRole
+from src.llm.prompts import system_prompt_for_role
 from src.models.plan import Plan
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
@@ -32,11 +33,7 @@ async def build_plan(request: PlanRequest) -> Plan:
         messages=[
             Message(
                 role="system",
-                content=(
-                    "Build a minimal implementation plan from the contract and repository "
-                    "index. Keep steps scoped, include allowed files, tests, risks, rollback, "
-                    "and definition of done. Apply revision guidance when provided."
-                ),
+                content=system_prompt_for_role(ModelRole.PLANNER),
             ),
             Message(
                 role="user",

@@ -122,6 +122,8 @@ class OracleResult(BaseModel):
 SUPPORTED_LANGUAGES = frozenset({"python", "typescript", "javascript", "js", "ts"})
 TERMINAL_WORKFLOW_STATUSES = frozenset({"completed", "failed"})
 SWE_BENCH_WORKDIR = "/testbed"
+WORKFLOW_POLL_INTERVAL_SECONDS = 5
+WORKFLOW_POLL_TIMEOUT_SECONDS = 7200
 
 
 async def run_evaluation(
@@ -422,13 +424,18 @@ async def _poll_workflow(
     temporal_api_url: str,
     workflow_id: str,
 ) -> WorkflowStatusResponse:
-    while True:
+    elapsed_seconds = 0
+    while elapsed_seconds < WORKFLOW_POLL_TIMEOUT_SECONDS:
         response = await http_client.get(f"{temporal_api_url.rstrip('/')}/workflows/{workflow_id}")
         response.raise_for_status()
         workflow_status = WorkflowStatusResponse.model_validate(response.json())
         if workflow_status.status in TERMINAL_WORKFLOW_STATUSES:
             return workflow_status
-        await asyncio.sleep(5)
+        await asyncio.sleep(WORKFLOW_POLL_INTERVAL_SECONDS)
+        elapsed_seconds += WORKFLOW_POLL_INTERVAL_SECONDS
+    raise TimeoutError(
+        f"Workflow {workflow_id} did not complete within {WORKFLOW_POLL_TIMEOUT_SECONDS} seconds"
+    )
 
 
 async def _run_baseline_task(

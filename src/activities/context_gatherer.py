@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import os
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.activities.temporal import durable_activity
-from src.activities.workspace_manager import ToolExecutionRequest, WorkspaceInfo, run_tool
+from src.activities.workspace_manager import (
+    ToolExecutionRequest,
+    WorkspaceInfo,
+)
+from src.activities.workspace_manager import (
+    run_tool_in_workspace as run_tool,
+)
 from src.llm.client import LLMClient, Message
-from src.llm.config import ModelRole
+from src.llm.config import CONTEXT_UTILIZATION_STOP_THRESHOLD, ModelRole
+from src.llm.prompts import system_prompt_for_role
 from src.models.context import ContextPack
 from src.models.repo import RepoIndex
 from src.tools.definitions import (
@@ -18,6 +25,8 @@ from src.tools.definitions import (
     Tool,
     ToolName,
 )
+
+DEFAULT_READ_FILE_END_LINE = 400
 
 
 class ContextGatherRequest(BaseModel):
@@ -41,21 +50,6 @@ class ContextGathererToolCall(BaseModel):
     symbol_name: str | None = None
     language: str | None = None
 
-    @model_validator(mode="after")
-    def validate_payload(self) -> ContextGathererToolCall:
-        match self.tool_name:
-            case ToolName.READ_FILE_RANGE:
-                _require_tool_fields(self, ("file_path", "start_line", "end_line"))
-            case ToolName.SEARCH_TEXT:
-                _require_tool_fields(self, ("pattern", "directory", "file_glob"))
-            case ToolName.FIND_SYMBOL:
-                _require_tool_fields(self, ("symbol_name", "language"))
-            case ToolName.FIND_REFERENCES:
-                _require_tool_fields(self, ("symbol_name", "file_path"))
-            case _:
-                raise ValueError(f"Context gatherer cannot call tool: {self.tool_name}")
-        return self
-
 
 class ContextGathererTurn(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -71,11 +65,7 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
     messages = [
         Message(
             role="system",
-            content=(
-                "Gather compact repository context. Use only read_file_range, search_text, "
-                "find_symbol, and find_references. Return done=true with ContextPack when "
-                "you have enough evidence."
-            ),
+            content=system_prompt_for_role(ModelRole.CONTEXT_GATHERER),
         ),
         Message(
             role="user",
@@ -95,7 +85,7 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
             messages=messages,
             output_type=ContextGathererTurn,
         )
-        if llm_client.context_utilization() > 0.80:
+        if llm_client.context_utilization() > CONTEXT_UTILIZATION_STOP_THRESHOLD:
             return _best_effort_context_pack(request, observations)
         if turn.done and turn.context_pack is not None:
             return turn.context_pack
@@ -104,7 +94,17 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
         for tool_call in turn.tool_calls:
             if tool_call_count >= max_tool_calls:
                 break
-            tool = _tool_from_call(tool_call)
+            try:
+                tool = _tool_from_call(tool_call)
+            except AssertionError as error:
+                observation = (
+                    f"invalid_tool_call tool={tool_call.tool_name}: {error}. "
+                    "This restriction applies only to context gathering; implementation "
+                    "workers may use mutating tools when their phase allows it."
+                )
+                observations.append(observation)
+                turn_observations.append(observation)
+                continue
             tool_result = await run_tool(
                 ToolExecutionRequest(
                     workspace_info=request.workspace_info,
@@ -140,12 +140,10 @@ def _tool_from_call(tool_call: ContextGathererToolCall) -> Tool:
     match tool_call.tool_name:
         case ToolName.READ_FILE_RANGE:
             assert tool_call.file_path is not None, "read_file_range file_path was not validated"
-            assert tool_call.start_line is not None, "read_file_range start_line was not validated"
-            assert tool_call.end_line is not None, "read_file_range end_line was not validated"
             return ReadFileRange(
                 file_path=tool_call.file_path,
-                start_line=tool_call.start_line,
-                end_line=tool_call.end_line,
+                start_line=_read_file_start_line(tool_call),
+                end_line=_read_file_end_line(tool_call),
             )
         case ToolName.SEARCH_TEXT:
             assert tool_call.pattern is not None, "search_text pattern was not validated"
@@ -170,12 +168,16 @@ def _tool_from_call(tool_call: ContextGathererToolCall) -> Tool:
                 file_path=tool_call.file_path,
             )
         case _:
-            raise AssertionError(f"Unhandled tool in context gatherer: {tool_call.tool_name}")
+            raise AssertionError(f"Context gatherer cannot call tool: {tool_call.tool_name}")
 
 
-def _require_tool_fields(tool_call: ContextGathererToolCall, field_names: tuple[str, ...]) -> None:
-    missing_fields = [
-        field_name for field_name in field_names if getattr(tool_call, field_name) is None
-    ]
-    if missing_fields:
-        raise ValueError(f"{tool_call.tool_name} missing required fields: {missing_fields}")
+def _read_file_start_line(tool_call: ContextGathererToolCall) -> int:
+    if tool_call.start_line is None:
+        return 1
+    return tool_call.start_line
+
+
+def _read_file_end_line(tool_call: ContextGathererToolCall) -> int:
+    if tool_call.end_line is None:
+        return DEFAULT_READ_FILE_END_LINE
+    return tool_call.end_line

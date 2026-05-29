@@ -88,6 +88,8 @@ def _symbols_for_file(file_path: Path, relative_path: str, language: Language) -
                 relative_path=relative_path,
                 language=language,
             )
+        case _:
+            raise AssertionError(f"Unhandled language in _symbols_for_file: {language}")
 
 
 def _tree_sitter_symbols_for_file(
@@ -104,8 +106,10 @@ def _tree_sitter_symbols_for_file(
                 symbols.extend(_python_tree_sitter_symbols(node, relative_path))
             case Language.TYPESCRIPT | Language.TSX | Language.JAVASCRIPT | Language.JSX:
                 symbols.extend(_javascript_tree_sitter_symbols(node, relative_path, language))
-            case Language.UNKNOWN:
-                return []
+            case _:
+                raise AssertionError(
+                    f"Unhandled language in _tree_sitter_symbols_for_file: {language}"
+                )
     return symbols
 
 

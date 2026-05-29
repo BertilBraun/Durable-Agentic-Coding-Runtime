@@ -4,6 +4,8 @@ import os
 from typing import ClassVar, Literal, Protocol, TypeVar
 
 from openai import AsyncOpenAI
+from openai.types import CompletionUsage
+from openai.types.chat import ChatCompletion, ParsedChatCompletion
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.llm.config import ModelConfiguration, ModelRole, load_model_configuration
@@ -23,10 +25,10 @@ class LLMUsage(BaseModel):
 
     role: ModelRole
     model: str
-    input_tokens: int
-    output_tokens: int
-    cache_read_tokens: int
-    cost_usd: float
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cost_usd: float = 0.0
 
 
 class LLMUsageLedger(BaseModel):
@@ -57,15 +59,23 @@ class LLMUsageSummary(BaseModel):
 
 
 class ChatCompletionCreator(Protocol):
-    async def create(self, **keyword_arguments: object) -> object: ...
+    async def create(self, **keyword_arguments: object) -> ChatCompletion: ...
+    async def parse(
+        self, response_format: type[StructuredOutput], **keyword_arguments: object
+    ) -> ParsedChatCompletion[StructuredOutput]: ...
 
 
 class ChatCompletionNamespace(Protocol):
     completions: ChatCompletionCreator
 
 
+class BetaNamespace(Protocol):
+    chat: ChatCompletionNamespace
+
+
 class AsyncOpenAIClient(Protocol):
     chat: ChatCompletionNamespace
+    beta: BetaNamespace
 
 
 class LLMClient:
@@ -124,18 +134,19 @@ class LLMClient:
                 usage=_fake_usage(role=role, model=model, messages=messages, content=content),
             )
             return output_type.model_validate_json(content)
-        structured_messages = [
-            *messages,
-            Message(
-                role="system",
-                content=(
-                    "Return only valid JSON matching the requested schema. "
-                    f"Schema: {output_type.model_json_schema()}"
-                ),
-            ),
-        ]
-        content = await self.complete(role=role, messages=structured_messages)
-        return output_type.model_validate_json(content)
+        if self.async_openai_client is None:
+            raise ValueError("OpenAI client is required when fake mode is disabled")
+        model = self.model_configuration.model_for_role(role)
+        response = await self.async_openai_client.beta.chat.completions.parse(
+            model=model,
+            messages=[message.model_dump(mode="json") for message in messages],
+            response_format=output_type,
+        )
+        self._record_usage(
+            role=role,
+            usage=_usage_from_response(role=role, model=model, response=response),
+        )
+        return _extract_parsed(response)
 
     def context_utilization(self) -> float:
         return self.last_input_token_count / self.last_context_limit
@@ -270,21 +281,27 @@ def _fake_usage(role: ModelRole, model: str, messages: list[Message], content: s
     )
 
 
-def _extract_content(response: object) -> str:
-    choices = response.choices
-    first_choice = choices[0]
-    message = first_choice.message
-    content = message.content
-    if not isinstance(content, str):
-        raise ValueError("LLM response content was not a string")
+def _extract_content(response: ChatCompletion) -> str:
+    content = response.choices[0].message.content
+    if content is None:
+        raise ValueError("LLM response did not include content")
     return content
 
 
-def _usage_from_response(role: ModelRole, model: str, response: object) -> LLMUsage:
-    raw_usage = getattr(response, "usage", None)
-    input_tokens = int(getattr(raw_usage, "prompt_tokens", 0))
-    output_tokens = int(getattr(raw_usage, "completion_tokens", 0))
-    cache_read_tokens = _cache_read_tokens(raw_usage)
+def _extract_parsed(response: ParsedChatCompletion[StructuredOutput]) -> StructuredOutput:
+    parsed = response.choices[0].message.parsed
+    if parsed is None:
+        raise ValueError("LLM structured response did not include parsed content")
+    return parsed
+
+
+def _usage_from_response(role: ModelRole, model: str, response: ChatCompletion) -> LLMUsage:
+    usage = response.usage
+    if usage is None:
+        return LLMUsage(role=role, model=model)
+    input_tokens = usage.prompt_tokens
+    output_tokens = usage.completion_tokens
+    cache_read_tokens = _cache_read_tokens(usage)
     return LLMUsage(
         role=role,
         model=model,
@@ -295,11 +312,11 @@ def _usage_from_response(role: ModelRole, model: str, response: object) -> LLMUs
     )
 
 
-def _cache_read_tokens(raw_usage: object | None) -> int:
-    if raw_usage is None:
+def _cache_read_tokens(usage: CompletionUsage) -> int:
+    prompt_tokens_details = usage.prompt_tokens_details
+    if prompt_tokens_details is None:
         return 0
-    prompt_tokens_details = getattr(raw_usage, "prompt_tokens_details", None)
-    return int(getattr(prompt_tokens_details, "cached_tokens", 0))
+    return prompt_tokens_details.cached_tokens or 0
 
 
 def _estimate_cost_usd(

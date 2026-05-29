@@ -6,7 +6,10 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.activities.context_gatherer import ContextGatherRequest, gather_context
+from src.activities.context_gatherer import (
+    ContextGatherRequest,
+    gather_context,
+)
 from src.activities.temporal import durable_activity
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
@@ -15,7 +18,8 @@ from src.activities.workspace_manager import (
     run_tool,
 )
 from src.llm.client import LLMClient, Message
-from src.llm.config import ModelRole
+from src.llm.config import CONTEXT_UTILIZATION_STOP_THRESHOLD, ModelRole
+from src.llm.prompts import system_prompt_for_role
 from src.models.context import ContextPack
 from src.models.plan import PlanStep
 from src.models.repo import RepoIndex
@@ -36,6 +40,23 @@ from src.tools.definitions import (
     Tool,
     ToolName,
     WriteFile,
+)
+
+DEFAULT_READ_FILE_END_LINE = 400
+DEFAULT_RUN_TESTS_TIMEOUT_SECONDS = 120
+IMPLEMENTATION_AVAILABLE_TOOLS = (
+    "read_file_range",
+    "search_text",
+    "write_file",
+    "apply_patch",
+    "git_diff",
+    "git_status",
+    "run_tests",
+    "run_lint",
+    "run_typecheck",
+    "find_symbol",
+    "find_references",
+    "gather_context",
 )
 
 
@@ -74,7 +95,7 @@ class ImplementationToolCall(BaseModel):
     def validate_payload(self) -> ImplementationToolCall:
         match self.tool_name:
             case ToolName.READ_FILE_RANGE:
-                _require_tool_fields(self, ("file_path", "start_line", "end_line"))
+                _require_tool_fields(self, ("file_path",))
             case ToolName.SEARCH_TEXT:
                 _require_tool_fields(self, ("pattern", "directory", "file_glob"))
             case ToolName.WRITE_FILE:
@@ -84,11 +105,11 @@ class ImplementationToolCall(BaseModel):
             case (
                 ToolName.GIT_DIFF | ToolName.GIT_STATUS | ToolName.RUN_LINT | ToolName.RUN_TYPECHECK
             ):
-                _require_tool_fields(self, ("path",))
+                return self
             case ToolName.GIT_COMMIT:
                 _require_tool_fields(self, ("message",))
             case ToolName.RUN_TESTS:
-                _require_tool_fields(self, ("command", "timeout_seconds"))
+                _require_tool_fields(self, ("command",))
             case ToolName.FIND_SYMBOL:
                 _require_tool_fields(self, ("language",))
                 if self.name is None and self.symbol_name is None:
@@ -110,6 +131,19 @@ class ImplementationAgentTurn(BaseModel):
     tool_calls: list[ImplementationToolCall] = Field(default_factory=list)
 
 
+class ImplementationGenerationRequest(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    messages: list[Message]
+
+
+class ImplementationGenerationResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    agent_turn: ImplementationAgentTurn
+    context_utilization: float
+
+
 @dataclass(frozen=True)
 class ImplementationEvidence:
     tests_run: tuple[str, ...]
@@ -117,17 +151,27 @@ class ImplementationEvidence:
     saw_diff: bool
 
 
-@durable_activity(retries=1, timeout=600, backoff_seconds=5)
-async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerResult:
+@durable_activity(retries=1, timeout=180, backoff_seconds=5)
+async def generate_implementation_agent_turn(
+    request: ImplementationGenerationRequest,
+) -> ImplementationGenerationResult:
     llm_client = LLMClient()
+    agent_turn = await llm_client.generate_structured(
+        role=ModelRole.IMPLEMENTATION,
+        messages=request.messages,
+        output_type=ImplementationAgentTurn,
+    )
+    return ImplementationGenerationResult(
+        agent_turn=agent_turn,
+        context_utilization=llm_client.context_utilization(),
+    )
+
+
+async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerResult:
     messages = [
         Message(
             role="system",
-            content=(
-                "You are the implementation worker. Emit tool calls to inspect, edit, "
-                "diff, and test the workspace. Return done=true with WorkerResult only "
-                "when the step is complete, blocked, failed, or needs replanning."
-            ),
+            content=system_prompt_for_role(ModelRole.IMPLEMENTATION),
         ),
         Message(role="user", content=json.dumps(_llm_user_payload(request))),
     ]
@@ -137,12 +181,11 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
     saw_diff = False
     completed_tool_calls: list[str] = []
     for _ in range(max_tool_rounds):
-        agent_turn = await llm_client.generate_structured(
-            role=ModelRole.IMPLEMENTATION,
-            messages=messages,
-            output_type=ImplementationAgentTurn,
+        generation_result = await generate_implementation_agent_turn(
+            ImplementationGenerationRequest(messages=messages)
         )
-        if llm_client.context_utilization() > 0.80:
+        agent_turn = generation_result.agent_turn
+        if generation_result.context_utilization > CONTEXT_UTILIZATION_STOP_THRESHOLD:
             return _context_budget_blocked_worker_result(
                 completed_tool_calls=completed_tool_calls,
                 pending_tool_calls=[
@@ -212,6 +255,7 @@ def _llm_user_payload(request: ImplementationTurnRequest) -> dict[str, object]:
         "context_pack": request.context_pack.model_dump(mode="json"),
         "task_contract": request.task_contract.model_dump(mode="json"),
         "workspace_info": request.workspace_info.model_dump(mode="json"),
+        "available_tools": list(IMPLEMENTATION_AVAILABLE_TOOLS),
     }
 
 
@@ -298,12 +342,10 @@ def _tool_from_call(tool_call: ImplementationToolCall) -> Tool:
     match tool_call.tool_name:
         case ToolName.READ_FILE_RANGE:
             assert tool_call.file_path is not None, "read_file_range file_path was not validated"
-            assert tool_call.start_line is not None, "read_file_range start_line was not validated"
-            assert tool_call.end_line is not None, "read_file_range end_line was not validated"
             return ReadFileRange(
                 file_path=tool_call.file_path,
-                start_line=tool_call.start_line,
-                end_line=tool_call.end_line,
+                start_line=_read_file_start_line(tool_call),
+                end_line=_read_file_end_line(tool_call),
             )
         case ToolName.SEARCH_TEXT:
             assert tool_call.pattern is not None, "search_text pattern was not validated"
@@ -322,29 +364,22 @@ def _tool_from_call(tool_call: ImplementationToolCall) -> Tool:
             assert tool_call.patch is not None, "apply_patch patch was not validated"
             return ApplyPatch(patch=tool_call.patch)
         case ToolName.GIT_DIFF:
-            assert tool_call.path is not None, "git_diff path was not validated"
-            return GitDiff(path=tool_call.path)
+            return GitDiff(path=_tool_path(tool_call))
         case ToolName.GIT_STATUS:
-            assert tool_call.path is not None, "git_status path was not validated"
-            return GitStatus(path=tool_call.path)
+            return GitStatus(path=_tool_path(tool_call))
         case ToolName.GIT_COMMIT:
             assert tool_call.message is not None, "git_commit message was not validated"
             return GitCommit(message=tool_call.message)
         case ToolName.RUN_TESTS:
             assert tool_call.command is not None, "run_tests command was not validated"
-            assert tool_call.timeout_seconds is not None, (
-                "run_tests timeout_seconds was not validated"
-            )
             return RunTests(
                 command=tool_call.command,
-                timeout_seconds=tool_call.timeout_seconds,
+                timeout_seconds=_run_tests_timeout_seconds(tool_call),
             )
         case ToolName.RUN_LINT:
-            assert tool_call.path is not None, "run_lint path was not validated"
-            return RunLint(path=tool_call.path)
+            return RunLint(path=_tool_path(tool_call))
         case ToolName.RUN_TYPECHECK:
-            assert tool_call.path is not None, "run_typecheck path was not validated"
-            return RunTypecheck(path=tool_call.path)
+            return RunTypecheck(path=_tool_path(tool_call))
         case ToolName.FIND_SYMBOL:
             symbol_name = tool_call.name if tool_call.name is not None else tool_call.symbol_name
             assert symbol_name is not None, "find_symbol name was not validated"
@@ -367,3 +402,27 @@ def _tool_from_call(tool_call: ImplementationToolCall) -> Tool:
             raise AssertionError("gather_context must be dispatched before tool conversion")
         case _:
             raise AssertionError(f"Unhandled tool in _tool_from_call: {tool_call.tool_name}")
+
+
+def _read_file_start_line(tool_call: ImplementationToolCall) -> int:
+    if tool_call.start_line is None:
+        return 1
+    return tool_call.start_line
+
+
+def _read_file_end_line(tool_call: ImplementationToolCall) -> int:
+    if tool_call.end_line is None:
+        return DEFAULT_READ_FILE_END_LINE
+    return tool_call.end_line
+
+
+def _run_tests_timeout_seconds(tool_call: ImplementationToolCall) -> int:
+    if tool_call.timeout_seconds is None:
+        return DEFAULT_RUN_TESTS_TIMEOUT_SECONDS
+    return tool_call.timeout_seconds
+
+
+def _tool_path(tool_call: ImplementationToolCall) -> str:
+    if tool_call.path is None:
+        return "."
+    return tool_call.path

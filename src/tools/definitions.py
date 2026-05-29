@@ -219,6 +219,8 @@ def tool_definition_for_tool(tool: Tool) -> ToolDefinition:
                 fields=(ToolFieldDefinition("prompt", "Gathering prompt.", True),),
                 mutates_workspace=False,
             )
+        case _:
+            raise AssertionError(f"No tool definition for tool type: {type(tool).__name__}")
 
 
 def _single_path_definition(

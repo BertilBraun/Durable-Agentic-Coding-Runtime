@@ -3,6 +3,7 @@ from __future__ import annotations
 from src.activities.temporal import durable_activity
 from src.llm.client import LLMClient, Message
 from src.llm.config import ModelRole
+from src.llm.prompts import system_prompt_for_role
 from src.models.approval import ComplexityVerdict
 from src.models.task import TaskContract
 
@@ -15,12 +16,7 @@ async def assess_complexity(contract: TaskContract) -> ComplexityVerdict:
         messages=[
             Message(
                 role="system",
-                content=(
-                    "Classify whether this task requires human plan approval. Require "
-                    "approval when the likely diff touches more than three files, public "
-                    "APIs, migrations, authentication, feature/refactor scope, ambiguous "
-                    "criteria, security, data integrity, or breaking-change risk."
-                ),
+                content=system_prompt_for_role(ModelRole.COMPLEXITY_ASSESSOR),
             ),
             Message(role="user", content=contract.model_dump_json()),
         ],

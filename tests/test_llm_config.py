@@ -33,6 +33,16 @@ def test_model_configuration_uses_environment_override(monkeypatch: MonkeyPatch)
     assert model_configuration.model_for_role(ModelRole.REVIEWER) == "review-model"
 
 
+def test_model_configuration_adds_context_limits_for_environment_models(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MODEL_IMPLEMENTATION", "gemini-3.1-flash-lite")
+
+    model_configuration = load_model_configuration()
+
+    assert model_configuration.context_limit_for_role(ModelRole.IMPLEMENTATION) == 200_000
+
+
 def test_model_configuration_is_frozen() -> None:
     model_configuration = ModelConfiguration(
         contract_builder_model="a",

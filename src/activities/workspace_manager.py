@@ -38,7 +38,8 @@ WORKSPACE_IMAGE_ENVIRONMENT_NAME = "WORKSPACE_IMAGE"
 DEFAULT_WORKSPACE_IMAGE = "durable-agentic-workspace:latest"
 CONTAINER_WORKSPACE_PATH = "/workspace/repository"
 MAX_OUTPUT_CHARACTERS = 20_000
-COMPACT_OUTPUT_CHARACTERS = 800
+COMPACT_HEAD_CHARACTERS = 8_000
+COMPACT_TAIL_CHARACTERS = 4_000
 ARTIFACTS_ROOT_ENVIRONMENT_NAME = "ARTIFACTS_ROOT"
 DEFAULT_ARTIFACTS_ROOT = "/artifacts"
 
@@ -157,6 +158,10 @@ async def create_workspace(
 
 @durable_activity(retries=0, timeout=300)
 async def run_tool(request: ToolExecutionRequest) -> ToolResult:
+    return await run_tool_in_workspace(request)
+
+
+async def run_tool_in_workspace(request: ToolExecutionRequest) -> ToolResult:
     indexed_result = _indexed_tool_result(request)
     if indexed_result is not None:
         return indexed_result
@@ -358,4 +363,7 @@ def _artifacts_root() -> str:
 def _compact_output(output: str) -> str:
     if len(output) <= MAX_OUTPUT_CHARACTERS:
         return output
-    return output[:COMPACT_OUTPUT_CHARACTERS]
+    head = output[:COMPACT_HEAD_CHARACTERS]
+    tail = output[-COMPACT_TAIL_CHARACTERS:]
+    omitted = len(output) - COMPACT_HEAD_CHARACTERS - COMPACT_TAIL_CHARACTERS
+    return f"{head}\n\n[... {omitted} characters omitted ...]\n\n{tail}"
