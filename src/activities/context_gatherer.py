@@ -11,10 +11,19 @@ from src.activities.workspace_manager import (
 )
 from src.llm.client import Message, generate_structured
 from src.llm.config import CONTEXT_UTILIZATION_STOP_THRESHOLD, ModelRole
-from src.llm.prompts import system_prompt_for_role
 from src.models.context import ContextPack
 from src.models.repo import RepoIndex
 from src.tools.definitions import ContextGathererToolCall
+
+CONTEXT_GATHERER_SYSTEM_PROMPT = (
+    'You are the read-only context gatherer. Use only read_file_range, '
+    'search_text, find_symbol, and find_references; never request mutating '
+    'tools. Gather compact evidence for the requested step: relevant code, '
+    'tests, risks, and open questions. Avoid repeating observations. Return '
+    'done=true with ContextPack when enough context exists, or continue with '
+    'another allowed tool call when a specific gap remains. Do not invent '
+    'files, behavior, or test results.'
+)
 
 
 class ContextGatherRequest(BaseModel):
@@ -37,7 +46,7 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
     messages = [
         Message(
             role='system',
-            content=system_prompt_for_role(ModelRole.CONTEXT_GATHERER),
+            content=CONTEXT_GATHERER_SYSTEM_PROMPT,
         ),
         Message(
             role='user',

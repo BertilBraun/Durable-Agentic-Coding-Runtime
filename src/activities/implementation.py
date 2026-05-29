@@ -18,7 +18,6 @@ from src.activities.workspace_manager import (
 )
 from src.llm.client import Message, generate_structured
 from src.llm.config import CONTEXT_UTILIZATION_STOP_THRESHOLD, ModelRole
-from src.llm.prompts import system_prompt_for_role
 from src.models.context import ContextPack
 from src.models.plan import PlanStep
 from src.models.repo import RepoIndex
@@ -30,6 +29,20 @@ from src.tools.definitions import (
     ImplementationToolCall,
     RunTests,
 )
+
+IMPLEMENTATION_SYSTEM_PROMPT = (
+    'You are the implementation worker. Inspect before editing when context '
+    'is insufficient, then use the smallest patch that satisfies the current '
+    'plan step. Keep changes inside allowed files unless blocked, and explain '
+    'why any extra file is needed. Use mutating tools only for the current '
+    'step. Run relevant tests after edits; inspect failures before editing '
+    'again. Return done=true with WorkerResult only for complete, blocked, '
+    'failed, or needs_replan outcomes. Report success only with observed '
+    'git_diff or test evidence. Do not fabricate progress, files, or test '
+    'results. Each tool call runs in a fresh container, so command-local '
+    'setup must be included in the same command.'
+)
+
 
 # TODO can that be extracted automatically somehow?
 IMPLEMENTATION_AVAILABLE_TOOLS = (
@@ -78,7 +91,7 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
     messages = [
         Message(
             role='system',
-            content=system_prompt_for_role(ModelRole.IMPLEMENTATION),
+            content=IMPLEMENTATION_SYSTEM_PROMPT,
         ),
         Message(role='user', content=json.dumps(_llm_user_payload(request))),
     ]

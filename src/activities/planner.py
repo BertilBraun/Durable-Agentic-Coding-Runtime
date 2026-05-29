@@ -4,11 +4,19 @@ from pydantic import BaseModel, ConfigDict
 
 from src.llm.client import Message, generate_structured
 from src.llm.config import ModelRole
-from src.llm.prompts import system_prompt_for_role
 from src.models.plan import Plan
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
 from src.models.worker import WorkerResult
+
+PLANNER_SYSTEM_PROMPT = (
+    'You are the planner. Build a minimal Plan from the task contract, '
+    'repository index, context, and revision guidance. Use small, reviewable '
+    'steps with explicit allowed files, expected tests, risk, rollback '
+    'strategy, and definition of done. Avoid unrelated refactors and broad '
+    'cleanup. If evidence is insufficient, plan an inspection step instead '
+    'of inventing implementation details.'
+)
 
 
 class PlanRequest(BaseModel):
@@ -28,10 +36,7 @@ async def build_plan(request: PlanRequest) -> Plan:
     completion = await generate_structured(
         role=ModelRole.PLANNER,
         messages=[
-            Message(
-                role='system',
-                content=system_prompt_for_role(ModelRole.PLANNER),
-            ),
+            Message(role='system', content=PLANNER_SYSTEM_PROMPT),
             Message(
                 role='user',
                 content=(

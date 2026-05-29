@@ -5,11 +5,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.activities.workspace_manager import WorkspaceInfo
 from src.llm.client import Message, generate_structured
 from src.llm.config import ModelRole
-from src.llm.prompts import system_prompt_for_role
 from src.models.plan import PlanStep
 from src.models.review import ReviewVerdict
 from src.models.task import TaskContract
 from src.models.worker import TestResult, WorkerResult
+
+REVIEWER_SYSTEM_PROMPT = (
+    'You are the reviewer. Lead with blocking issues. Judge contract '
+    'compliance, test adequacy, minimality, and regression risk using only '
+    'diff, test, worker, and acceptance-criteria evidence. Ground every '
+    'finding in observed evidence. Request revision when evidence is missing, '
+    'tests are inadequate, or the patch changes unrelated behavior. Do not '
+    'invent validation or assume unrun tests passed.'
+)
 
 
 class ReviewRequest(BaseModel):
@@ -27,10 +35,7 @@ async def review_patch(request: ReviewRequest) -> ReviewVerdict:
     completion = await generate_structured(
         role=ModelRole.REVIEWER,
         messages=[
-            Message(
-                role='system',
-                content=system_prompt_for_role(ModelRole.REVIEWER),
-            ),
+            Message(role='system', content=REVIEWER_SYSTEM_PROMPT),
             Message(role='user', content=request.model_dump_json()),
         ],
         output_type=ReviewVerdict,
