@@ -5,6 +5,7 @@ from src.tools.definitions import (
     GitDiff,
     ReadFileRange,
     RunLint,
+    RunTests,
     SearchText,
     ToolName,
     WriteFile,
@@ -59,3 +60,16 @@ def test_tool_command_allows_current_directory_path() -> None:
     command = command_for_tool(RunLint(path="."))
 
     assert command == ["ruff", "check", "."]
+
+
+def test_run_tests_command_runs_from_requested_directory() -> None:
+    command = command_for_tool(
+        RunTests(command="pytest -q", timeout_seconds=60, directory="examples/smoke")
+    )
+
+    assert command == ["sh", "-lc", "cd examples/smoke && pytest -q"]
+
+
+def test_run_tests_command_rejects_parent_traversal_directory() -> None:
+    with pytest.raises(ValueError, match="workspace-relative"):
+        command_for_tool(RunTests(command="pytest -q", timeout_seconds=60, directory="../outside"))

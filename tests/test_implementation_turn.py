@@ -295,7 +295,34 @@ def test_implementation_run_tests_defaults_timeout() -> None:
 
     tool = _tool_from_call(agent_turn.tool_calls[0])
 
-    assert tool == RunTests(command="pytest -q", timeout_seconds=DEFAULT_RUN_TESTS_TIMEOUT_SECONDS)
+    assert tool == RunTests(
+        command="pytest -q",
+        timeout_seconds=DEFAULT_RUN_TESTS_TIMEOUT_SECONDS,
+        directory=".",
+    )
+
+
+def test_implementation_run_tests_preserves_directory() -> None:
+    agent_turn = ImplementationAgentTurn.model_validate(
+        {
+            "done": False,
+            "tool_calls": [
+                {
+                    "tool_name": "run_tests",
+                    "command": "pytest -q",
+                    "directory": "examples/agentic-fastapi-smoke",
+                }
+            ],
+        }
+    )
+
+    tool = _tool_from_call(agent_turn.tool_calls[0])
+
+    assert tool == RunTests(
+        command="pytest -q",
+        timeout_seconds=DEFAULT_RUN_TESTS_TIMEOUT_SECONDS,
+        directory="examples/agentic-fastapi-smoke",
+    )
 
 
 def test_implementation_git_status_defaults_path() -> None:

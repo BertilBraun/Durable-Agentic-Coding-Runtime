@@ -54,8 +54,9 @@ def command_for_tool(tool: Tool) -> list[str]:
             return ["git", "status", "--short", "--", path]
         case GitCommit(message=message):
             return ["sh", "-lc", f"git add -A && git commit -m {shlex.quote(message)}"]
-        case RunTests(command=command):
-            return ["sh", "-lc", command]
+        case RunTests(command=command, directory=directory):
+            quoted_directory = shlex.quote(directory)
+            return ["sh", "-lc", f"cd {quoted_directory} && {command}"]
         case RunLint(path=path):
             return ["ruff", "check", path]
         case RunTypecheck(path=path):
@@ -84,6 +85,8 @@ def _validate_tool_paths(tool: Tool) -> None:
             _validate_workspace_relative_path(path)
         case RunTypecheck(path=path):
             _validate_workspace_relative_path(path)
+        case RunTests(directory=directory):
+            _validate_workspace_relative_path(directory)
         case FindReferences(file_path=file_path):
             _validate_workspace_relative_path(file_path)
         case _:

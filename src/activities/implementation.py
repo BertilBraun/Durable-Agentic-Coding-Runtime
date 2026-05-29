@@ -375,6 +375,7 @@ def _tool_from_call(tool_call: ImplementationToolCall) -> Tool:
             return RunTests(
                 command=tool_call.command,
                 timeout_seconds=_run_tests_timeout_seconds(tool_call),
+                directory=_tool_directory(tool_call),
             )
         case ToolName.RUN_LINT:
             return RunLint(path=_tool_path(tool_call))
@@ -426,3 +427,9 @@ def _tool_path(tool_call: ImplementationToolCall) -> str:
     if tool_call.path is None:
         return "."
     return tool_call.path
+
+
+def _tool_directory(tool_call: ImplementationToolCall) -> str:
+    if tool_call.directory is None:
+        return "."
+    return tool_call.directory

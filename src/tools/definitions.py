@@ -84,6 +84,7 @@ class GitCommit:
 class RunTests:
     command: str
     timeout_seconds: int
+    directory: str = "."
 
 
 @dataclass(frozen=True)
@@ -183,6 +184,11 @@ def tool_definition_for_tool(tool: Tool) -> ToolDefinition:
                 fields=(
                     ToolFieldDefinition("command", "Test command.", True),
                     ToolFieldDefinition("timeout_seconds", "Command timeout.", True),
+                    ToolFieldDefinition(
+                        "directory",
+                        "Workspace-relative directory to run the command from.",
+                        False,
+                    ),
                 ),
                 mutates_workspace=False,
             )
