@@ -161,6 +161,12 @@ important_value = config.get("important_value", "default_value")
 
 ---
 
+## No Dynamic Attribute Access - EVER
+
+Never use `getattr`, `setattr`, `hasattr`, or any form of dynamic attribute access. Always use explicit attributes defined on a class or dataclass. If you find yourself needing dynamic attribute access, it's a sign that your data structure should be redesigned.
+
+---
+
 ## Dependencies
 
 Once dependencies are added, they may be assumed to be present and do not require defensive checks or fallbacks.
@@ -202,6 +208,8 @@ def _docker_client() -> object:
 ---
 
 ## match/case over isinstance chains
+
+Use `match/case` for branching on types instead of `isinstance` chains. This is more concise, readable, and extensible. The match statement also provides exhaustiveness checking, so if a new type is added to the union, you'll get a warning to handle it. But - keep in mind, that this should also only be used sparingly, when the design genuinely calls for branching on multiple types. If you find yourself needing to use `match/case` frequently, it may be a sign that your design could be improved by using polymorphism or a more explicit data structure instead of a union of many types.
 
 ```python
 # correct
