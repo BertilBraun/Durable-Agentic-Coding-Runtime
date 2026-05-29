@@ -5,18 +5,18 @@ from typing import ClassVar, Literal, Protocol, TypeVar
 
 from openai import AsyncOpenAI
 from openai.types import CompletionUsage
-from openai.types.chat import ChatCompletion, ParsedChatCompletion
+from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ParsedChatCompletion
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.llm.config import ModelConfiguration, ModelRole, load_model_configuration
 
-StructuredOutput = TypeVar("StructuredOutput", bound=BaseModel)
+StructuredOutput = TypeVar('StructuredOutput', bound=BaseModel)
 
 
 class Message(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    role: Literal["system", "user", "assistant"]
+    role: Literal['system', 'user', 'assistant']
     content: str
 
 
@@ -89,29 +89,24 @@ class LLMClient:
     ) -> None:
         self.model_configuration = model_configuration or load_model_configuration()
         self.usage_ledger = usage_ledger or LLMUsageLedger()
-        self.async_openai_client = async_openai_client
         self.last_input_token_count = 0
         self.last_context_limit = 1
-        if self.async_openai_client is None:
-            self.async_openai_client = AsyncOpenAI(
-                api_key=os.getenv("LLM_API_KEY"),
-                base_url=os.getenv("LLM_BASE_URL"),
-            )
+        self.async_openai_client = async_openai_client or AsyncOpenAI(
+            api_key=os.getenv('LLM_API_KEY'),
+            base_url=os.getenv('LLM_BASE_URL'),
+        )
 
     async def complete(self, role: ModelRole, messages: list[Message]) -> str:
         model = self.model_configuration.model_for_role(role)
-        if self.async_openai_client is None:
-            raise ValueError("OpenAI client is required")
         response = await self.async_openai_client.chat.completions.create(
             model=model,
-            messages=[message.model_dump(mode="json") for message in messages],
+            messages=_format_messages_for_api(messages),
         )
-        content = _extract_content(response)
         self._record_usage(
             role=role,
             usage=_usage_from_response(role=role, model=model, response=response),
         )
-        return content
+        return _extract_content(response)
 
     async def generate_structured(
         self,
@@ -119,12 +114,10 @@ class LLMClient:
         messages: list[Message],
         output_type: type[StructuredOutput],
     ) -> StructuredOutput:
-        if self.async_openai_client is None:
-            raise ValueError("OpenAI client is required")
         model = self.model_configuration.model_for_role(role)
         response = await self.async_openai_client.beta.chat.completions.parse(
             model=model,
-            messages=[message.model_dump(mode="json") for message in messages],
+            messages=_format_messages_for_api(messages),
             response_format=output_type,
         )
         self._record_usage(
@@ -157,17 +150,21 @@ class LLMClient:
         self.last_context_limit = self.model_configuration.context_limit_for_role(role)
 
 
+def _format_messages_for_api(messages: list[Message]) -> list[ChatCompletionMessageParam]:
+    return [message.model_dump(mode='json') for message in messages]  # type: ignore[list-item]
+
+
 def _extract_content(response: ChatCompletion) -> str:
     content = response.choices[0].message.content
     if content is None:
-        raise ValueError("LLM response did not include content")
+        raise ValueError('LLM response did not include content')
     return content
 
 
 def _extract_parsed(response: ParsedChatCompletion[StructuredOutput]) -> StructuredOutput:
     parsed = response.choices[0].message.parsed
     if parsed is None:
-        raise ValueError("LLM structured response did not include parsed content")
+        raise ValueError('LLM structured response did not include parsed content')
     return parsed
 
 
@@ -204,16 +201,16 @@ def _estimate_cost_usd(
     # TODO: add cache_control breakpoints for Anthropic-compatible providers.
     uncached_input_tokens = max(input_tokens - cache_read_tokens, 0)
     match model:
-        case "claude-opus-4-7":
+        case 'claude-opus-4-7':
             input_price = 15.0
             output_price = 75.0
-        case "claude-sonnet-4-6":
+        case 'claude-sonnet-4-6':
             input_price = 3.0
             output_price = 15.0
-        case "claude-haiku-4-5-20251001":
+        case 'claude-haiku-4-5-20251001':
             input_price = 0.8
             output_price = 4.0
-        case "gemini-3.1-flash-lite":
+        case 'gemini-3.1-flash-lite':
             input_price = 0.25
             output_price = 1.50
         case _:
