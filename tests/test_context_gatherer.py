@@ -1,8 +1,6 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 from src.activities.context_gatherer import (
-    DEFAULT_READ_FILE_END_LINE,
-    ContextGathererToolCall,
     ContextGathererTurn,
     ContextGatherRequest,
     _tool_from_call,
@@ -12,7 +10,8 @@ from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, W
 from src.llm.client import Message
 from src.llm.config import ModelRole
 from src.models.repo import RepoIndex
-from src.tools.definitions import ReadFileRange, ToolName
+from src.tools.definitions import ReadFileRange
+from src.tools.llm_schema import ContextGathererToolCallAdapter
 
 
 def test_context_gatherer_rejects_unknown_tool() -> None:
@@ -30,111 +29,27 @@ def test_context_gatherer_rejects_unknown_tool() -> None:
 
 
 def test_context_gatherer_rejects_mutating_tool() -> None:
-    turn = ContextGathererTurn.model_validate(
-        {
-            "done": False,
-            "tool_calls": [
-                {
-                    "tool_name": "write_file",
-                    "file_path": "src/app.py",
-                }
-            ],
-        }
-    )
-
-    with pytest.raises(AssertionError, match="Context gatherer cannot call tool: write_file"):
-        _tool_from_call(turn.tool_calls[0])
+    with pytest.raises(ValidationError):
+        ContextGathererTurn.model_validate(
+            {
+                "done": False,
+                "tool_calls": [
+                    {
+                        "tool_name": "write_file",
+                        "file_path": "src/app.py",
+                        "content": "mutating",
+                    }
+                ],
+            }
+        )
 
 
 def test_context_gatherer_tool_conversion_asserts_missing_required_payload_field() -> None:
-    turn = ContextGathererTurn.model_validate(
-        {
-            "done": False,
-            "tool_calls": [
-                {
-                    "tool_name": "find_references",
-                }
-            ],
-        }
-    )
-
-    with pytest.raises(AssertionError, match="find_references symbol_name was not validated"):
-        _tool_from_call(turn.tool_calls[0])
+    with pytest.raises(ValidationError):
+        ContextGathererToolCallAdapter.validate_python({"tool_name": "find_references"})
 
 
-def test_context_gatherer_tool_conversion_asserts_post_validation_missing_field() -> None:
-    tool_call = ContextGathererToolCall.model_construct(
-        tool_name=ToolName.SEARCH_TEXT,
-        pattern=None,
-        directory=".",
-        file_glob="*.py",
-    )
-
-    with pytest.raises(AssertionError, match="search_text pattern was not validated"):
-        _tool_from_call(tool_call)
-
-
-@pytest.mark.asyncio
-async def test_context_gatherer_reports_invalid_tool_call_to_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured_messages: list[list[Message]] = []
-
-    class FakeInvalidToolClient:
-        def __init__(self) -> None:
-            self.call_count = 0
-
-        async def generate_structured(
-            self,
-            role: ModelRole,
-            messages: list[Message],
-            output_type: type[BaseModel],
-        ) -> BaseModel:
-            self.call_count += 1
-            captured_messages.append(messages)
-            if self.call_count == 1:
-                return output_type.model_validate(
-                    {
-                        "done": False,
-                        "tool_calls": [
-                            {
-                                "tool_name": "write_file",
-                                "file_path": "app/main.py",
-                                "content": "mutating call",
-                            }
-                        ],
-                    }
-                )
-            return output_type.model_validate(
-                {
-                    "done": True,
-                    "context_pack": {
-                        "task_summary": "done",
-                        "relevant_snippets": [],
-                        "recent_observations": [],
-                        "failed_attempt_summaries": [],
-                        "available_tools": [],
-                        "budget_remaining": 1,
-                    },
-                }
-            )
-
-        def context_utilization(self) -> float:
-            return 0.0
-
-    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
-        raise AssertionError(f"run_tool should not execute invalid call: {request.tool}")
-
-    monkeypatch.setattr("src.activities.context_gatherer.LLMClient", FakeInvalidToolClient)
-    monkeypatch.setattr("src.activities.context_gatherer.run_tool", fake_run_tool)
-
-    await gather_context(_context_gather_request())
-
-    assert "invalid_tool_call" in captured_messages[1][-1].content
-    assert "write_file" in captured_messages[1][-1].content
-
-
-def test_context_gatherer_read_file_range_defaults_to_initial_file_window() -> None:
+def test_context_gatherer_read_file_range_preserves_explicit_file_window() -> None:
     turn = ContextGathererTurn.model_validate(
         {
             "done": False,
@@ -142,6 +57,8 @@ def test_context_gatherer_read_file_range_defaults_to_initial_file_window() -> N
                 {
                     "tool_name": "read_file_range",
                     "file_path": "app/main.py",
+                    "start_line": 1,
+                    "end_line": 400,
                 }
             ],
         }
@@ -152,7 +69,7 @@ def test_context_gatherer_read_file_range_defaults_to_initial_file_window() -> N
     assert tool == ReadFileRange(
         file_path="app/main.py",
         start_line=1,
-        end_line=DEFAULT_READ_FILE_END_LINE,
+        end_line=400,
     )
 
 

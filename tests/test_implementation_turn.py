@@ -4,12 +4,9 @@ import pytest
 from pydantic import BaseModel, ValidationError
 from src.activities.context_gatherer import ContextGatherRequest
 from src.activities.implementation import (
-    DEFAULT_READ_FILE_END_LINE,
-    DEFAULT_RUN_TESTS_TIMEOUT_SECONDS,
     IMPLEMENTATION_AVAILABLE_TOOLS,
     ImplementationAgentTurn,
     ImplementationGenerationResult,
-    ImplementationToolCall,
     ImplementationTurnRequest,
     _tool_from_call,
     run_implementation_turn,
@@ -23,6 +20,7 @@ from src.models.repo import RepoIndex
 from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerStatus
 from src.tools.definitions import GitDiff, GitStatus, ReadFileRange, RunTests, ToolName
+from src.tools.llm_schema import ImplementationToolCallAdapter
 
 
 class FakeImplementationClient:
@@ -204,7 +202,7 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
 
 
 def test_implementation_tool_call_uses_tool_name_enum() -> None:
-    tool_call = ImplementationToolCall.model_validate(
+    tool_call = ImplementationToolCallAdapter.validate_python(
         {
             "tool_name": "read_file_range",
             "file_path": "src/app.py",
@@ -246,19 +244,7 @@ def test_implementation_tool_call_rejects_missing_required_payload_field() -> No
         )
 
 
-def test_implementation_tool_conversion_asserts_post_validation_missing_field() -> None:
-    tool_call = ImplementationToolCall.model_construct(
-        tool_name=ToolName.READ_FILE_RANGE,
-        file_path=None,
-        start_line=1,
-        end_line=5,
-    )
-
-    with pytest.raises(AssertionError, match="read_file_range file_path was not validated"):
-        _tool_from_call(tool_call)
-
-
-def test_implementation_read_file_range_defaults_to_initial_file_window() -> None:
+def test_implementation_read_file_range_preserves_explicit_file_window() -> None:
     agent_turn = ImplementationAgentTurn.model_validate(
         {
             "done": False,
@@ -266,6 +252,8 @@ def test_implementation_read_file_range_defaults_to_initial_file_window() -> Non
                 {
                     "tool_name": "read_file_range",
                     "file_path": "app/main.py",
+                    "start_line": 1,
+                    "end_line": 400,
                 }
             ],
         }
@@ -276,11 +264,11 @@ def test_implementation_read_file_range_defaults_to_initial_file_window() -> Non
     assert tool == ReadFileRange(
         file_path="app/main.py",
         start_line=1,
-        end_line=DEFAULT_READ_FILE_END_LINE,
+        end_line=400,
     )
 
 
-def test_implementation_run_tests_defaults_timeout() -> None:
+def test_implementation_run_tests_preserves_explicit_timeout_and_directory() -> None:
     agent_turn = ImplementationAgentTurn.model_validate(
         {
             "done": False,
@@ -288,6 +276,8 @@ def test_implementation_run_tests_defaults_timeout() -> None:
                 {
                     "tool_name": "run_tests",
                     "command": "pytest -q",
+                    "timeout_seconds": 120,
+                    "directory": ".",
                 }
             ],
         }
@@ -297,7 +287,7 @@ def test_implementation_run_tests_defaults_timeout() -> None:
 
     assert tool == RunTests(
         command="pytest -q",
-        timeout_seconds=DEFAULT_RUN_TESTS_TIMEOUT_SECONDS,
+        timeout_seconds=120,
         directory=".",
     )
 
@@ -310,6 +300,7 @@ def test_implementation_run_tests_preserves_directory() -> None:
                 {
                     "tool_name": "run_tests",
                     "command": "pytest -q",
+                    "timeout_seconds": 120,
                     "directory": "examples/agentic-fastapi-smoke",
                 }
             ],
@@ -320,18 +311,19 @@ def test_implementation_run_tests_preserves_directory() -> None:
 
     assert tool == RunTests(
         command="pytest -q",
-        timeout_seconds=DEFAULT_RUN_TESTS_TIMEOUT_SECONDS,
+        timeout_seconds=120,
         directory="examples/agentic-fastapi-smoke",
     )
 
 
-def test_implementation_git_status_defaults_path() -> None:
+def test_implementation_git_status_preserves_explicit_path() -> None:
     agent_turn = ImplementationAgentTurn.model_validate(
         {
             "done": False,
             "tool_calls": [
                 {
                     "tool_name": "git_status",
+                    "path": ".",
                 }
             ],
         }
@@ -363,6 +355,7 @@ async def test_implementation_turn_preserves_run_tests_timeout(
                             "tool_name": "run_tests",
                             "command": "pytest -q",
                             "timeout_seconds": 19,
+                            "directory": ".",
                         }
                     ],
                 }
@@ -413,6 +406,7 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
                                 "tool_name": "run_tests",
                                 "command": "pytest tests/test_app.py -q",
                                 "timeout_seconds": 30,
+                                "directory": ".",
                             },
                             {
                                 "tool_name": "git_diff",

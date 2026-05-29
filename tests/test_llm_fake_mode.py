@@ -6,11 +6,12 @@ from src.models.plan import Plan
 from src.models.task import TaskContract, TaskType
 from src.tools.definitions import ToolName
 
+from tests.fakes.openai_client import FakeAsyncOpenAI
+
 
 @pytest.mark.asyncio
-async def test_fake_mode_generates_task_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LLM_FAKE_MODE", "1")
-    llm_client = LLMClient()
+async def test_test_local_fake_openai_generates_task_contract() -> None:
+    llm_client = LLMClient(async_openai_client=FakeAsyncOpenAI())
 
     task_contract = await llm_client.generate_structured(
         role=ModelRole.CONTRACT_BUILDER,
@@ -22,9 +23,8 @@ async def test_fake_mode_generates_task_contract(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_fake_mode_generates_single_step_plan(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LLM_FAKE_MODE", "1")
-    llm_client = LLMClient()
+async def test_test_local_fake_openai_generates_single_step_plan() -> None:
+    llm_client = LLMClient(async_openai_client=FakeAsyncOpenAI())
 
     plan = await llm_client.generate_structured(
         role=ModelRole.PLANNER,
@@ -36,11 +36,10 @@ async def test_fake_mode_generates_single_step_plan(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_fake_mode_implementation_first_turn_emits_patch_and_test_tools(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("LLM_FAKE_MODE", "1")
-    llm_client = LLMClient()
+async def test_test_local_fake_openai_implementation_first_turn_emits_patch_and_test_tools() -> (
+    None
+):
+    llm_client = LLMClient(async_openai_client=FakeAsyncOpenAI())
 
     turn = await llm_client.generate_structured(
         role=ModelRole.IMPLEMENTATION,
@@ -57,11 +56,8 @@ async def test_fake_mode_implementation_first_turn_emits_patch_and_test_tools(
 
 
 @pytest.mark.asyncio
-async def test_fake_mode_implementation_second_turn_reports_success(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("LLM_FAKE_MODE", "1")
-    llm_client = LLMClient()
+async def test_test_local_fake_openai_implementation_second_turn_reports_success() -> None:
+    llm_client = LLMClient(async_openai_client=FakeAsyncOpenAI())
 
     turn = await llm_client.generate_structured(
         role=ModelRole.IMPLEMENTATION,

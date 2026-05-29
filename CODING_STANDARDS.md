@@ -125,6 +125,13 @@ class Confidence(StrEnum):
 - Use `pydantic.BaseModel` for anything that crosses a serialization boundary: LLM structured outputs, Temporal-Light activity inputs/outputs, HTTP payloads.
 - All Pydantic models use `model_config = ConfigDict(frozen=True)` unless mutation is explicitly needed.
 
+### LLM Structured Outputs
+
+- Model LLM responses with Pydantic models, not raw dictionaries or nullable catch-all payloads.
+- Add `Field(description=...)` to LLM-facing fields when the model needs parameter guidance.
+- Prefer tagged unions for tool-call variants so each tool exposes only its own parameters.
+- Do not expose irrelevant nullable fields to the model.
+
 ---
 
 ## No Abbreviations

@@ -99,7 +99,6 @@ def _start_worker(temporal_database_url: str, workspace_image: str) -> subproces
     environment = {
         **os.environ,
         "TEMPORAL_DATABASE_URL": temporal_database_url,
-        "LLM_FAKE_MODE": "1",
         "WORKSPACE_IMAGE": workspace_image,
         "WORKSPACE_ROOT": ".agentic-workspaces",
     }

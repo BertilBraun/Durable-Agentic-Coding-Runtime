@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.activities.context_gatherer import (
     ContextGatherRequest,
@@ -26,24 +26,17 @@ from src.models.repo import RepoIndex
 from src.models.task import TaskContract
 from src.models.worker import Confidence, TestResult, WorkerResult, WorkerStatus
 from src.tools.definitions import (
-    ApplyPatch,
-    FindReferences,
-    FindSymbol,
-    GitCommit,
+    GatherContext,
     GitDiff,
-    GitStatus,
-    ReadFileRange,
-    RunLint,
     RunTests,
-    RunTypecheck,
-    SearchText,
     Tool,
-    ToolName,
-    WriteFile,
+)
+from src.tools.llm_schema import (
+    GatherContextToolCall,
+    ImplementationToolCall,
+    implementation_tool_from_llm_tool_call,
 )
 
-DEFAULT_READ_FILE_END_LINE = 400
-DEFAULT_RUN_TESTS_TIMEOUT_SECONDS = 120
 IMPLEMENTATION_AVAILABLE_TOOLS = (
     "read_file_range",
     "search_text",
@@ -68,59 +61,6 @@ class ImplementationTurnRequest(BaseModel):
     task_contract: TaskContract
     workspace_info: WorkspaceInfo
     repo_index: RepoIndex
-
-
-class ImplementationToolCall(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    tool_name: ToolName
-    file_path: str | None = None
-    start_line: int | None = None
-    end_line: int | None = None
-    pattern: str | None = None
-    directory: str | None = None
-    file_glob: str | None = None
-    content: str | None = None
-    patch: str | None = None
-    path: str | None = None
-    message: str | None = None
-    command: str | None = None
-    timeout_seconds: int | None = None
-    name: str | None = None
-    language: str | None = None
-    symbol_name: str | None = None
-    prompt: str | None = None
-
-    @model_validator(mode="after")
-    def validate_payload(self) -> ImplementationToolCall:
-        match self.tool_name:
-            case ToolName.READ_FILE_RANGE:
-                _require_tool_fields(self, ("file_path",))
-            case ToolName.SEARCH_TEXT:
-                _require_tool_fields(self, ("pattern", "directory", "file_glob"))
-            case ToolName.WRITE_FILE:
-                _require_tool_fields(self, ("file_path", "content"))
-            case ToolName.APPLY_PATCH:
-                _require_tool_fields(self, ("patch",))
-            case (
-                ToolName.GIT_DIFF | ToolName.GIT_STATUS | ToolName.RUN_LINT | ToolName.RUN_TYPECHECK
-            ):
-                return self
-            case ToolName.GIT_COMMIT:
-                _require_tool_fields(self, ("message",))
-            case ToolName.RUN_TESTS:
-                _require_tool_fields(self, ("command",))
-            case ToolName.FIND_SYMBOL:
-                _require_tool_fields(self, ("language",))
-                if self.name is None and self.symbol_name is None:
-                    raise ValueError("find_symbol requires name or symbol_name")
-            case ToolName.FIND_REFERENCES:
-                _require_tool_fields(self, ("file_path",))
-                if self.symbol_name is None and self.name is None:
-                    raise ValueError("find_references requires symbol_name or name")
-            case ToolName.GATHER_CONTEXT:
-                _require_tool_fields(self, ("prompt",))
-        return self
 
 
 class ImplementationAgentTurn(BaseModel):
@@ -206,21 +146,23 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
 
         observations: list[str] = []
         for tool_call in agent_turn.tool_calls:
-            if tool_call.tool_name == ToolName.GATHER_CONTEXT:
-                assert tool_call.prompt is not None, "gather_context prompt was not validated"
-                gathered_context = await gather_context(
-                    ContextGatherRequest(
-                        workspace_info=request.workspace_info,
-                        repo_index=request.repo_index,
-                        gatherer_prompt=tool_call.prompt,
+            match tool_call:
+                case GatherContextToolCall(prompt=prompt):
+                    gathered_context = await gather_context(
+                        ContextGatherRequest(
+                            workspace_info=request.workspace_info,
+                            repo_index=request.repo_index,
+                            gatherer_prompt=prompt,
+                        )
                     )
-                )
-                observations.append(
-                    f"tool={tool_call.tool_name} context_pack:\n"
-                    f"{gathered_context.model_dump_json()}"
-                )
-                completed_tool_calls.append(tool_call.tool_name.value)
-                continue
+                    observations.append(
+                        f"tool={tool_call.tool_name} context_pack:\n"
+                        f"{gathered_context.model_dump_json()}"
+                    )
+                    completed_tool_calls.append(tool_call.tool_name.value)
+                    continue
+                case _:
+                    pass
             tool = _tool_from_call(tool_call)
             tool_result = await run_tool(
                 ToolExecutionRequest(
@@ -330,106 +272,10 @@ def _test_result_from_tool_result(command: str, tool_result: ToolResult) -> Test
     )
 
 
-def _require_tool_fields(tool_call: ImplementationToolCall, field_names: tuple[str, ...]) -> None:
-    missing_fields = [
-        field_name for field_name in field_names if getattr(tool_call, field_name) is None
-    ]
-    if missing_fields:
-        raise ValueError(f"{tool_call.tool_name} missing required fields: {missing_fields}")
-
-
 def _tool_from_call(tool_call: ImplementationToolCall) -> Tool:
-    match tool_call.tool_name:
-        case ToolName.READ_FILE_RANGE:
-            assert tool_call.file_path is not None, "read_file_range file_path was not validated"
-            return ReadFileRange(
-                file_path=tool_call.file_path,
-                start_line=_read_file_start_line(tool_call),
-                end_line=_read_file_end_line(tool_call),
-            )
-        case ToolName.SEARCH_TEXT:
-            assert tool_call.pattern is not None, "search_text pattern was not validated"
-            assert tool_call.directory is not None, "search_text directory was not validated"
-            assert tool_call.file_glob is not None, "search_text file_glob was not validated"
-            return SearchText(
-                pattern=tool_call.pattern,
-                directory=tool_call.directory,
-                file_glob=tool_call.file_glob,
-            )
-        case ToolName.WRITE_FILE:
-            assert tool_call.file_path is not None, "write_file file_path was not validated"
-            assert tool_call.content is not None, "write_file content was not validated"
-            return WriteFile(file_path=tool_call.file_path, content=tool_call.content)
-        case ToolName.APPLY_PATCH:
-            assert tool_call.patch is not None, "apply_patch patch was not validated"
-            return ApplyPatch(patch=tool_call.patch)
-        case ToolName.GIT_DIFF:
-            return GitDiff(path=_tool_path(tool_call))
-        case ToolName.GIT_STATUS:
-            return GitStatus(path=_tool_path(tool_call))
-        case ToolName.GIT_COMMIT:
-            assert tool_call.message is not None, "git_commit message was not validated"
-            return GitCommit(message=tool_call.message)
-        case ToolName.RUN_TESTS:
-            assert tool_call.command is not None, "run_tests command was not validated"
-            return RunTests(
-                command=tool_call.command,
-                timeout_seconds=_run_tests_timeout_seconds(tool_call),
-                directory=_tool_directory(tool_call),
-            )
-        case ToolName.RUN_LINT:
-            return RunLint(path=_tool_path(tool_call))
-        case ToolName.RUN_TYPECHECK:
-            return RunTypecheck(path=_tool_path(tool_call))
-        case ToolName.FIND_SYMBOL:
-            symbol_name = tool_call.name if tool_call.name is not None else tool_call.symbol_name
-            assert symbol_name is not None, "find_symbol name was not validated"
-            assert tool_call.language is not None, "find_symbol language was not validated"
-            return FindSymbol(
-                name=symbol_name,
-                language=tool_call.language,
-            )
-        case ToolName.FIND_REFERENCES:
-            symbol_name = (
-                tool_call.symbol_name if tool_call.symbol_name is not None else tool_call.name
-            )
-            assert symbol_name is not None, "find_references symbol_name was not validated"
-            assert tool_call.file_path is not None, "find_references file_path was not validated"
-            return FindReferences(
-                symbol_name=symbol_name,
-                file_path=tool_call.file_path,
-            )
-        case ToolName.GATHER_CONTEXT:
+    tool = implementation_tool_from_llm_tool_call(tool_call)
+    match tool:
+        case GatherContext():
             raise AssertionError("gather_context must be dispatched before tool conversion")
         case _:
-            raise AssertionError(f"Unhandled tool in _tool_from_call: {tool_call.tool_name}")
-
-
-def _read_file_start_line(tool_call: ImplementationToolCall) -> int:
-    if tool_call.start_line is None:
-        return 1
-    return tool_call.start_line
-
-
-def _read_file_end_line(tool_call: ImplementationToolCall) -> int:
-    if tool_call.end_line is None:
-        return DEFAULT_READ_FILE_END_LINE
-    return tool_call.end_line
-
-
-def _run_tests_timeout_seconds(tool_call: ImplementationToolCall) -> int:
-    if tool_call.timeout_seconds is None:
-        return DEFAULT_RUN_TESTS_TIMEOUT_SECONDS
-    return tool_call.timeout_seconds
-
-
-def _tool_path(tool_call: ImplementationToolCall) -> str:
-    if tool_call.path is None:
-        return "."
-    return tool_call.path
-
-
-def _tool_directory(tool_call: ImplementationToolCall) -> str:
-    if tool_call.directory is None:
-        return "."
-    return tool_call.directory
+            return tool

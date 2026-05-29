@@ -92,7 +92,7 @@ class LLMClient:
         self.async_openai_client = async_openai_client
         self.last_input_token_count = 0
         self.last_context_limit = 1
-        if self.async_openai_client is None and not _fake_mode_enabled():
+        if self.async_openai_client is None:
             self.async_openai_client = AsyncOpenAI(
                 api_key=os.getenv("LLM_API_KEY"),
                 base_url=os.getenv("LLM_BASE_URL"),
@@ -100,15 +100,8 @@ class LLMClient:
 
     async def complete(self, role: ModelRole, messages: list[Message]) -> str:
         model = self.model_configuration.model_for_role(role)
-        if _fake_mode_enabled():
-            content = _fake_completion_content(role)
-            self._record_usage(
-                role=role,
-                usage=_fake_usage(role=role, model=model, messages=messages, content=content),
-            )
-            return content
         if self.async_openai_client is None:
-            raise ValueError("OpenAI client is required when fake mode is disabled")
+            raise ValueError("OpenAI client is required")
         response = await self.async_openai_client.chat.completions.create(
             model=model,
             messages=[message.model_dump(mode="json") for message in messages],
@@ -126,16 +119,8 @@ class LLMClient:
         messages: list[Message],
         output_type: type[StructuredOutput],
     ) -> StructuredOutput:
-        if _fake_mode_enabled():
-            model = self.model_configuration.model_for_role(role)
-            content = _fake_structured_content(output_type, messages)
-            self._record_usage(
-                role=role,
-                usage=_fake_usage(role=role, model=model, messages=messages, content=content),
-            )
-            return output_type.model_validate_json(content)
         if self.async_openai_client is None:
-            raise ValueError("OpenAI client is required when fake mode is disabled")
+            raise ValueError("OpenAI client is required")
         model = self.model_configuration.model_for_role(role)
         response = await self.async_openai_client.beta.chat.completions.parse(
             model=model,
@@ -170,115 +155,6 @@ class LLMClient:
         self._global_usage_ledger.record(usage)
         self.last_input_token_count = usage.input_tokens
         self.last_context_limit = self.model_configuration.context_limit_for_role(role)
-
-
-def _fake_mode_enabled() -> bool:
-    return os.getenv("LLM_FAKE_MODE") == "1"
-
-
-def _fake_completion_content(role: ModelRole) -> str:
-    match role:
-        case ModelRole.IMPLEMENTATION:
-            return ""
-        case _:
-            return "{}"
-
-
-def _fake_structured_content(output_type: type[BaseModel], messages: list[Message]) -> str:
-    match output_type.__name__:
-        case "TaskContract":
-            return (
-                '{"task_type":"bugfix","goal":"Run the smoke workflow",'
-                '"acceptance_criteria":["Workflow completes"],"non_goals":[],'
-                '"affected_areas":["smoke"],"risk_areas":[],"tests_expected":[],'
-                '"open_questions":[]}'
-            )
-        case "ComplexityVerdict":
-            return '{"requires_human_approval":false,"reasoning":"Narrow smoke task."}'
-        case "Plan":
-            return (
-                '{"summary":"Smoke test plan","steps":[{"id":"step_1",'
-                '"goal":"Add a deterministic smoke patch","target_files":["app.py","test_app.py"],'
-                '"allowed_files":["app.py","test_app.py"],"tests_to_run":["pytest -q"],'
-                '"expected_result":"Patch changes code and tests pass",'
-                '"risk":"low","requires_human_approval":false}],'
-                '"integration_tests":["pytest -q"],"rollback_strategy":"Discard workspace",'
-                '"definition_of_done":["Diff is non-empty","Smoke test passes"]}'
-            )
-        case "ContextGathererTurn":
-            return (
-                '{"done":true,"context_pack":{"task_summary":"Smoke context",'
-                '"relevant_snippets":[],"recent_observations":[],'
-                '"failed_attempt_summaries":[],"available_tools":[],"budget_remaining":0},'
-                '"tool_calls":[]}'
-            )
-        case "ImplementationAgentTurn":
-            if _fake_implementation_has_observations(messages):
-                return (
-                    '{"done":true,"worker_result":{"status":"success","patch_id":"smoke",'
-                    '"diff_summary":"Added smoke subtract function and test.",'
-                    '"tests_run":[],"test_results":[],"discovered_issues":[],'
-                    '"confidence":"high","replan_suggestion":null},"tool_calls":[]}'
-                )
-            return _fake_implementation_tool_turn()
-        case "ReviewVerdict":
-            return (
-                '{"verdict":"accept","blocking_issues":[],"non_blocking_issues":[],'
-                '"evidence":["Smoke workflow completed"],"missing_tests":[],'
-                '"regression_risks":[],"minimality_assessment":"No-op smoke change",'
-                '"recommended_next_action":"Accept smoke result"}'
-            )
-        case _:
-            raise ValueError(f"No fake structured response for {output_type.__name__}")
-
-
-def _fake_implementation_has_observations(messages: list[Message]) -> bool:
-    return any("tool=run_tests" in message.content for message in messages)
-
-
-def _fake_implementation_tool_turn() -> str:
-    patch = (
-        "diff --git a/app.py b/app.py\n"
-        "--- a/app.py\n"
-        "+++ b/app.py\n"
-        "@@ -1,2 +1,5 @@\n"
-        " def add(first_number: int, second_number: int) -> int:\n"
-        "     return first_number + second_number\n"
-        "+\n"
-        "+def subtract(first_number: int, second_number: int) -> int:\n"
-        "+    return first_number - second_number\n"
-        "diff --git a/test_app.py b/test_app.py\n"
-        "new file mode 100644\n"
-        "--- /dev/null\n"
-        "+++ b/test_app.py\n"
-        "@@ -0,0 +1,5 @@\n"
-        "+from app import subtract\n"
-        "+\n"
-        "+\n"
-        "+def test_subtract() -> None:\n"
-        "+    assert subtract(3, 1) == 2\n"
-    )
-    escaped_patch = patch.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-    return (
-        '{"done":false,"worker_result":null,"tool_calls":['
-        f'{{"tool_name":"apply_patch","patch":"{escaped_patch}"}},'
-        '{"tool_name":"run_tests","command":"pytest -q","timeout_seconds":60},'
-        '{"tool_name":"git_diff","path":"."}'
-        "]}"
-    )
-
-
-def _fake_usage(role: ModelRole, model: str, messages: list[Message], content: str) -> LLMUsage:
-    input_tokens = sum(len(message.content.split()) for message in messages)
-    output_tokens = len(content.split())
-    return LLMUsage(
-        role=role,
-        model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=0,
-        cost_usd=0.0,
-    )
 
 
 def _extract_content(response: ChatCompletion) -> str:
