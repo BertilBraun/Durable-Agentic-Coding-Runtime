@@ -4,15 +4,12 @@ import os
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.activities.temporal import durable_activity
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
     WorkspaceInfo,
+    run_tool,
 )
-from src.activities.workspace_manager import (
-    run_tool_in_workspace as run_tool,
-)
-from src.llm.client import LLMClient, Message
+from src.llm.client import Message, generate_structured
 from src.llm.config import CONTEXT_UTILIZATION_STOP_THRESHOLD, ModelRole
 from src.llm.prompts import system_prompt_for_role
 from src.models.context import ContextPack
@@ -36,10 +33,7 @@ class ContextGathererTurn(BaseModel):
     tool_calls: list[ContextGathererToolCall] = Field(default_factory=list)
 
 
-# TODO run_tool and llm generation are activities not the gather_context itself, everything around llm generation and run_tool is basically just deterministic orchestration
-@durable_activity(retries=1, timeout=300, backoff_seconds=5)
 async def gather_context(request: ContextGatherRequest) -> ContextPack:
-    llm_client = LLMClient()
     messages = [
         Message(
             role='system',
@@ -48,7 +42,8 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
         Message(
             role='user',
             content=(
-                f'Prompt: {request.gatherer_prompt}\n\nRepository index: {request.repo_index.model_dump_json()}'
+                f'Prompt: {request.gatherer_prompt}\n\n'
+                f'Repository index: {request.repo_index.model_dump_json()}'
             ),
         ),
     ]
@@ -58,12 +53,13 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
     tool_call_count = 0
 
     while tool_call_count < max_tool_calls:
-        turn = await llm_client.generate_structured(
+        completion = await generate_structured(
             role=ModelRole.CONTEXT_GATHERER,
             messages=messages,
             output_type=ContextGathererTurn,
         )
-        if llm_client.context_utilization() > CONTEXT_UTILIZATION_STOP_THRESHOLD:
+        turn = completion.output
+        if completion.result.context_utilization() > CONTEXT_UTILIZATION_STOP_THRESHOLD:
             return _best_effort_context_pack(request, observations)
         if turn.done and turn.context_pack is not None:
             return turn.context_pack

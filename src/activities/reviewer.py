@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.activities.temporal import durable_activity
 from src.activities.workspace_manager import WorkspaceInfo
-from src.llm.client import LLMClient, Message
+from src.llm.client import Message, generate_structured
 from src.llm.config import ModelRole
 from src.llm.prompts import system_prompt_for_role
 from src.models.plan import PlanStep
@@ -24,10 +23,8 @@ class ReviewRequest(BaseModel):
     workspace_info: WorkspaceInfo
 
 
-@durable_activity(retries=2, timeout=180, backoff_seconds=10)
 async def review_patch(request: ReviewRequest) -> ReviewVerdict:
-    llm_client = LLMClient()
-    return await llm_client.generate_structured(
+    completion = await generate_structured(
         role=ModelRole.REVIEWER,
         messages=[
             Message(
@@ -38,3 +35,4 @@ async def review_patch(request: ReviewRequest) -> ReviewVerdict:
         ],
         output_type=ReviewVerdict,
     )
+    return completion.output

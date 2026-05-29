@@ -10,14 +10,13 @@ from src.activities.context_gatherer import (
     ContextGatherRequest,
     gather_context,
 )
-from src.activities.temporal import durable_activity
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
     ToolResult,
     WorkspaceInfo,
     run_tool,
 )
-from src.llm.client import LLMClient, Message
+from src.llm.client import Message, generate_structured
 from src.llm.config import CONTEXT_UTILIZATION_STOP_THRESHOLD, ModelRole
 from src.llm.prompts import system_prompt_for_role
 from src.models.context import ContextPack
@@ -30,7 +29,6 @@ from src.tools.definitions import (
     GitDiff,
     ImplementationToolCall,
     RunTests,
-    Tool,
 )
 
 # TODO can that be extracted automatically somehow?
@@ -68,40 +66,11 @@ class ImplementationAgentTurn(BaseModel):
     tool_calls: list[ImplementationToolCall] = Field(default_factory=list)
 
 
-class ImplementationGenerationRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    messages: list[Message]
-
-
-class ImplementationGenerationResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    agent_turn: ImplementationAgentTurn
-    context_utilization: float
-
-
 @dataclass(frozen=True)
 class ImplementationEvidence:
     tests_run: tuple[str, ...]
     test_results: tuple[TestResult, ...]
     saw_diff: bool
-
-
-@durable_activity(retries=1, timeout=180, backoff_seconds=5)
-async def generate_implementation_agent_turn(
-    request: ImplementationGenerationRequest,
-) -> ImplementationGenerationResult:
-    llm_client = LLMClient()
-    agent_turn = await llm_client.generate_structured(
-        role=ModelRole.IMPLEMENTATION,
-        messages=request.messages,
-        output_type=ImplementationAgentTurn,
-    )
-    return ImplementationGenerationResult(
-        agent_turn=agent_turn,
-        context_utilization=llm_client.context_utilization(),
-    )
 
 
 # TODO very deeply nested.. But a lot of state to pass - so might be fine..
@@ -120,11 +89,13 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
     saw_diff = False
     completed_tool_calls: list[str] = []
     for _ in range(max_tool_rounds):
-        generation_result = await generate_implementation_agent_turn(
-            ImplementationGenerationRequest(messages=messages)
+        completion = await generate_structured(
+            role=ModelRole.IMPLEMENTATION,
+            messages=messages,
+            output_type=ImplementationAgentTurn,
         )
-        agent_turn = generation_result.agent_turn
-        if generation_result.context_utilization > CONTEXT_UTILIZATION_STOP_THRESHOLD:
+        agent_turn = completion.output
+        if completion.result.context_utilization() > CONTEXT_UTILIZATION_STOP_THRESHOLD:
             return _context_budget_blocked_worker_result(
                 completed_tool_calls=completed_tool_calls,
                 pending_tool_calls=[

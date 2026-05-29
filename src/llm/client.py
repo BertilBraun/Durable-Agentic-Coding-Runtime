@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import os
-from typing import ClassVar, Literal, Protocol, TypeVar
+from dataclasses import dataclass
+from typing import ClassVar, Generic, Literal, Protocol, TypeVar
 
 from openai import AsyncOpenAI
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ParsedChatCompletion
 from pydantic import BaseModel, ConfigDict, Field
+from temporal_light import activity
 
-from src.llm.config import ModelConfiguration, ModelRole, load_model_configuration
+from src.llm.config import ModelRole, load_model_configuration
 
 StructuredOutput = TypeVar('StructuredOutput', bound=BaseModel)
 
@@ -20,10 +22,32 @@ class Message(BaseModel):
     content: str
 
 
+class LLMResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    content: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cost_usd: float
+    context_limit_tokens: int
+
+    def context_utilization(self) -> float:
+        if self.context_limit_tokens <= 0:
+            return 0.0
+        return self.input_tokens / self.context_limit_tokens
+
+
+@dataclass(frozen=True)
+class StructuredCompletion(Generic[StructuredOutput]):
+    output: StructuredOutput
+    result: LLMResult
+
+
 class LLMUsage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    role: ModelRole
     model: str
     input_tokens: int = 0
     output_tokens: int = 0
@@ -78,57 +102,77 @@ class AsyncOpenAIClient(Protocol):
     beta: BetaNamespace
 
 
+_structured_output_registry: dict[str, type[BaseModel]] = {}
+
+
+def register_structured_output(output_type: type[BaseModel]) -> type[BaseModel]:
+    _structured_output_registry[output_type.__name__] = output_type
+    return output_type
+
+
+def _structured_output_type(name: str) -> type[BaseModel]:
+    if name not in _structured_output_registry:
+        raise ValueError(
+            f'Structured output type {name!r} is not registered. '
+            f'Apply @register_structured_output to its class definition.'
+        )
+    return _structured_output_registry[name]
+
+
 class LLMClient:
     # TODO again - note that global varaibles will not survive across activity invocations in temporal, so this global usage ledger will not work as intended, need to store in durable storage and pass around
     _global_usage_ledger: ClassVar[LLMUsageLedger] = LLMUsageLedger()
 
     def __init__(
         self,
-        model_configuration: ModelConfiguration | None = None,
         usage_ledger: LLMUsageLedger | None = None,
         async_openai_client: AsyncOpenAIClient | None = None,
     ) -> None:
-        self.model_configuration = model_configuration or load_model_configuration()
         self.usage_ledger = usage_ledger or LLMUsageLedger()
-        self.last_input_token_count = 0
-        self.last_context_limit = 1
         self.async_openai_client = async_openai_client or AsyncOpenAI(
             api_key=os.getenv('LLM_API_KEY'),
             base_url=os.getenv('LLM_BASE_URL'),
         )
 
-    async def complete(self, role: ModelRole, messages: list[Message]) -> str:
-        model = self.model_configuration.model_for_role(role)
+    async def complete(
+        self,
+        messages: list[Message],
+        model: str,
+        context_limit_tokens: int,
+    ) -> LLMResult:
         response = await self.async_openai_client.chat.completions.create(
             model=model,
             messages=_format_messages_for_api(messages),
         )
-        self._record_usage(
-            role=role,
-            usage=_usage_from_response(role=role, model=model, response=response),
+        result = _llm_result_from_response(
+            content=_extract_content(response),
+            model=model,
+            context_limit_tokens=context_limit_tokens,
+            response=response,
         )
-        return _extract_content(response)
+        self._record_usage(result)
+        return result
 
     async def generate_structured(
         self,
-        role: ModelRole,
         messages: list[Message],
         output_type: type[StructuredOutput],
-    ) -> StructuredOutput:
-        model = self.model_configuration.model_for_role(role)
+        model: str,
+        context_limit_tokens: int,
+    ) -> LLMResult:
         response = await self.async_openai_client.beta.chat.completions.parse(
             model=model,
             messages=_format_messages_for_api(messages),
             response_format=output_type,
         )
-        self._record_usage(
-            role=role,
-            usage=_usage_from_response(role=role, model=model, response=response),
+        result = _llm_result_from_response(
+            content=_extract_parsed_content(response),
+            model=model,
+            context_limit_tokens=context_limit_tokens,
+            response=response,
         )
-        return _extract_parsed(response)
-
-    def context_utilization(self) -> float:
-        return self.last_input_token_count / self.last_context_limit
+        self._record_usage(result)
+        return result
 
     @classmethod
     def reset_global_usage(cls) -> None:
@@ -144,11 +188,75 @@ class LLMClient:
             total_cost_usd=cls._global_usage_ledger.total_cost_usd,
         )
 
-    def _record_usage(self, role: ModelRole, usage: LLMUsage) -> None:
+    def _record_usage(self, result: LLMResult) -> None:
+        usage = LLMUsage(
+            model=result.model,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_read_tokens=result.cache_read_tokens,
+            cost_usd=result.cost_usd,
+        )
         self.usage_ledger.record(usage)
         self._global_usage_ledger.record(usage)
-        self.last_input_token_count = usage.input_tokens
-        self.last_context_limit = self.model_configuration.context_limit_for_role(role)
+
+
+@activity(retries=2, timeout=120, backoff_seconds=10)
+async def generate_completion(
+    messages: list[Message],
+    model: str,
+    context_limit_tokens: int,
+) -> LLMResult:
+    llm_client = LLMClient()
+    return await llm_client.complete(
+        messages=messages,
+        model=model,
+        context_limit_tokens=context_limit_tokens,
+    )
+
+
+@activity(retries=2, timeout=180, backoff_seconds=10)
+async def generate_structured_completion(
+    messages: list[Message],
+    output_type_name: str,
+    model: str,
+    context_limit_tokens: int,
+) -> LLMResult:
+    output_type = _structured_output_type(output_type_name)
+    llm_client = LLMClient()
+    return await llm_client.generate_structured(
+        messages=messages,
+        output_type=output_type,
+        model=model,
+        context_limit_tokens=context_limit_tokens,
+    )
+
+
+async def generate(role: ModelRole, messages: list[Message]) -> LLMResult:
+    model_configuration = load_model_configuration()
+    return await generate_completion(
+        messages=messages,
+        model=model_configuration.model_for_role(role),
+        context_limit_tokens=model_configuration.context_limit_for_role(role),
+    )
+
+
+async def generate_structured(
+    role: ModelRole,
+    messages: list[Message],
+    output_type: type[StructuredOutput],
+) -> StructuredCompletion[StructuredOutput]:
+    register_structured_output(output_type)
+    model_configuration = load_model_configuration()
+    result = await generate_structured_completion(
+        messages=messages,
+        output_type_name=output_type.__name__,
+        model=model_configuration.model_for_role(role),
+        context_limit_tokens=model_configuration.context_limit_for_role(role),
+    )
+    return StructuredCompletion(
+        output=output_type.model_validate_json(result.content),
+        result=result,
+    )
 
 
 def _format_messages_for_api(messages: list[Message]) -> list[ChatCompletionMessageParam]:
@@ -162,27 +270,41 @@ def _extract_content(response: ChatCompletion) -> str:
     return content
 
 
-def _extract_parsed(response: ParsedChatCompletion[StructuredOutput]) -> StructuredOutput:
-    parsed = response.choices[0].message.parsed
-    if parsed is None:
-        raise ValueError('LLM structured response did not include parsed content')
-    return parsed
+def _extract_parsed_content(response: ParsedChatCompletion[StructuredOutput]) -> str:
+    content = response.choices[0].message.content
+    if content is None:
+        raise ValueError('LLM structured response did not include content')
+    return content
 
 
-def _usage_from_response(role: ModelRole, model: str, response: ChatCompletion) -> LLMUsage:
+def _llm_result_from_response(
+    content: str,
+    model: str,
+    context_limit_tokens: int,
+    response: ChatCompletion,
+) -> LLMResult:
     usage = response.usage
     if usage is None:
-        return LLMUsage(role=role, model=model)
+        return LLMResult(
+            content=content,
+            model=model,
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cost_usd=0.0,
+            context_limit_tokens=context_limit_tokens,
+        )
     input_tokens = usage.prompt_tokens
     output_tokens = usage.completion_tokens
     cache_read_tokens = _cache_read_tokens(usage)
-    return LLMUsage(
-        role=role,
+    return LLMResult(
+        content=content,
         model=model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
         cost_usd=_estimate_cost_usd(model, input_tokens, output_tokens, cache_read_tokens),
+        context_limit_tokens=context_limit_tokens,
     )
 
 

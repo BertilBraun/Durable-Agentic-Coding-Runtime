@@ -19,7 +19,7 @@ from src.eval.swe_bench import (
     _select_evaluation_instances,
     _start_official_container,
 )
-from src.llm.client import Message
+from src.llm.client import LLMResult, Message
 from src.llm.config import ModelRole
 
 
@@ -200,15 +200,18 @@ async def test_run_baseline_task_scores_generated_patch_with_oracle(
 ) -> None:
     docker_client = FakeDockerClient()
 
-    class FakeBaselineClient:
-        def __init__(self) -> None:
-            self.usage_ledger = FakeUsageLedger()
+    async def fake_generate(role: ModelRole, messages: list[Message]) -> LLMResult:
+        return LLMResult(
+            content='```diff\ndiff --git a/app.py b/app.py\n```\n',
+            model='fake-model',
+            input_tokens=10,
+            output_tokens=2,
+            cache_read_tokens=0,
+            cost_usd=0.0,
+            context_limit_tokens=100,
+        )
 
-        async def complete(self, role: ModelRole, messages: list[Message]) -> str:
-            self.usage_ledger.calls.append('call')
-            return '```diff\ndiff --git a/app.py b/app.py\n```\n'
-
-    monkeypatch.setattr('src.eval.swe_bench.LLMClient', FakeBaselineClient)
+    monkeypatch.setattr('src.eval.swe_bench.generate', fake_generate)
 
     result = await _run_baseline_task(
         instance=_instance('python-1', 'python'),

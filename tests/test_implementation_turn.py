@@ -1,18 +1,18 @@
 import json
+from collections.abc import Awaitable, Callable
 
 import pytest
 from pydantic import BaseModel, ValidationError
+from src.activities import implementation as implementation_module
 from src.activities.context_gatherer import ContextGatherRequest
 from src.activities.implementation import (
     IMPLEMENTATION_AVAILABLE_TOOLS,
     ImplementationAgentTurn,
-    ImplementationGenerationResult,
     ImplementationTurnRequest,
-    _tool_from_call,
     run_implementation_turn,
 )
 from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceInfo
-from src.llm.client import Message
+from src.llm.client import LLMResult, Message, StructuredCompletion
 from src.llm.config import ModelRole
 from src.models.context import ContextPack
 from src.models.plan import PlanStep, Risk
@@ -21,59 +21,40 @@ from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerStatus
 from src.tools.definitions import (
     GitDiff,
-    GitStatus,
     ImplementationToolCallAdapter,
-    ReadFileRange,
     RunTests,
     ToolName,
 )
 
 
-class FakeImplementationClient:
-    def __init__(self) -> None:
-        self.call_count = 0
+def _structured_completion(output: BaseModel, context_utilization: float) -> StructuredCompletion:
+    input_tokens = int(context_utilization * 100)
+    return StructuredCompletion(
+        output=output,
+        result=LLMResult(
+            content=output.model_dump_json(),
+            model='fake-model',
+            input_tokens=input_tokens,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cost_usd=0.0,
+            context_limit_tokens=100,
+        ),
+    )
 
-    async def generate_structured(
-        self,
+
+def _patch_generate_structured(
+    monkeypatch: pytest.MonkeyPatch,
+    handler: Callable[[list[Message], type[BaseModel]], Awaitable[StructuredCompletion]],
+) -> None:
+    async def fake_generate_structured(
         role: ModelRole,
         messages: list[Message],
         output_type: type[BaseModel],
-    ) -> BaseModel:
-        self.call_count += 1
-        if self.call_count == 1:
-            assert output_type.__name__ == 'ImplementationAgentTurn'
-            return output_type.model_validate(
-                {
-                    'done': False,
-                    'tool_calls': [
-                        {
-                            'tool_name': 'read_file_range',
-                            'file_path': 'src/app.py',
-                            'start_line': 1,
-                            'end_line': 5,
-                        }
-                    ],
-                }
-            )
-        assert output_type.__name__ == 'ImplementationAgentTurn'
-        return output_type.model_validate(
-            {
-                'done': True,
-                'worker_result': {
-                    'status': 'blocked',
-                    'patch_id': None,
-                    'diff_summary': 'Read target file.',
-                    'tests_run': [],
-                    'test_results': [],
-                    'discovered_issues': [],
-                    'confidence': 'low',
-                    'replan_suggestion': 'Need an edit or test to complete the step.',
-                },
-            }
-        )
+    ) -> StructuredCompletion:
+        return await handler(messages, output_type)
 
-    def context_utilization(self) -> float:
-        return 0.0
+    monkeypatch.setattr(implementation_module, 'generate_structured', fake_generate_structured)
 
 
 @pytest.mark.asyncio
@@ -86,25 +67,48 @@ async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.Monke
         repo_indexes.append(request.repo_index)
         return ToolResult(stdout='file content', stderr='', exit_code=0, truncated=False)
 
-    fake_client = FakeImplementationClient()
+    call_count = 0
 
-    async def fake_generate_implementation_agent_turn(
-        request: object,
-    ) -> ImplementationGenerationResult:
-        return ImplementationGenerationResult(
-            agent_turn=await fake_client.generate_structured(
-                role=ModelRole.IMPLEMENTATION,
-                messages=request.messages,
-                output_type=ImplementationAgentTurn,
-            ),
-            context_utilization=fake_client.context_utilization(),
-        )
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        nonlocal call_count
+        call_count += 1
+        assert output_type.__name__ == 'ImplementationAgentTurn'
+        if call_count == 1:
+            turn = output_type.model_validate(
+                {
+                    'done': False,
+                    'tool_calls': [
+                        {
+                            'tool_name': 'read_file_range',
+                            'file_path': 'src/app.py',
+                            'start_line': 1,
+                            'end_line': 5,
+                        }
+                    ],
+                }
+            )
+        else:
+            turn = output_type.model_validate(
+                {
+                    'done': True,
+                    'worker_result': {
+                        'status': 'blocked',
+                        'patch_id': None,
+                        'diff_summary': 'Read target file.',
+                        'tests_run': [],
+                        'test_results': [],
+                        'discovered_issues': [],
+                        'confidence': 'low',
+                        'replan_suggestion': 'Need an edit or test to complete the step.',
+                    },
+                }
+            )
+        return _structured_completion(turn, context_utilization=0.0)
 
-    monkeypatch.setattr(
-        'src.activities.implementation.generate_implementation_agent_turn',
-        fake_generate_implementation_agent_turn,
-    )
-    monkeypatch.setattr('src.activities.implementation.run_tool', fake_run_tool)
+    _patch_generate_structured(monkeypatch, handler)
+    monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
 
     worker_result = await run_implementation_turn(_implementation_request())
 
@@ -120,32 +124,28 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
 ) -> None:
     captured_messages: list[list[Message]] = []
     captured_gather_prompts: list[str] = []
+    call_count = 0
 
-    class FakeGatherContextClient:
-        def __init__(self) -> None:
-            self.call_count = 0
-
-        async def generate_structured(
-            self,
-            role: ModelRole,
-            messages: list[Message],
-            output_type: type[BaseModel],
-        ) -> BaseModel:
-            self.call_count += 1
-            captured_messages.append(messages)
-            if self.call_count == 1:
-                return output_type.model_validate(
-                    {
-                        'done': False,
-                        'tool_calls': [
-                            {
-                                'tool_name': 'gather_context',
-                                'prompt': 'Find auth callers',
-                            }
-                        ],
-                    }
-                )
-            return output_type.model_validate(
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        nonlocal call_count
+        call_count += 1
+        captured_messages.append(messages)
+        if call_count == 1:
+            turn = output_type.model_validate(
+                {
+                    'done': False,
+                    'tool_calls': [
+                        {
+                            'tool_name': 'gather_context',
+                            'prompt': 'Find auth callers',
+                        }
+                    ],
+                }
+            )
+        else:
+            turn = output_type.model_validate(
                 {
                     'done': True,
                     'worker_result': {
@@ -160,9 +160,7 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
                     },
                 }
             )
-
-        def context_utilization(self) -> float:
-            return 0.0
+        return _structured_completion(turn, context_utilization=0.0)
 
     async def fake_gather_context(request: ContextGatherRequest) -> ContextPack:
         captured_gather_prompts.append(request.gatherer_prompt)
@@ -178,26 +176,9 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         raise AssertionError(f'run_tool should not handle gather_context: {request.tool}')
 
-    fake_client = FakeGatherContextClient()
-
-    async def fake_generate_implementation_agent_turn(
-        request: object,
-    ) -> ImplementationGenerationResult:
-        return ImplementationGenerationResult(
-            agent_turn=await fake_client.generate_structured(
-                role=ModelRole.IMPLEMENTATION,
-                messages=request.messages,
-                output_type=ImplementationAgentTurn,
-            ),
-            context_utilization=fake_client.context_utilization(),
-        )
-
-    monkeypatch.setattr(
-        'src.activities.implementation.generate_implementation_agent_turn',
-        fake_generate_implementation_agent_turn,
-    )
-    monkeypatch.setattr('src.activities.implementation.gather_context', fake_gather_context)
-    monkeypatch.setattr('src.activities.implementation.run_tool', fake_run_tool)
+    _patch_generate_structured(monkeypatch, handler)
+    monkeypatch.setattr(implementation_module, 'gather_context', fake_gather_context)
+    monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
 
     worker_result = await run_implementation_turn(_implementation_request())
 
@@ -250,125 +231,29 @@ def test_implementation_tool_call_rejects_missing_required_payload_field() -> No
         )
 
 
-def test_implementation_read_file_range_preserves_explicit_file_window() -> None:
-    agent_turn = ImplementationAgentTurn.model_validate(
-        {
-            'done': False,
-            'tool_calls': [
-                {
-                    'tool_name': 'read_file_range',
-                    'file_path': 'app/main.py',
-                    'start_line': 1,
-                    'end_line': 400,
-                }
-            ],
-        }
-    )
-
-    tool = _tool_from_call(agent_turn.tool_calls[0])
-
-    assert tool == ReadFileRange(
-        file_path='app/main.py',
-        start_line=1,
-        end_line=400,
-    )
-
-
-def test_implementation_run_tests_preserves_explicit_timeout_and_directory() -> None:
-    agent_turn = ImplementationAgentTurn.model_validate(
-        {
-            'done': False,
-            'tool_calls': [
-                {
-                    'tool_name': 'run_tests',
-                    'command': 'pytest -q',
-                    'timeout_seconds': 120,
-                    'directory': '.',
-                }
-            ],
-        }
-    )
-
-    tool = _tool_from_call(agent_turn.tool_calls[0])
-
-    assert tool == RunTests(
-        command='pytest -q',
-        timeout_seconds=120,
-        directory='.',
-    )
-
-
-def test_implementation_run_tests_preserves_directory() -> None:
-    agent_turn = ImplementationAgentTurn.model_validate(
-        {
-            'done': False,
-            'tool_calls': [
-                {
-                    'tool_name': 'run_tests',
-                    'command': 'pytest -q',
-                    'timeout_seconds': 120,
-                    'directory': 'examples/agentic-fastapi-smoke',
-                }
-            ],
-        }
-    )
-
-    tool = _tool_from_call(agent_turn.tool_calls[0])
-
-    assert tool == RunTests(
-        command='pytest -q',
-        timeout_seconds=120,
-        directory='examples/agentic-fastapi-smoke',
-    )
-
-
-def test_implementation_git_status_preserves_explicit_path() -> None:
-    agent_turn = ImplementationAgentTurn.model_validate(
-        {
-            'done': False,
-            'tool_calls': [
-                {
-                    'tool_name': 'git_status',
-                    'path': '.',
-                }
-            ],
-        }
-    )
-
-    tool = _tool_from_call(agent_turn.tool_calls[0])
-
-    assert tool == GitStatus(path='.')
-
-
 @pytest.mark.asyncio
 async def test_implementation_turn_preserves_run_tests_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_timeout_seconds: list[int] = []
 
-    class FakeRunTestsClient:
-        async def generate_structured(
-            self,
-            role: ModelRole,
-            messages: list[Message],
-            output_type: type[BaseModel],
-        ) -> BaseModel:
-            return output_type.model_validate(
-                {
-                    'done': False,
-                    'tool_calls': [
-                        {
-                            'tool_name': 'run_tests',
-                            'command': 'pytest -q',
-                            'timeout_seconds': 19,
-                            'directory': '.',
-                        }
-                    ],
-                }
-            )
-
-        def context_utilization(self) -> float:
-            return 0.0
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        turn = output_type.model_validate(
+            {
+                'done': False,
+                'tool_calls': [
+                    {
+                        'tool_name': 'run_tests',
+                        'command': 'pytest -q',
+                        'timeout_seconds': 19,
+                        'directory': '.',
+                    }
+                ],
+            }
+        )
+        return _structured_completion(turn, context_utilization=0.0)
 
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         match request.tool:
@@ -379,8 +264,8 @@ async def test_implementation_turn_preserves_run_tests_timeout(
         return ToolResult(stdout='tests failed', stderr='', exit_code=1, truncated=False)
 
     monkeypatch.setenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '1')
-    monkeypatch.setattr('src.activities.implementation.LLMClient', FakeRunTestsClient)
-    monkeypatch.setattr('src.activities.implementation.run_tool', fake_run_tool)
+    _patch_generate_structured(monkeypatch, handler)
+    monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
 
     worker_result = await run_implementation_turn(_implementation_request())
 
@@ -392,36 +277,33 @@ async def test_implementation_turn_preserves_run_tests_timeout(
 async def test_implementation_turn_adds_run_tests_result_to_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeSuccessAfterTestsClient:
-        def __init__(self) -> None:
-            self.call_count = 0
+    call_count = 0
 
-        async def generate_structured(
-            self,
-            role: ModelRole,
-            messages: list[Message],
-            output_type: type[BaseModel],
-        ) -> BaseModel:
-            self.call_count += 1
-            if self.call_count == 1:
-                return output_type.model_validate(
-                    {
-                        'done': False,
-                        'tool_calls': [
-                            {
-                                'tool_name': 'run_tests',
-                                'command': 'pytest tests/test_app.py -q',
-                                'timeout_seconds': 30,
-                                'directory': '.',
-                            },
-                            {
-                                'tool_name': 'git_diff',
-                                'path': '.',
-                            },
-                        ],
-                    }
-                )
-            return output_type.model_validate(
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            turn = output_type.model_validate(
+                {
+                    'done': False,
+                    'tool_calls': [
+                        {
+                            'tool_name': 'run_tests',
+                            'command': 'pytest tests/test_app.py -q',
+                            'timeout_seconds': 30,
+                            'directory': '.',
+                        },
+                        {
+                            'tool_name': 'git_diff',
+                            'path': '.',
+                        },
+                    ],
+                }
+            )
+        else:
+            turn = output_type.model_validate(
                 {
                     'done': True,
                     'worker_result': {
@@ -436,9 +318,7 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
                     },
                 }
             )
-
-        def context_utilization(self) -> float:
-            return 0.0
+        return _structured_completion(turn, context_utilization=0.0)
 
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         match request.tool:
@@ -454,25 +334,8 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
             case _:
                 raise AssertionError(f'Unexpected tool: {request.tool}')
 
-    fake_client = FakeSuccessAfterTestsClient()
-
-    async def fake_generate_implementation_agent_turn(
-        request: object,
-    ) -> ImplementationGenerationResult:
-        return ImplementationGenerationResult(
-            agent_turn=await fake_client.generate_structured(
-                role=ModelRole.IMPLEMENTATION,
-                messages=request.messages,
-                output_type=ImplementationAgentTurn,
-            ),
-            context_utilization=fake_client.context_utilization(),
-        )
-
-    monkeypatch.setattr(
-        'src.activities.implementation.generate_implementation_agent_turn',
-        fake_generate_implementation_agent_turn,
-    )
-    monkeypatch.setattr('src.activities.implementation.run_tool', fake_run_tool)
+    _patch_generate_structured(monkeypatch, handler)
+    monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
 
     worker_result = await run_implementation_turn(_implementation_request())
 
@@ -487,33 +350,27 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
 async def test_implementation_turn_rejects_success_without_diff_or_test_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeUnsupportedSuccessClient:
-        async def generate_structured(
-            self,
-            role: ModelRole,
-            messages: list[Message],
-            output_type: type[BaseModel],
-        ) -> BaseModel:
-            return output_type.model_validate(
-                {
-                    'done': True,
-                    'worker_result': {
-                        'status': 'success',
-                        'patch_id': 'patch-1',
-                        'diff_summary': '',
-                        'tests_run': [],
-                        'test_results': [],
-                        'discovered_issues': [],
-                        'confidence': 'high',
-                        'replan_suggestion': None,
-                    },
-                }
-            )
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        turn = output_type.model_validate(
+            {
+                'done': True,
+                'worker_result': {
+                    'status': 'success',
+                    'patch_id': 'patch-1',
+                    'diff_summary': '',
+                    'tests_run': [],
+                    'test_results': [],
+                    'discovered_issues': [],
+                    'confidence': 'high',
+                    'replan_suggestion': None,
+                },
+            }
+        )
+        return _structured_completion(turn, context_utilization=0.0)
 
-        def context_utilization(self) -> float:
-            return 0.0
-
-    monkeypatch.setattr('src.activities.implementation.LLMClient', FakeUnsupportedSuccessClient)
+    _patch_generate_structured(monkeypatch, handler)
 
     worker_result = await run_implementation_turn(_implementation_request())
 
@@ -525,33 +382,27 @@ async def test_implementation_turn_rejects_success_without_diff_or_test_evidence
 async def test_implementation_turn_rejects_success_with_only_diff_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeNarrativeDiffClient:
-        async def generate_structured(
-            self,
-            role: ModelRole,
-            messages: list[Message],
-            output_type: type[BaseModel],
-        ) -> BaseModel:
-            return output_type.model_validate(
-                {
-                    'done': True,
-                    'worker_result': {
-                        'status': 'success',
-                        'patch_id': 'patch-1',
-                        'diff_summary': 'No changes were needed.',
-                        'tests_run': [],
-                        'test_results': [],
-                        'discovered_issues': [],
-                        'confidence': 'high',
-                        'replan_suggestion': None,
-                    },
-                }
-            )
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        turn = output_type.model_validate(
+            {
+                'done': True,
+                'worker_result': {
+                    'status': 'success',
+                    'patch_id': 'patch-1',
+                    'diff_summary': 'No changes were needed.',
+                    'tests_run': [],
+                    'test_results': [],
+                    'discovered_issues': [],
+                    'confidence': 'high',
+                    'replan_suggestion': None,
+                },
+            }
+        )
+        return _structured_completion(turn, context_utilization=0.0)
 
-        def context_utilization(self) -> float:
-            return 0.0
-
-    monkeypatch.setattr('src.activities.implementation.LLMClient', FakeNarrativeDiffClient)
+    _patch_generate_structured(monkeypatch, handler)
 
     worker_result = await run_implementation_turn(_implementation_request())
 
@@ -563,35 +414,29 @@ async def test_implementation_turn_rejects_success_with_only_diff_summary(
 async def test_implementation_turn_blocks_when_context_budget_is_high(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeHighContextClient:
-        async def generate_structured(
-            self,
-            role: ModelRole,
-            messages: list[Message],
-            output_type: type[BaseModel],
-        ) -> BaseModel:
-            return output_type.model_validate(
-                {
-                    'done': False,
-                    'tool_calls': [
-                        {
-                            'tool_name': 'read_file_range',
-                            'file_path': 'src/app.py',
-                            'start_line': 1,
-                            'end_line': 5,
-                        }
-                    ],
-                }
-            )
-
-        def context_utilization(self) -> float:
-            return 0.81
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        turn = output_type.model_validate(
+            {
+                'done': False,
+                'tool_calls': [
+                    {
+                        'tool_name': 'read_file_range',
+                        'file_path': 'src/app.py',
+                        'start_line': 1,
+                        'end_line': 5,
+                    }
+                ],
+            }
+        )
+        return _structured_completion(turn, context_utilization=0.81)
 
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         raise AssertionError(f'run_tool should not run after budget block: {request.tool}')
 
-    monkeypatch.setattr('src.activities.implementation.LLMClient', FakeHighContextClient)
-    monkeypatch.setattr('src.activities.implementation.run_tool', fake_run_tool)
+    _patch_generate_structured(monkeypatch, handler)
+    monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
 
     worker_result = await run_implementation_turn(_implementation_request())
 
@@ -607,34 +452,28 @@ async def test_implementation_turn_user_message_excludes_repo_index(
 ) -> None:
     captured_user_payloads: list[dict[str, object]] = []
 
-    class FakePromptClient:
-        async def generate_structured(
-            self,
-            role: ModelRole,
-            messages: list[Message],
-            output_type: type[BaseModel],
-        ) -> BaseModel:
-            captured_user_payloads.append(json.loads(messages[1].content))
-            return output_type.model_validate(
-                {
-                    'done': True,
-                    'worker_result': {
-                        'status': 'blocked',
-                        'patch_id': None,
-                        'diff_summary': 'Prompt inspected.',
-                        'tests_run': [],
-                        'test_results': [],
-                        'discovered_issues': [],
-                        'confidence': 'low',
-                        'replan_suggestion': 'Continue.',
-                    },
-                }
-            )
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        captured_user_payloads.append(json.loads(messages[1].content))
+        turn = output_type.model_validate(
+            {
+                'done': True,
+                'worker_result': {
+                    'status': 'blocked',
+                    'patch_id': None,
+                    'diff_summary': 'Prompt inspected.',
+                    'tests_run': [],
+                    'test_results': [],
+                    'discovered_issues': [],
+                    'confidence': 'low',
+                    'replan_suggestion': 'Continue.',
+                },
+            }
+        )
+        return _structured_completion(turn, context_utilization=0.0)
 
-        def context_utilization(self) -> float:
-            return 0.0
-
-    monkeypatch.setattr('src.activities.implementation.LLMClient', FakePromptClient)
+    _patch_generate_structured(monkeypatch, handler)
 
     await run_implementation_turn(_implementation_request())
 

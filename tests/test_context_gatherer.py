@@ -1,16 +1,18 @@
+from collections.abc import Awaitable, Callable
+
 import pytest
 from pydantic import BaseModel, ValidationError
+from src.activities import context_gatherer as context_gatherer_module
 from src.activities.context_gatherer import (
     ContextGathererTurn,
     ContextGatherRequest,
-    _tool_from_call,
     gather_context,
 )
 from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceInfo
-from src.llm.client import Message
+from src.llm.client import LLMResult, Message, StructuredCompletion
 from src.llm.config import ModelRole
 from src.models.repo import RepoIndex
-from src.tools.definitions import ContextGathererToolCallAdapter, ReadFileRange
+from src.tools.definitions import ContextGathererToolCallAdapter
 
 
 def test_context_gatherer_rejects_unknown_tool() -> None:
@@ -48,28 +50,34 @@ def test_context_gatherer_tool_conversion_asserts_missing_required_payload_field
         ContextGathererToolCallAdapter.validate_python({'tool_name': 'find_references'})
 
 
-def test_context_gatherer_read_file_range_preserves_explicit_file_window() -> None:
-    turn = ContextGathererTurn.model_validate(
-        {
-            'done': False,
-            'tool_calls': [
-                {
-                    'tool_name': 'read_file_range',
-                    'file_path': 'app/main.py',
-                    'start_line': 1,
-                    'end_line': 400,
-                }
-            ],
-        }
+def _structured_completion(output: BaseModel, context_utilization: float) -> StructuredCompletion:
+    input_tokens = int(context_utilization * 100)
+    return StructuredCompletion(
+        output=output,
+        result=LLMResult(
+            content=output.model_dump_json(),
+            model='fake-model',
+            input_tokens=input_tokens,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cost_usd=0.0,
+            context_limit_tokens=100,
+        ),
     )
 
-    tool = _tool_from_call(turn.tool_calls[0])
 
-    assert tool == ReadFileRange(
-        file_path='app/main.py',
-        start_line=1,
-        end_line=400,
-    )
+def _patch_generate_structured(
+    monkeypatch: pytest.MonkeyPatch,
+    handler: Callable[[list[Message], type[BaseModel]], Awaitable[StructuredCompletion]],
+) -> None:
+    async def fake_generate_structured(
+        role: ModelRole,
+        messages: list[Message],
+        output_type: type[BaseModel],
+    ) -> StructuredCompletion:
+        return await handler(messages, output_type)
+
+    monkeypatch.setattr(context_gatherer_module, 'generate_structured', fake_generate_structured)
 
 
 @pytest.mark.asyncio
@@ -78,40 +86,36 @@ async def test_context_gatherer_sends_only_current_turn_observations(
 ) -> None:
     captured_messages: list[list[Message]] = []
     tool_outputs = ['turn one first', 'turn one second', 'turn two first', 'turn two second']
+    call_count = 0
 
-    class FakeContextGathererClient:
-        def __init__(self) -> None:
-            self.call_count = 0
-
-        async def generate_structured(
-            self,
-            role: ModelRole,
-            messages: list[Message],
-            output_type: type[BaseModel],
-        ) -> BaseModel:
-            self.call_count += 1
-            captured_messages.append(messages)
-            if self.call_count < 3:
-                return output_type.model_validate(
-                    {
-                        'done': False,
-                        'tool_calls': [
-                            {
-                                'tool_name': 'search_text',
-                                'pattern': f'pattern-{self.call_count}-a',
-                                'directory': '.',
-                                'file_glob': '*.py',
-                            },
-                            {
-                                'tool_name': 'search_text',
-                                'pattern': f'pattern-{self.call_count}-b',
-                                'directory': '.',
-                                'file_glob': '*.py',
-                            },
-                        ],
-                    }
-                )
-            return output_type.model_validate(
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        nonlocal call_count
+        call_count += 1
+        captured_messages.append(messages)
+        if call_count < 3:
+            turn = output_type.model_validate(
+                {
+                    'done': False,
+                    'tool_calls': [
+                        {
+                            'tool_name': 'search_text',
+                            'pattern': f'pattern-{call_count}-a',
+                            'directory': '.',
+                            'file_glob': '*.py',
+                        },
+                        {
+                            'tool_name': 'search_text',
+                            'pattern': f'pattern-{call_count}-b',
+                            'directory': '.',
+                            'file_glob': '*.py',
+                        },
+                    ],
+                }
+            )
+        else:
+            turn = output_type.model_validate(
                 {
                     'done': True,
                     'context_pack': {
@@ -124,15 +128,13 @@ async def test_context_gatherer_sends_only_current_turn_observations(
                     },
                 }
             )
-
-        def context_utilization(self) -> float:
-            return 0.0
+        return _structured_completion(turn, context_utilization=0.0)
 
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         return ToolResult(stdout=tool_outputs.pop(0), stderr='', exit_code=0, truncated=False)
 
-    monkeypatch.setattr('src.activities.context_gatherer.LLMClient', FakeContextGathererClient)
-    monkeypatch.setattr('src.activities.context_gatherer.run_tool', fake_run_tool)
+    _patch_generate_structured(monkeypatch, handler)
+    monkeypatch.setattr(context_gatherer_module, 'run_tool', fake_run_tool)
 
     await gather_context(_context_gather_request())
 
@@ -147,35 +149,29 @@ async def test_context_gatherer_sends_only_current_turn_observations(
 async def test_context_gatherer_returns_best_effort_when_context_budget_is_high(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeHighContextGathererClient:
-        async def generate_structured(
-            self,
-            role: ModelRole,
-            messages: list[Message],
-            output_type: type[BaseModel],
-        ) -> BaseModel:
-            return output_type.model_validate(
-                {
-                    'done': False,
-                    'tool_calls': [
-                        {
-                            'tool_name': 'search_text',
-                            'pattern': 'handler',
-                            'directory': '.',
-                            'file_glob': '*.py',
-                        }
-                    ],
-                }
-            )
-
-        def context_utilization(self) -> float:
-            return 0.81
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        turn = output_type.model_validate(
+            {
+                'done': False,
+                'tool_calls': [
+                    {
+                        'tool_name': 'search_text',
+                        'pattern': 'handler',
+                        'directory': '.',
+                        'file_glob': '*.py',
+                    }
+                ],
+            }
+        )
+        return _structured_completion(turn, context_utilization=0.81)
 
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         raise AssertionError(f'run_tool should not run after budget stop: {request.tool}')
 
-    monkeypatch.setattr('src.activities.context_gatherer.LLMClient', FakeHighContextGathererClient)
-    monkeypatch.setattr('src.activities.context_gatherer.run_tool', fake_run_tool)
+    _patch_generate_structured(monkeypatch, handler)
+    monkeypatch.setattr(context_gatherer_module, 'run_tool', fake_run_tool)
 
     context_pack = await gather_context(_context_gather_request())
 

@@ -12,7 +12,7 @@ import docker.models.containers
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.llm.client import LLMClient, Message
+from src.llm.client import Message, generate
 from src.llm.config import ModelRole
 
 
@@ -443,8 +443,7 @@ async def _run_baseline_task(
     docker_client: docker.DockerClient,
 ) -> EvaluationTaskResult:
     started_at = time.monotonic()
-    llm_client = LLMClient()
-    patch_response = await llm_client.complete(
+    patch_response = await generate(
         role=ModelRole.IMPLEMENTATION,
         messages=[
             Message(
@@ -454,7 +453,7 @@ async def _run_baseline_task(
             Message(role='user', content=instance.problem_statement),
         ],
     )
-    patch = _extract_patch_from_llm_response(patch_response)
+    patch = _extract_patch_from_llm_response(patch_response.content)
     oracle_result = _evaluate_patch_with_oracle(
         instance=instance,
         patch=patch,
@@ -464,8 +463,8 @@ async def _run_baseline_task(
         instance_id=instance.instance_id,
         status='resolved' if oracle_result.resolved else 'failed',
         resolved=oracle_result.resolved,
-        cost_usd=llm_client.usage_ledger.total_cost_usd,
-        llm_calls=len(llm_client.usage_ledger.calls),
+        cost_usd=patch_response.cost_usd,
+        llm_calls=1,
         wall_clock_seconds=time.monotonic() - started_at,
         reason=oracle_result.reason,
         patch=patch,

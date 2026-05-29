@@ -1,10 +1,8 @@
 import json
-from typing import Any
 
 import pytest
 from openai.types.chat import ChatCompletion, ParsedChatCompletion
 from src.llm.client import LLMClient, LLMUsageLedger, Message
-from src.llm.config import ModelConfiguration, ModelContextLimit, ModelRole
 from src.models.approval import ComplexityVerdict
 
 
@@ -95,27 +93,29 @@ class FakeAsyncOpenAI:
 
 
 @pytest.mark.asyncio
-async def test_structured_generation_parses_model_and_records_usage() -> None:
+async def test_structured_generation_returns_llm_result_and_records_usage() -> None:
     LLMClient.reset_global_usage()
     async_openai_client = FakeAsyncOpenAI()
     llm_client = LLMClient(
-        model_configuration=_model_configuration(),
         usage_ledger=LLMUsageLedger(),
         async_openai_client=async_openai_client,
     )
 
-    verdict = await llm_client.generate_structured(
-        role=ModelRole.COMPLEXITY_ASSESSOR,
+    result = await llm_client.generate_structured(
         messages=[Message(role='user', content='Assess this task')],
         output_type=ComplexityVerdict,
+        model='complexity-model',
+        context_limit_tokens=100,
     )
 
-    assert verdict.requires_human_approval is False
     assert async_openai_client.completions.parse_calls[0]['response_format'] == ComplexityVerdict
+    assert result.model == 'complexity-model'
+    assert result.input_tokens == 10
+    assert result.output_tokens == 4
+    assert result.context_utilization() == 0.1
+    assert ComplexityVerdict.model_validate_json(result.content).requires_human_approval is False
     assert llm_client.usage_ledger.total_input_tokens == 10
     assert llm_client.usage_ledger.total_output_tokens == 4
-    assert llm_client.last_input_token_count == 10
-    assert llm_client.context_utilization() == 0.1
     usage_summary = LLMClient.global_usage_summary()
     assert usage_summary.call_count == 1
     assert usage_summary.total_input_tokens == 10
@@ -123,42 +123,21 @@ async def test_structured_generation_parses_model_and_records_usage() -> None:
 
 
 @pytest.mark.asyncio
-async def test_completion_extracts_string_content_and_records_usage() -> None:
+async def test_completion_returns_llm_result_and_records_usage() -> None:
     llm_client = LLMClient(
-        model_configuration=_model_configuration(),
         usage_ledger=LLMUsageLedger(),
         async_openai_client=FakeAsyncOpenAI(),
     )
 
-    content = await llm_client.complete(
-        role=ModelRole.COMPLEXITY_ASSESSOR,
+    result = await llm_client.complete(
         messages=[Message(role='user', content='Assess this task')],
+        model='completion-model',
+        context_limit_tokens=100,
     )
 
-    assert content == '{"requires_human_approval": false}'
+    assert result.content == '{"requires_human_approval": false}'
+    assert result.model == 'completion-model'
+    assert result.input_tokens == 10
+    assert result.context_utilization() == 0.1
     assert llm_client.usage_ledger.total_input_tokens == 10
     assert llm_client.usage_ledger.total_output_tokens == 4
-
-
-def _model_configuration() -> ModelConfiguration:
-    model_names: dict[str, Any] = {
-        'contract_builder_model': 'contract',
-        'planner_model': 'planner',
-        'complexity_assessor_model': 'complexity',
-        'context_gatherer_model': 'context',
-        'implementation_model': 'implementation',
-        'reviewer_model': 'review',
-        'summarizer_model': 'summary',
-    }
-    return ModelConfiguration(
-        **model_names,
-        model_context_limits=[
-            ModelContextLimit(model='contract', context_limit_tokens=100),
-            ModelContextLimit(model='planner', context_limit_tokens=100),
-            ModelContextLimit(model='complexity', context_limit_tokens=100),
-            ModelContextLimit(model='context', context_limit_tokens=100),
-            ModelContextLimit(model='implementation', context_limit_tokens=100),
-            ModelContextLimit(model='review', context_limit_tokens=100),
-            ModelContextLimit(model='summary', context_limit_tokens=100),
-        ],
-    )
