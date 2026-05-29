@@ -337,6 +337,9 @@ def _estimate_cost_usd(
         case "claude-haiku-4-5-20251001":
             input_price = 0.8
             output_price = 4.0
+        case "gemini-3.1-flash-lite":
+            input_price = 0.25
+            output_price = 1.50
         case _:
             input_price = 0.0
             output_price = 0.0
