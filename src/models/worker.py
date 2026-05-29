@@ -31,11 +31,11 @@ class TestResult(BaseModel):
 class WorkerResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    status: WorkerStatus
-    patch_id: str | None = None
     diff_summary: str
     tests_run: list[str] = Field(default_factory=list)
     test_results: list[TestResult] = Field(default_factory=list)
     discovered_issues: list[str] = Field(default_factory=list)
-    confidence: Confidence
     replan_suggestion: str | None = None
+    patch_id: str | None = None
+    confidence: Confidence
+    status: WorkerStatus

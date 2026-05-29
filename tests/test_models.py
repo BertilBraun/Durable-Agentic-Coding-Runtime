@@ -29,7 +29,6 @@ def test_plan_step_uses_serializable_enums() -> None:
         id='step_1',
         goal='Patch parser edge case',
         target_files=['src/parser.py'],
-        allowed_files=['src/parser.py', 'tests/test_parser.py'],
         tests_to_run=['pytest tests/test_parser.py'],
         expected_result='Regression test passes',
         risk=Risk.LOW,

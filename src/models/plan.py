@@ -17,7 +17,6 @@ class PlanStep(BaseModel):
     id: str
     goal: str
     target_files: list[str] = Field(default_factory=list)
-    allowed_files: list[str] = Field(default_factory=list)  # TODO really necessary?
     tests_to_run: list[str] = Field(default_factory=list)
     expected_result: str
     risk: Risk

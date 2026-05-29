@@ -21,10 +21,3 @@ class HumanApprovalSignal(BaseModel):
         if self.decision == ApprovalDecision.REVISE and not self.feedback:
             raise ValueError('feedback is required when decision is revise')
         return self
-
-
-class ComplexityVerdict(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    reasoning: str
-    requires_human_approval: bool

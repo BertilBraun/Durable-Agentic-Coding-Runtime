@@ -1,8 +1,8 @@
 import pytest
+from src.activities.reviewer import ReviewDecision, ReviewVerdict
 from src.models.context import ContextPack
 from src.models.plan import PlanStep, Risk
 from src.models.repo import RepoIndex
-from src.models.review import ReviewDecision, ReviewVerdict
 from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerResult, WorkerStatus
 from src.workflows.implementation_workflow import (
@@ -268,7 +268,6 @@ def _plan_step() -> PlanStep:
         id='step_1',
         goal='Implement behavior',
         target_files=['app.py'],
-        allowed_files=['app.py'],
         tests_to_run=['pytest -q'],
         expected_result='Behavior works',
         risk=Risk.LOW,

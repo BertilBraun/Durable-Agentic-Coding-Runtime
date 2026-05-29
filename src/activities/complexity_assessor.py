@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from pydantic import BaseModel, ConfigDict
+
 from src.llm.client import Message, generate_structured
 from src.llm.config import ModelRole
-from src.models.approval import ComplexityVerdict
 from src.models.task import TaskContract
 
 COMPLEXITY_ASSESSOR_SYSTEM_PROMPT = (
@@ -13,6 +14,13 @@ COMPLEXITY_ASSESSOR_SYSTEM_PROMPT = (
     'or breaking-change risk. Do not assume safety from missing evidence; '
     'explain uncertainty in the reasoning. Stop after the verdict.'
 )
+
+
+class ComplexityVerdict(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    reasoning: str
+    requires_human_approval: bool
 
 
 async def assess_complexity(contract: TaskContract) -> ComplexityVerdict:

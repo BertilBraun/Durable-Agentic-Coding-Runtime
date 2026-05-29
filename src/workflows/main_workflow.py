@@ -7,8 +7,7 @@ from src.activities.implementation import get_full_diff
 from src.activities.planner import PlanRequest, build_plan
 from src.activities.repo_indexer import build_repo_index
 from src.activities.report_builder import (
-    FinalReportRequest,
-    build_final_report,
+    FinalReport,
     collect_llm_usage_summary,
     reset_llm_usage_summary,
 )
@@ -103,16 +102,15 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
             workspace_info=workspace_info,
         ),
     )
-    final_report = await build_final_report(
-        FinalReportRequest(
-            patch=diff,
-            contract=contract,
-            plan=plan,
-            worker_results=worker_results,
-            final_verdict=final_verdict,
-            workspace_info=workspace_info,
-            llm_usage=await collect_llm_usage_summary(),
-        ),
+    final_report = FinalReport(
+        status=final_verdict.verdict.value,
+        patch=diff,
+        contract=contract,
+        plan=plan,
+        worker_results=worker_results,
+        final_verdict=final_verdict,
+        workspace_info=workspace_info,
+        llm_usage=await collect_llm_usage_summary(),
     )
     await destroy_workspace(workspace_info)
     return final_report.model_dump(mode='json')

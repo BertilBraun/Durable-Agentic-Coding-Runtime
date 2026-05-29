@@ -1,13 +1,11 @@
 import pytest
 from src.activities.complexity_assessor import ComplexityVerdict
 from src.activities.planner import PlanRequest
-from src.activities.report_builder import FinalReport, FinalReportRequest
-from src.activities.reviewer import ReviewRequest
+from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict
 from src.activities.workspace_manager import WorkspaceInfo
 from src.llm.client import LLMUsageSummary
 from src.models.plan import Plan, PlanStep, Risk
 from src.models.repo import RepoIndex
-from src.models.review import ReviewDecision, ReviewVerdict
 from src.models.task import TaskContract, TaskRequest, TaskType
 from src.models.worker import Confidence, WorkerResult, WorkerStatus
 from src.workflows.main_workflow import main_workflow
@@ -108,18 +106,6 @@ async def test_main_workflow_replans_after_needs_replan(
             recommended_next_action='accept',
         )
 
-    async def fake_build_final_report(request: FinalReportRequest) -> FinalReport:
-        return FinalReport(
-            status='accept',
-            patch=request.patch,
-            contract=request.contract,
-            plan=request.plan,
-            worker_results=request.worker_results,
-            final_verdict=request.final_verdict,
-            workspace_info=request.workspace_info,
-            llm_usage=request.llm_usage,
-        )
-
     async def fake_reset_llm_usage_summary() -> None:
         return None
 
@@ -144,7 +130,6 @@ async def test_main_workflow_replans_after_needs_replan(
     monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
     monkeypatch.setattr('src.workflows.main_workflow.get_full_diff', fake_get_full_diff)
     monkeypatch.setattr('src.workflows.main_workflow.review_patch', fake_review_patch)
-    monkeypatch.setattr('src.workflows.main_workflow.build_final_report', fake_build_final_report)
     monkeypatch.setattr(
         'src.workflows.main_workflow.reset_llm_usage_summary', fake_reset_llm_usage_summary
     )
@@ -256,7 +241,6 @@ def _plan_with_step(step_id: str) -> Plan:
                 id=step_id,
                 goal='Update generated output',
                 target_files=['generated.py'],
-                allowed_files=['generated.py'],
                 tests_to_run=[],
                 expected_result='Generated output updated',
                 risk=Risk.LOW,

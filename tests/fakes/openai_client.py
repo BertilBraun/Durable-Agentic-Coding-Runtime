@@ -99,7 +99,7 @@ def _fake_structured_content(response_format: type[BaseModel], messages: list[Me
             return (
                 '{"summary":"Smoke test plan","steps":[{"id":"step_1",'
                 '"goal":"Add a deterministic smoke patch","target_files":["app.py","test_app.py"],'
-                '"allowed_files":["app.py","test_app.py"],"tests_to_run":["pytest -q"],'
+                '"tests_to_run":["pytest -q"],'
                 '"expected_result":"Patch changes code and tests pass",'
                 '"risk":"low","requires_human_approval":false}],'
                 '"integration_tests":["pytest -q"],"rollback_strategy":"Discard workspace",'

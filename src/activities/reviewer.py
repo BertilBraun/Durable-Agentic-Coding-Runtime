@@ -6,9 +6,9 @@ from src.activities.workspace_manager import WorkspaceInfo
 from src.llm.client import Message, generate_structured
 from src.llm.config import ModelRole
 from src.models.plan import PlanStep
-from src.models.review import ReviewVerdict
 from src.models.task import TaskContract
 from src.models.worker import TestResult, WorkerResult
+from src.runtime_enums import StrEnum
 
 REVIEWER_SYSTEM_PROMPT = (
     'You are the reviewer. Lead with blocking issues. Judge contract '
@@ -18,6 +18,26 @@ REVIEWER_SYSTEM_PROMPT = (
     'tests are inadequate, or the patch changes unrelated behavior. Do not '
     'invent validation or assume unrun tests passed.'
 )
+
+
+class ReviewDecision(StrEnum):
+    ACCEPT = 'accept'
+    REVISE = 'revise'
+    REJECT = 'reject'
+    NEEDS_HUMAN = 'needs_human'
+
+
+class ReviewVerdict(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    evidence: list[str] = Field(default_factory=list)
+    blocking_issues: list[str] = Field(default_factory=list)
+    non_blocking_issues: list[str] = Field(default_factory=list)
+    missing_tests: list[str] = Field(default_factory=list)
+    regression_risks: list[str] = Field(default_factory=list)
+    minimality_assessment: str
+    recommended_next_action: str
+    verdict: ReviewDecision
 
 
 class ReviewRequest(BaseModel):

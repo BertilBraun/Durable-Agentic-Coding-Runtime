@@ -3,10 +3,10 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 from temporal_light import activity
 
+from src.activities.reviewer import ReviewVerdict
 from src.activities.workspace_manager import WorkspaceInfo
 from src.llm.client import LLMClient, LLMUsageSummary
 from src.models.plan import Plan
-from src.models.review import ReviewVerdict
 from src.models.task import TaskContract
 from src.models.worker import WorkerResult
 
@@ -22,35 +22,6 @@ class FinalReport(BaseModel):
     final_verdict: ReviewVerdict
     workspace_info: WorkspaceInfo
     llm_usage: LLMUsageSummary
-
-
-class FinalReportRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    patch: str
-    contract: TaskContract
-    plan: Plan
-    worker_results: list[WorkerResult] = Field(default_factory=list)
-    final_verdict: ReviewVerdict
-    workspace_info: WorkspaceInfo
-    llm_usage: LLMUsageSummary
-
-
-# TODO WTF is the use of this?!??
-
-
-@activity(retries=0, timeout=30)
-async def build_final_report(request: FinalReportRequest) -> FinalReport:
-    return FinalReport(
-        status=request.final_verdict.verdict.value,
-        patch=request.patch,
-        contract=request.contract,
-        plan=request.plan,
-        worker_results=request.worker_results,
-        final_verdict=request.final_verdict,
-        workspace_info=request.workspace_info,
-        llm_usage=request.llm_usage,
-    )
 
 
 # TODO global state in the LLMClient will not persist across activity invocations, need to store in durable storage and pass around

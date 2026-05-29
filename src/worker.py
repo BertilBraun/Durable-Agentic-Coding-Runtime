@@ -8,7 +8,6 @@ from src.activities.human_approval import present_plan_to_human
 from src.activities.implementation import get_full_diff
 from src.activities.repo_indexer import build_repo_index
 from src.activities.report_builder import (
-    build_final_report,
     collect_llm_usage_summary,
     reset_llm_usage_summary,
 )
@@ -24,7 +23,6 @@ def main() -> None:
         database_url=database_url,
         workflow_functions=[main_workflow, implementation_workflow],
         activity_functions=[
-            build_final_report,
             build_repo_index,
             collect_llm_usage_summary,
             create_workspace,

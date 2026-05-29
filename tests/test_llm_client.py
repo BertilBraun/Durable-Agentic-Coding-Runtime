@@ -2,8 +2,8 @@ import json
 
 import pytest
 from openai.types.chat import ChatCompletion, ParsedChatCompletion
+from src.activities.complexity_assessor import ComplexityVerdict
 from src.llm.client import LLMClient, LLMUsageLedger, Message
-from src.models.approval import ComplexityVerdict
 
 
 class FakeCompletions:

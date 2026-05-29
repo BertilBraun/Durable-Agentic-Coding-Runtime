@@ -11,7 +11,8 @@ class Language(StrEnum):
     JAVASCRIPT = 'javascript'
     JSX = 'jsx'
     TSX = 'tsx'
-    UNKNOWN = 'unknown'  # TODO why is that here? When is that used? Markdown files? Env files etc? Supported are only py/ts/js but obviously repos contain a lot of other file types as well, so we need a way to handle those as well without breaking - TODO document better
+    # Anything outside the parseable set above (Markdown, config files, etc.) — tracked but not symbol-indexed.
+    UNKNOWN = 'unknown'
 
 
 class SymbolKind(StrEnum):

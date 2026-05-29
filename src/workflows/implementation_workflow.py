@@ -9,11 +9,10 @@ from src.activities.implementation import (
     get_full_diff,
     run_implementation_turn,
 )
-from src.activities.reviewer import ReviewRequest, review_patch
+from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict, review_patch
 from src.activities.workspace_manager import WorkspaceInfo
 from src.models.plan import PlanStep
 from src.models.repo import RepoIndex
-from src.models.review import ReviewDecision, ReviewVerdict
 from src.models.task import TaskContract
 from src.models.worker import Confidence, WorkerResult, WorkerStatus
 from src.workflows.temporal import workflow

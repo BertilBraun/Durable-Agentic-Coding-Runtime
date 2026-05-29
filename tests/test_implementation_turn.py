@@ -494,7 +494,6 @@ def _implementation_request() -> ImplementationTurnRequest:
             id='step_1',
             goal='Read target file',
             target_files=['src/app.py'],
-            allowed_files=['src/app.py'],
             tests_to_run=[],
             expected_result='File inspected',
             risk=Risk.LOW,
