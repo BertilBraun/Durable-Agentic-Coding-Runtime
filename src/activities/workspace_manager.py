@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import shutil
 import uuid
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -76,7 +75,7 @@ class ToolExecutionRequest(BaseModel):
     def serialize_tool(self, tool: Tool) -> dict[str, object]:
         return {
             "tool_name": tool_definition_for_tool(tool).name,
-            "payload": asdict(tool),
+            "payload": tool.model_dump(mode="json", exclude={"tool_name"}),
         }
 
     @field_validator("tool", mode="before")

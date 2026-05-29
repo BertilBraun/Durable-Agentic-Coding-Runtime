@@ -1,18 +1,18 @@
 import pytest
 from pydantic import TypeAdapter, ValidationError
-from src.tools.definitions import ReadFileRange, RunTests, SearchText, WriteFile
-from src.tools.llm_schema import (
+from src.tools.definitions import (
     ContextGathererToolCall,
     ImplementationToolCall,
     ImplementationToolCallAdapter,
-    SearchTextToolCall,
-    context_gatherer_tool_from_llm_tool_call,
-    implementation_tool_from_llm_tool_call,
+    ReadFileRange,
+    RunTests,
+    SearchText,
+    WriteFile,
 )
 
 
 def test_tool_parameter_schema_includes_descriptions() -> None:
-    schema = SearchTextToolCall.model_json_schema()
+    schema = SearchText.model_json_schema()
 
     assert schema["properties"]["pattern"]["description"]
     assert schema["properties"]["directory"]["description"]
@@ -48,39 +48,33 @@ def test_context_gatherer_cannot_call_mutating_tools_by_construction() -> None:
         )
 
 
-def test_implementation_tool_conversion_uses_typed_models() -> None:
-    assert implementation_tool_from_llm_tool_call(
-        TypeAdapter(ImplementationToolCall).validate_python(
-            {
-                "tool_name": "read_file_range",
-                "file_path": "src/app.py",
-                "start_line": 10,
-                "end_line": 20,
-            }
-        )
+def test_implementation_tool_union_parses_runtime_tool_models() -> None:
+    assert TypeAdapter(ImplementationToolCall).validate_python(
+        {
+            "tool_name": "read_file_range",
+            "file_path": "src/app.py",
+            "start_line": 10,
+            "end_line": 20,
+        }
     ) == ReadFileRange(file_path="src/app.py", start_line=10, end_line=20)
-    assert implementation_tool_from_llm_tool_call(
-        TypeAdapter(ImplementationToolCall).validate_python(
-            {
-                "tool_name": "write_file",
-                "file_path": "src/app.py",
-                "content": "updated",
-            }
-        )
+    assert TypeAdapter(ImplementationToolCall).validate_python(
+        {
+            "tool_name": "write_file",
+            "file_path": "src/app.py",
+            "content": "updated",
+        }
     ) == WriteFile(file_path="src/app.py", content="updated")
-    assert implementation_tool_from_llm_tool_call(
-        TypeAdapter(ImplementationToolCall).validate_python(
-            {
-                "tool_name": "run_tests",
-                "command": "pytest -q",
-                "timeout_seconds": 60,
-                "directory": ".",
-            }
-        )
+    assert TypeAdapter(ImplementationToolCall).validate_python(
+        {
+            "tool_name": "run_tests",
+            "command": "pytest -q",
+            "timeout_seconds": 60,
+            "directory": ".",
+        }
     ) == RunTests(command="pytest -q", timeout_seconds=60, directory=".")
 
 
-def test_context_gatherer_tool_conversion_uses_shared_models() -> None:
+def test_context_gatherer_tool_union_uses_runtime_tool_models() -> None:
     tool_call = TypeAdapter(ContextGathererToolCall).validate_python(
         {
             "tool_name": "search_text",
@@ -90,7 +84,7 @@ def test_context_gatherer_tool_conversion_uses_shared_models() -> None:
         }
     )
 
-    assert context_gatherer_tool_from_llm_tool_call(tool_call) == SearchText(
+    assert tool_call == SearchText(
         pattern="class Handler",
         directory="src",
         file_glob="*.py",

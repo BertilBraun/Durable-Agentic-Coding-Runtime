@@ -10,8 +10,7 @@ from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, W
 from src.llm.client import Message
 from src.llm.config import ModelRole
 from src.models.repo import RepoIndex
-from src.tools.definitions import ReadFileRange
-from src.tools.llm_schema import ContextGathererToolCallAdapter
+from src.tools.definitions import ContextGathererToolCallAdapter, ReadFileRange
 
 
 def test_context_gatherer_rejects_unknown_tool() -> None:

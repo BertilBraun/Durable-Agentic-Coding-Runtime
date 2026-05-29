@@ -18,11 +18,8 @@ from src.llm.prompts import system_prompt_for_role
 from src.models.context import ContextPack
 from src.models.repo import RepoIndex
 from src.tools.definitions import (
-    Tool,
-)
-from src.tools.llm_schema import (
     ContextGathererToolCall,
-    context_gatherer_tool_from_llm_tool_call,
+    Tool,
 )
 
 
@@ -120,4 +117,4 @@ def _best_effort_context_pack(
 
 
 def _tool_from_call(tool_call: ContextGathererToolCall) -> Tool:
-    return context_gatherer_tool_from_llm_tool_call(tool_call)
+    return tool_call

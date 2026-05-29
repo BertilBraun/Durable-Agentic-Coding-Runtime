@@ -80,7 +80,7 @@ async def test_run_tool_applies_tool_timeout(monkeypatch: pytest.MonkeyPatch) ->
                 worktree_path="workspace",
                 branch_name="branch",
             ),
-            tool=RunTests(command="pytest", timeout_seconds=17),
+            tool=RunTests(command="pytest", timeout_seconds=17, directory="."),
         ),
     )
 
@@ -108,7 +108,7 @@ async def test_run_tool_removes_container_when_wait_raises(
                     worktree_path="workspace",
                     branch_name="branch",
                 ),
-                tool=RunTests(command="pytest", timeout_seconds=17),
+                tool=RunTests(command="pytest", timeout_seconds=17, directory="."),
             ),
         )
 
@@ -136,7 +136,7 @@ async def test_run_tool_writes_large_stdout_to_artifact(
                 worktree_path="workspace",
                 branch_name="branch",
             ),
-            tool=RunTests(command="pytest", timeout_seconds=17),
+            tool=RunTests(command="pytest", timeout_seconds=17, directory="."),
         ),
     )
 
@@ -214,13 +214,13 @@ async def test_run_tool_large_output_artifacts_do_not_collide_within_run(
     first_result = await run_tool(
         ToolExecutionRequest(
             workspace_info=workspace_info,
-            tool=RunTests(command="pytest tests/test_a.py", timeout_seconds=17),
+            tool=RunTests(command="pytest tests/test_a.py", timeout_seconds=17, directory="."),
         ),
     )
     second_result = await run_tool(
         ToolExecutionRequest(
             workspace_info=workspace_info,
-            tool=RunTests(command="pytest tests/test_b.py", timeout_seconds=17),
+            tool=RunTests(command="pytest tests/test_b.py", timeout_seconds=17, directory="."),
         ),
     )
 

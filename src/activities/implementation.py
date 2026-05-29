@@ -28,13 +28,9 @@ from src.models.worker import Confidence, TestResult, WorkerResult, WorkerStatus
 from src.tools.definitions import (
     GatherContext,
     GitDiff,
+    ImplementationToolCall,
     RunTests,
     Tool,
-)
-from src.tools.llm_schema import (
-    GatherContextToolCall,
-    ImplementationToolCall,
-    implementation_tool_from_llm_tool_call,
 )
 
 IMPLEMENTATION_AVAILABLE_TOOLS = (
@@ -147,7 +143,7 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
         observations: list[str] = []
         for tool_call in agent_turn.tool_calls:
             match tool_call:
-                case GatherContextToolCall(prompt=prompt):
+                case GatherContext(prompt=prompt):
                     gathered_context = await gather_context(
                         ContextGatherRequest(
                             workspace_info=request.workspace_info,
@@ -273,9 +269,8 @@ def _test_result_from_tool_result(command: str, tool_result: ToolResult) -> Test
 
 
 def _tool_from_call(tool_call: ImplementationToolCall) -> Tool:
-    tool = implementation_tool_from_llm_tool_call(tool_call)
-    match tool:
+    match tool_call:
         case GatherContext():
             raise AssertionError("gather_context must be dispatched before tool conversion")
         case _:
-            return tool
+            return tool_call

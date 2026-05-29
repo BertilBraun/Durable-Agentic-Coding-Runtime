@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal, TypeAlias
+
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from src.runtime_enums import StrEnum
 
@@ -40,78 +43,143 @@ class ToolDefinition:
         return tuple(field.name for field in self.fields)
 
 
-@dataclass(frozen=True)
-class ReadFileRange:
-    file_path: str
-    start_line: int
-    end_line: int
+class ReadFileRange(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.READ_FILE_RANGE] = Field(
+        default=ToolName.READ_FILE_RANGE,
+        description="Tool name tag.",
+    )
+    file_path: str = Field(description="Workspace-relative file path to read.")
+    start_line: int = Field(description="First 1-based line number to read.")
+    end_line: int = Field(description="Last 1-based line number to read.")
 
 
-@dataclass(frozen=True)
-class SearchText:
-    pattern: str
-    directory: str
-    file_glob: str
+class SearchText(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.SEARCH_TEXT] = Field(
+        default=ToolName.SEARCH_TEXT,
+        description="Tool name tag.",
+    )
+    pattern: str = Field(description="Search pattern. Use ripgrep-compatible syntax.")
+    directory: str = Field(description="Workspace-relative directory to search.")
+    file_glob: str = Field(description='File glob filter, for example "*.py".')
 
 
-@dataclass(frozen=True)
-class WriteFile:
-    file_path: str
-    content: str
+class WriteFile(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.WRITE_FILE] = Field(
+        default=ToolName.WRITE_FILE,
+        description="Tool name tag.",
+    )
+    file_path: str = Field(description="Workspace-relative file path to replace.")
+    content: str = Field(description="Complete file content to write.")
 
 
-@dataclass(frozen=True)
-class ApplyPatch:
-    patch: str
+class ApplyPatch(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.APPLY_PATCH] = Field(
+        default=ToolName.APPLY_PATCH,
+        description="Tool name tag.",
+    )
+    patch: str = Field(description="Unified diff patch to apply from the workspace root.")
 
 
-@dataclass(frozen=True)
-class GitDiff:
-    path: str
+class GitDiff(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.GIT_DIFF] = Field(
+        default=ToolName.GIT_DIFF,
+        description="Tool name tag.",
+    )
+    path: str = Field(description='Workspace-relative path to diff, or "." for all changes.')
 
 
-@dataclass(frozen=True)
-class GitStatus:
-    path: str
+class GitStatus(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.GIT_STATUS] = Field(
+        default=ToolName.GIT_STATUS,
+        description="Tool name tag.",
+    )
+    path: str = Field(description='Workspace-relative path to inspect, or "." for all changes.')
 
 
-@dataclass(frozen=True)
-class GitCommit:
-    message: str
+class GitCommit(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.GIT_COMMIT] = Field(
+        default=ToolName.GIT_COMMIT,
+        description="Tool name tag.",
+    )
+    message: str = Field(description="Commit message.")
 
 
-@dataclass(frozen=True)
-class RunTests:
-    command: str
-    timeout_seconds: int
-    directory: str = "."
+class RunTests(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.RUN_TESTS] = Field(
+        default=ToolName.RUN_TESTS,
+        description="Tool name tag.",
+    )
+    command: str = Field(description="Test command to run, including needed setup for this call.")
+    timeout_seconds: int = Field(description="Maximum seconds to allow the test command to run.")
+    directory: str = Field(description='Workspace-relative directory to run from, or ".".')
 
 
-@dataclass(frozen=True)
-class RunLint:
-    path: str
+class RunLint(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.RUN_LINT] = Field(
+        default=ToolName.RUN_LINT,
+        description="Tool name tag.",
+    )
+    path: str = Field(description='Workspace-relative path to lint, or ".".')
 
 
-@dataclass(frozen=True)
-class RunTypecheck:
-    path: str
+class RunTypecheck(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.RUN_TYPECHECK] = Field(
+        default=ToolName.RUN_TYPECHECK,
+        description="Tool name tag.",
+    )
+    path: str = Field(description='Workspace-relative path to typecheck, or ".".')
 
 
-@dataclass(frozen=True)
-class FindSymbol:
-    name: str
-    language: str
+class FindSymbol(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.FIND_SYMBOL] = Field(
+        default=ToolName.FIND_SYMBOL,
+        description="Tool name tag.",
+    )
+    name: str = Field(description="Exact symbol name to look up in the repository index.")
+    language: str = Field(description='Source language, for example "python" or "javascript".')
 
 
-@dataclass(frozen=True)
-class FindReferences:
-    symbol_name: str
-    file_path: str
+class FindReferences(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.FIND_REFERENCES] = Field(
+        default=ToolName.FIND_REFERENCES,
+        description="Tool name tag.",
+    )
+    symbol_name: str = Field(description="Exact symbol name whose references should be found.")
+    file_path: str = Field(description="Workspace-relative file path where the symbol is defined.")
 
 
-@dataclass(frozen=True)
-class GatherContext:
-    prompt: str
+class GatherContext(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_name: Literal[ToolName.GATHER_CONTEXT] = Field(
+        default=ToolName.GATHER_CONTEXT,
+        description="Tool name tag.",
+    )
+    prompt: str = Field(description="Focused read-only context request for the context gatherer.")
 
 
 Tool = (
@@ -128,6 +196,17 @@ Tool = (
     | FindSymbol
     | FindReferences
     | GatherContext
+)
+
+ImplementationToolCall: TypeAlias = Tool
+
+ContextGathererToolCall: TypeAlias = ReadFileRange | SearchText | FindSymbol | FindReferences
+
+ImplementationToolCallAdapter: TypeAdapter[ImplementationToolCall] = TypeAdapter(
+    ImplementationToolCall
+)
+ContextGathererToolCallAdapter: TypeAdapter[ContextGathererToolCall] = TypeAdapter(
+    ContextGathererToolCall
 )
 
 
