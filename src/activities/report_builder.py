@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
+from temporal_light import activity
 
-from src.activities.temporal import durable_activity
 from src.activities.workspace_manager import WorkspaceInfo
 from src.llm.client import LLMClient, LLMUsageSummary
 from src.models.plan import Plan
@@ -39,7 +39,7 @@ class FinalReportRequest(BaseModel):
 # TODO WTF is the use of this?!??
 
 
-@durable_activity(retries=0, timeout=30)
+@activity(retries=0, timeout=30)
 async def build_final_report(request: FinalReportRequest) -> FinalReport:
     return FinalReport(
         status=request.final_verdict.verdict.value,
@@ -56,11 +56,11 @@ async def build_final_report(request: FinalReportRequest) -> FinalReport:
 # TODO global state in the LLMClient will not persist across activity invocations, need to store in durable storage and pass around
 
 
-@durable_activity(retries=0, timeout=30)
+@activity(retries=0, timeout=30)
 async def reset_llm_usage_summary() -> None:
     LLMClient.reset_global_usage()
 
 
-@durable_activity(retries=0, timeout=30)
+@activity(retries=0, timeout=30)
 async def collect_llm_usage_summary() -> LLMUsageSummary:
     return LLMClient.global_usage_summary()

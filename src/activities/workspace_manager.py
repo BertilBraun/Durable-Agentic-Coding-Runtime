@@ -9,8 +9,8 @@ from typing import Any
 import docker
 import docker.models.containers
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from temporal_light import activity
 
-from src.activities.temporal import durable_activity
 from src.models.context import ArtifactKind, ArtifactReference
 from src.models.repo import Language, RepoIndex, Symbol
 from src.tools.definitions import (
@@ -90,7 +90,7 @@ class ToolExecutionRequest(BaseModel):
         return _tool_from_serialized_payload(ToolName(tool_name), payload)
 
 
-@durable_activity(retries=0, timeout=300)
+@activity(retries=0, timeout=300)
 async def create_workspace(
     run_id: str, repo_path: str, docker_image: str | None = None
 ) -> WorkspaceInfo:
@@ -155,7 +155,7 @@ async def create_workspace(
     )
 
 
-@durable_activity(retries=0, timeout=300)
+@activity(retries=0, timeout=300)
 async def run_tool(request: ToolExecutionRequest) -> ToolResult:
     return await run_tool_in_workspace(request)
 
@@ -303,7 +303,7 @@ def _tool_timeout_seconds(tool: Tool) -> int | None:
             return None
 
 
-@durable_activity(retries=0, timeout=120)
+@activity(retries=0, timeout=120)
 async def destroy_workspace(workspace_info: WorkspaceInfo) -> ToolResult:
     docker_client = _docker_client()
     volume = docker_client.volumes.get(workspace_info.volume_name)
