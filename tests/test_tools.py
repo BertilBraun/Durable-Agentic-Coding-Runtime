@@ -9,30 +9,14 @@ from src.tools.definitions import (
     SearchText,
     ToolName,
     WriteFile,
-    tool_definition_for_tool,
 )
 from src.tools.handlers import command_for_tool
 
 
-def test_tool_definitions_have_stable_names() -> None:
+def test_tool_exposes_stable_tool_name() -> None:
     read_file_range = ReadFileRange(file_path='src/app.py', start_line=1, end_line=10)
 
-    tool_definition = tool_definition_for_tool(read_file_range)
-
-    assert tool_definition.name == ToolName.READ_FILE_RANGE
-
-
-def test_tool_definition_serializes_schema() -> None:
-    search_text = SearchText(pattern='class Parser', directory='src', file_glob='*.py')
-
-    tool_definition = tool_definition_for_tool(search_text)
-
-    assert 'pattern' in tool_definition.field_names
-
-
-def test_mutating_tools_are_identified() -> None:
-    assert tool_definition_for_tool(ApplyPatch(patch='--- a/file\n+++ b/file')).mutates_workspace
-    assert not tool_definition_for_tool(GitDiff(path='.')).mutates_workspace
+    assert read_file_range.tool_name == ToolName.READ_FILE_RANGE
 
 
 def test_git_commit_command_stages_new_files() -> None:
@@ -73,3 +57,11 @@ def test_run_tests_command_runs_from_requested_directory() -> None:
 def test_run_tests_command_rejects_parent_traversal_directory() -> None:
     with pytest.raises(ValueError, match='workspace-relative'):
         command_for_tool(RunTests(command='pytest -q', timeout_seconds=60, directory='../outside'))
+
+
+def test_apply_patch_tool_name() -> None:
+    assert ApplyPatch(patch='--- a/file\n+++ b/file').tool_name == ToolName.APPLY_PATCH
+
+
+def test_git_diff_tool_name() -> None:
+    assert GitDiff(path='.').tool_name == ToolName.GIT_DIFF

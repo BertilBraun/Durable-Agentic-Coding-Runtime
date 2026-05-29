@@ -29,7 +29,6 @@ from src.tools.definitions import (
     Tool,
     ToolName,
     WriteFile,
-    tool_definition_for_tool,
 )
 from src.tools.handlers import command_for_tool
 
@@ -74,7 +73,7 @@ class ToolExecutionRequest(BaseModel):
     @field_serializer('tool')
     def serialize_tool(self, tool: Tool) -> dict[str, object]:
         return {
-            'tool_name': tool_definition_for_tool(tool).name,
+            'tool_name': tool.tool_name,
             'payload': tool.model_dump(mode='json', exclude={'tool_name'}),
         }
 
@@ -333,7 +332,7 @@ def _write_large_output_artifact(
 ) -> ArtifactReference | None:
     if len(output) <= MAX_OUTPUT_CHARACTERS:
         return None
-    tool_name = tool_definition_for_tool(request.tool).name.value
+    tool_name = request.tool.tool_name.value
     artifact_filename = f'{tool_name}-{uuid.uuid4()}-{stream_name}.log'
     artifact_path = Path(_artifacts_root()) / request.workspace_info.run_id / artifact_filename
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
