@@ -23,7 +23,7 @@ from src.workflows.main_workflow import main_workflow
 
 
 def main() -> None:
-    database_url = os.environ["TEMPORAL_DATABASE_URL"]
+    database_url = os.environ['TEMPORAL_DATABASE_URL']
     worker = Worker(
         database_url=database_url,
         workflow_functions=[main_workflow, implementation_workflow],
@@ -48,5 +48,5 @@ def main() -> None:
     worker.run()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

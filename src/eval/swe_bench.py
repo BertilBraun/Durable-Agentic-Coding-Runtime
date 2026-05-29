@@ -119,9 +119,9 @@ class OracleResult(BaseModel):
     command_results: list[OracleCommandResult] = Field(default_factory=list)
 
 
-SUPPORTED_LANGUAGES = frozenset({"python", "typescript", "javascript", "js", "ts"})
-TERMINAL_WORKFLOW_STATUSES = frozenset({"completed", "failed"})
-SWE_BENCH_WORKDIR = "/testbed"
+SUPPORTED_LANGUAGES = frozenset({'python', 'typescript', 'javascript', 'js', 'ts'})
+TERMINAL_WORKFLOW_STATUSES = frozenset({'completed', 'failed'})
+SWE_BENCH_WORKDIR = '/testbed'
 WORKFLOW_POLL_INTERVAL_SECONDS = 5
 WORKFLOW_POLL_TIMEOUT_SECONDS = 7200
 
@@ -144,18 +144,18 @@ async def run_evaluation(
 
     for instance in instances:
         if not _is_supported_instance(instance):
-            task_results.append(_skipped_result(instance, "unsupported_language"))
+            task_results.append(_skipped_result(instance, 'unsupported_language'))
             continue
         task_results.append(await _run_framework_task(instance, temporal_api_url, docker_client))
         baseline_results.append(await _run_baseline_task(instance, docker_client))
 
     report = _build_report(task_results=task_results, baseline_results=baseline_results)
-    output_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    output_path.write_text(report.model_dump_json(indent=2), encoding='utf-8')
     return report
 
 
 def _load_instances(instances_path: Path) -> list[SweBenchInstance]:
-    raw_instances = json.loads(instances_path.read_text(encoding="utf-8"))
+    raw_instances = json.loads(instances_path.read_text(encoding='utf-8'))
     return [SweBenchInstance.model_validate(raw_instance) for raw_instance in raw_instances]
 
 
@@ -195,7 +195,7 @@ def _start_official_container(
     image = _official_image(instance)
     container = docker_client.containers.run(
         image=image,
-        command="sleep infinity",
+        command='sleep infinity',
         detach=True,
         working_dir=SWE_BENCH_WORKDIR,
     )
@@ -210,7 +210,7 @@ def _stop_and_remove_container(container_id: str, docker_client: docker.DockerCl
 
 def _official_image(instance: SweBenchInstance) -> str:
     if instance.docker_image is None:
-        raise ValueError(f"SWE-bench instance {instance.instance_id} is missing docker_image")
+        raise ValueError(f'SWE-bench instance {instance.instance_id} is missing docker_image')
     return instance.docker_image
 
 
@@ -220,17 +220,17 @@ def _apply_patch_to_container(
     docker_client: docker.DockerClient,
 ) -> PatchApplicationResult:
     if not patch.strip():
-        raise ValueError("SWE-bench patch cannot be empty")
+        raise ValueError('SWE-bench patch cannot be empty')
     encoded_patch = base64.b64encode(patch.encode()).decode()
     container = docker_client.containers.get(container_id)
     result = container.exec_run(
-        ["sh", "-lc", f"echo {encoded_patch} | base64 -d | git apply -"],
+        ['sh', '-lc', f'echo {encoded_patch} | base64 -d | git apply -'],
         workdir=SWE_BENCH_WORKDIR,
         demux=True,
     )
     stdout_bytes, stderr_bytes = result.output
-    stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-    stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+    stdout = stdout_bytes.decode('utf-8', errors='replace') if stdout_bytes else ''
+    stderr = stderr_bytes.decode('utf-8', errors='replace') if stderr_bytes else ''
     return PatchApplicationResult(
         applied=result.exit_code == 0,
         exit_code=result.exit_code,
@@ -253,7 +253,7 @@ def _run_oracle(
     if any(command_result.exit_code != 0 for command_result in fail_to_pass_results):
         return OracleResult(
             resolved=False,
-            reason="fail_to_pass_failed",
+            reason='fail_to_pass_failed',
             command_results=command_results,
         )
 
@@ -265,7 +265,7 @@ def _run_oracle(
     if any(command_result.exit_code != 0 for command_result in pass_to_pass_results):
         return OracleResult(
             resolved=False,
-            reason="pass_to_pass_failed",
+            reason='pass_to_pass_failed',
             command_results=command_results,
         )
     return OracleResult(resolved=True, reason=None, command_results=command_results)
@@ -286,7 +286,7 @@ def _evaluate_patch_with_oracle(
             docker_client=docker_client,
         )
         if not patch_application.applied:
-            return OracleResult(resolved=False, reason="patch_apply_failed")
+            return OracleResult(resolved=False, reason='patch_apply_failed')
         return _run_oracle(
             container_id=container_id,
             instance=instance,
@@ -297,8 +297,8 @@ def _evaluate_patch_with_oracle(
 
 
 def _materialize_patch(patch: str) -> str:
-    if patch.startswith("@"):
-        return Path(patch[1:]).read_text(encoding="utf-8")
+    if patch.startswith('@'):
+        return Path(patch[1:]).read_text(encoding='utf-8')
     return patch
 
 
@@ -307,16 +307,16 @@ def _run_oracle_command(
     test_identifier: str,
     docker_client: docker.DockerClient,
 ) -> OracleCommandResult:
-    command = f"pytest {test_identifier}"
+    command = f'pytest {test_identifier}'
     container = docker_client.containers.get(container_id)
     result = container.exec_run(
-        ["sh", "-lc", command],
+        ['sh', '-lc', command],
         workdir=SWE_BENCH_WORKDIR,
         demux=True,
     )
     stdout_bytes, stderr_bytes = result.output
-    stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-    stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+    stdout = stdout_bytes.decode('utf-8', errors='replace') if stdout_bytes else ''
+    stderr = stderr_bytes.decode('utf-8', errors='replace') if stderr_bytes else ''
     return OracleCommandResult(
         command=command,
         exit_code=result.exit_code,
@@ -326,21 +326,21 @@ def _run_oracle_command(
 
 
 def _extract_patch_from_workflow_result(workflow_result: dict[str, object]) -> str:
-    inline_patch = workflow_result.get("patch")
+    inline_patch = workflow_result.get('patch')
     if isinstance(inline_patch, str) and inline_patch.strip():
         return inline_patch
-    patch_artifact = workflow_result.get("patch_artifact")
+    patch_artifact = workflow_result.get('patch_artifact')
     if isinstance(patch_artifact, dict):
-        artifact_path = patch_artifact.get("path")
+        artifact_path = patch_artifact.get('path')
         if isinstance(artifact_path, str) and artifact_path.strip():
-            return f"@{artifact_path}"
-    raise ValueError("Workflow result did not include a patch")
+            return f'@{artifact_path}'
+    raise ValueError('Workflow result did not include a patch')
 
 
 def _skipped_result(instance: SweBenchInstance, reason: str) -> EvaluationTaskResult:
     return EvaluationTaskResult(
         instance_id=instance.instance_id,
-        status="skipped",
+        status='skipped',
         resolved=False,
         cost_usd=0.0,
         llm_calls=0,
@@ -358,15 +358,15 @@ async def _run_framework_task(
     started_at = time.monotonic()
     async with httpx.AsyncClient(timeout=60) as http_client:
         response = await http_client.post(
-            f"{temporal_api_url.rstrip('/')}/workflows",
+            f'{temporal_api_url.rstrip("/")}/workflows',
             json={
-                "workflow_name": "main_workflow",
-                "workflow_input": {
-                    "request": {
-                        "raw_request": instance.problem_statement,
-                        "repo_path": instance.repo,
-                        "docker_image": instance.docker_image,
-                        "run_id": instance.instance_id,
+                'workflow_name': 'main_workflow',
+                'workflow_input': {
+                    'request': {
+                        'raw_request': instance.problem_statement,
+                        'repo_path': instance.repo,
+                        'docker_image': instance.docker_image,
+                        'run_id': instance.instance_id,
                     }
                 },
             },
@@ -377,7 +377,7 @@ async def _run_framework_task(
             http_client, temporal_api_url, workflow_start.workflow_id
         )
 
-    if workflow_status.status != "completed" or workflow_status.result is None:
+    if workflow_status.status != 'completed' or workflow_status.result is None:
         return EvaluationTaskResult(
             instance_id=instance.instance_id,
             status=workflow_status.status,
@@ -385,7 +385,7 @@ async def _run_framework_task(
             cost_usd=0.0,
             llm_calls=0,
             wall_clock_seconds=time.monotonic() - started_at,
-            reason="workflow_failed_or_incomplete",
+            reason='workflow_failed_or_incomplete',
             patch=None,
         )
     workflow_usage = _usage_from_workflow_result(workflow_status.result)
@@ -394,12 +394,12 @@ async def _run_framework_task(
     except ValueError:
         return EvaluationTaskResult(
             instance_id=instance.instance_id,
-            status="failed",
+            status='failed',
             resolved=False,
             cost_usd=workflow_usage.total_cost_usd,
             llm_calls=workflow_usage.call_count,
             wall_clock_seconds=time.monotonic() - started_at,
-            reason="workflow_patch_missing",
+            reason='workflow_patch_missing',
             patch=None,
         )
     oracle_result = _evaluate_patch_with_oracle(
@@ -409,7 +409,7 @@ async def _run_framework_task(
     )
     return EvaluationTaskResult(
         instance_id=instance.instance_id,
-        status="resolved" if oracle_result.resolved else "failed",
+        status='resolved' if oracle_result.resolved else 'failed',
         resolved=oracle_result.resolved,
         cost_usd=workflow_usage.total_cost_usd,
         llm_calls=workflow_usage.call_count,
@@ -426,7 +426,7 @@ async def _poll_workflow(
 ) -> WorkflowStatusResponse:
     elapsed_seconds = 0
     while elapsed_seconds < WORKFLOW_POLL_TIMEOUT_SECONDS:
-        response = await http_client.get(f"{temporal_api_url.rstrip('/')}/workflows/{workflow_id}")
+        response = await http_client.get(f'{temporal_api_url.rstrip("/")}/workflows/{workflow_id}')
         response.raise_for_status()
         workflow_status = WorkflowStatusResponse.model_validate(response.json())
         if workflow_status.status in TERMINAL_WORKFLOW_STATUSES:
@@ -434,7 +434,7 @@ async def _poll_workflow(
         await asyncio.sleep(WORKFLOW_POLL_INTERVAL_SECONDS)
         elapsed_seconds += WORKFLOW_POLL_INTERVAL_SECONDS
     raise TimeoutError(
-        f"Workflow {workflow_id} did not complete within {WORKFLOW_POLL_TIMEOUT_SECONDS} seconds"
+        f'Workflow {workflow_id} did not complete within {WORKFLOW_POLL_TIMEOUT_SECONDS} seconds'
     )
 
 
@@ -448,10 +448,10 @@ async def _run_baseline_task(
         role=ModelRole.IMPLEMENTATION,
         messages=[
             Message(
-                role="system",
-                content="Produce a minimal unified diff patch for this SWE-bench task.",
+                role='system',
+                content='Produce a minimal unified diff patch for this SWE-bench task.',
             ),
-            Message(role="user", content=instance.problem_statement),
+            Message(role='user', content=instance.problem_statement),
         ],
     )
     patch = _extract_patch_from_llm_response(patch_response)
@@ -462,7 +462,7 @@ async def _run_baseline_task(
     )
     return EvaluationTaskResult(
         instance_id=instance.instance_id,
-        status="resolved" if oracle_result.resolved else "failed",
+        status='resolved' if oracle_result.resolved else 'failed',
         resolved=oracle_result.resolved,
         cost_usd=llm_client.usage_ledger.total_cost_usd,
         llm_calls=len(llm_client.usage_ledger.calls),
@@ -473,10 +473,10 @@ async def _run_baseline_task(
 
 
 def _extract_patch_from_llm_response(response_content: str) -> str:
-    diff_fence_start = response_content.find("```diff")
+    diff_fence_start = response_content.find('```diff')
     if diff_fence_start >= 0:
-        patch_start = response_content.find("\n", diff_fence_start)
-        patch_end = response_content.find("```", patch_start + 1)
+        patch_start = response_content.find('\n', diff_fence_start)
+        patch_end = response_content.find('```', patch_start + 1)
         if patch_start >= 0 and patch_end >= 0:
             return response_content[patch_start + 1 : patch_end]
     return response_content
@@ -488,14 +488,14 @@ def _build_report(
 ) -> EvaluationReport:
     total_count = len(task_results)
     skipped_results = [
-        task_result for task_result in task_results if task_result.status == "skipped"
+        task_result for task_result in task_results if task_result.status == 'skipped'
     ]
     skipped_count = len(skipped_results)
     resolved_results = [task_result for task_result in task_results if task_result.resolved]
     failed_results = [
         task_result
         for task_result in task_results
-        if task_result.status != "skipped" and not task_result.resolved
+        if task_result.status != 'skipped' and not task_result.resolved
     ]
     baseline_resolved_results = [
         task_result for task_result in baseline_results if task_result.resolved
@@ -548,7 +548,7 @@ def _skip_reason_summaries(
 
 
 def _usage_from_workflow_result(workflow_result: dict[str, object]) -> WorkflowUsageSummary:
-    raw_usage = workflow_result.get("llm_usage")
+    raw_usage = workflow_result.get('llm_usage')
     if isinstance(raw_usage, dict):
         return WorkflowUsageSummary.model_validate(raw_usage)
     return WorkflowUsageSummary(total_cost_usd=0.0, call_count=0)
@@ -560,11 +560,11 @@ def _docker_client() -> docker.DockerClient:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--instances", required=True)
-    parser.add_argument("--temporal-api-url", required=True)
-    parser.add_argument("--output", default="swe_bench_results.json")
-    parser.add_argument("--subset", type=int, default=None)
-    parser.add_argument("--five-task-subset", action="store_true")
+    parser.add_argument('--instances', required=True)
+    parser.add_argument('--temporal-api-url', required=True)
+    parser.add_argument('--output', default='swe_bench_results.json')
+    parser.add_argument('--subset', type=int, default=None)
+    parser.add_argument('--five-task-subset', action='store_true')
     arguments = parser.parse_args()
     report = asyncio.run(
         run_evaluation(
@@ -579,5 +579,5 @@ def main() -> None:
     print(report.model_dump_json(indent=2))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

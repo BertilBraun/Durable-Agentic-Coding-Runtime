@@ -36,6 +36,9 @@ class FinalReportRequest(BaseModel):
     llm_usage: LLMUsageSummary
 
 
+# TODO WTF is the use of this?!??
+
+
 @durable_activity(retries=0, timeout=30)
 async def build_final_report(request: FinalReportRequest) -> FinalReport:
     return FinalReport(
@@ -48,6 +51,9 @@ async def build_final_report(request: FinalReportRequest) -> FinalReport:
         workspace_info=request.workspace_info,
         llm_usage=request.llm_usage,
     )
+
+
+# TODO global state in the LLMClient will not persist across activity invocations, need to store in durable storage and pass around
 
 
 @durable_activity(retries=0, timeout=30)

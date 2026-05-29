@@ -38,7 +38,8 @@ async def implementation_workflow(
         ),
     )
 
-    max_iterations = int(os.getenv("IMPL_MAX_ITERATIONS", "5"))
+    # TODO config.py
+    max_iterations = int(os.getenv('IMPL_MAX_ITERATIONS', '5'))
     for _ in range(max_iterations):
         worker_result = await run_implementation_turn(
             ImplementationTurnRequest(
@@ -56,13 +57,13 @@ async def implementation_workflow(
                 task_contract=task_contract,
                 worker_result=worker_result,
             )
-            return reviewed_result.model_dump(mode="json")
+            return reviewed_result.model_dump(mode='json')
         if worker_result.status == WorkerStatus.FAILED:
             continue
         if worker_result.status in (WorkerStatus.BLOCKED, WorkerStatus.NEEDS_REPLAN):
-            return worker_result.model_dump(mode="json")
+            return worker_result.model_dump(mode='json')
 
-    return failed_worker_result("maximum implementation iterations reached").model_dump(mode="json")
+    return failed_worker_result('maximum implementation iterations reached').model_dump(mode='json')
 
 
 async def _review_successful_step(
@@ -102,8 +103,8 @@ def _worker_result_from_review(
                 test_results=worker_result.test_results,
                 discovered_issues=issues,
                 confidence=Confidence.LOW,
-                replan_suggestion="; ".join(issues),
+                replan_suggestion='; '.join(issues),
             )
         case ReviewDecision.REJECT | ReviewDecision.NEEDS_HUMAN:
             issues = review_verdict.blocking_issues or [review_verdict.recommended_next_action]
-            return failed_worker_result("; ".join(issues))
+            return failed_worker_result('; '.join(issues))

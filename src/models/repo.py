@@ -6,18 +6,18 @@ from src.runtime_enums import StrEnum
 
 
 class Language(StrEnum):
-    PYTHON = "python"
-    TYPESCRIPT = "typescript"
-    JAVASCRIPT = "javascript"
-    JSX = "jsx"
-    TSX = "tsx"
-    UNKNOWN = "unknown"
+    PYTHON = 'python'
+    TYPESCRIPT = 'typescript'
+    JAVASCRIPT = 'javascript'
+    JSX = 'jsx'
+    TSX = 'tsx'
+    UNKNOWN = 'unknown'  # TODO why is that here? When is that used? Markdown files? Env files etc? Supported are only py/ts/js but obviously repos contain a lot of other file types as well, so we need a way to handle those as well without breaking - TODO document better
 
 
 class SymbolKind(StrEnum):
-    FUNCTION = "function"
-    CLASS = "class"
-    METHOD = "method"
+    FUNCTION = 'function'
+    CLASS = 'class'
+    METHOD = 'method'
 
 
 class FileEntry(BaseModel):

@@ -19,14 +19,17 @@ class HumanPlanPresentationRequest(BaseModel):
     plan: Plan
 
 
+# TODO abstract the entire replanning loop from main_workflow here?
+
+
 @durable_activity(retries=0, timeout=30)
 async def present_plan_to_human(request: HumanPlanPresentationRequest) -> str:
     artifacts_root = os.getenv(ARTIFACTS_ROOT_ENVIRONMENT_NAME, DEFAULT_ARTIFACTS_ROOT)
     artifact_directory = Path(artifacts_root) / request.run_id
     artifact_directory.mkdir(parents=True, exist_ok=True)
-    plan_path = artifact_directory / "plan_for_approval.json"
+    plan_path = artifact_directory / 'plan_for_approval.json'
     plan_path.write_text(
         request.model_dump_json(indent=2),
-        encoding="utf-8",
+        encoding='utf-8',
     )
     return str(plan_path)

@@ -33,19 +33,20 @@ from src.tools.definitions import (
     Tool,
 )
 
+# TODO can that be extracted automatically somehow?
 IMPLEMENTATION_AVAILABLE_TOOLS = (
-    "read_file_range",
-    "search_text",
-    "write_file",
-    "apply_patch",
-    "git_diff",
-    "git_status",
-    "run_tests",
-    "run_lint",
-    "run_typecheck",
-    "find_symbol",
-    "find_references",
-    "gather_context",
+    'read_file_range',
+    'search_text',
+    'write_file',
+    'apply_patch',
+    'git_diff',
+    'git_status',
+    'run_tests',
+    'run_lint',
+    'run_typecheck',
+    'find_symbol',
+    'find_references',
+    'gather_context',
 )
 
 
@@ -103,15 +104,17 @@ async def generate_implementation_agent_turn(
     )
 
 
+# TODO very deeply nested.. But a lot of state to pass - so might be fine..
 async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerResult:
     messages = [
         Message(
-            role="system",
+            role='system',
             content=system_prompt_for_role(ModelRole.IMPLEMENTATION),
         ),
-        Message(role="user", content=json.dumps(_llm_user_payload(request))),
+        Message(role='user', content=json.dumps(_llm_user_payload(request))),
     ]
-    max_tool_rounds = int(os.getenv("IMPLEMENTATION_MAX_TOOL_ROUNDS", "12"))
+    # TODO config.py
+    max_tool_rounds = int(os.getenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '12'))
     tests_run: list[str] = []
     test_results: list[TestResult] = []
     saw_diff = False
@@ -130,7 +133,7 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
             )
         if agent_turn.done:
             if agent_turn.worker_result is None:
-                raise ValueError("worker_result is required when implementation turn is done")
+                raise ValueError('worker_result is required when implementation turn is done')
             return _worker_result_with_evidence(
                 worker_result=agent_turn.worker_result,
                 evidence=ImplementationEvidence(
@@ -152,48 +155,44 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
                         )
                     )
                     observations.append(
-                        f"tool={tool_call.tool_name} context_pack:\n"
-                        f"{gathered_context.model_dump_json()}"
+                        f'tool={tool_call.tool_name} context_pack:\n{gathered_context.model_dump_json()}'
                     )
                     completed_tool_calls.append(tool_call.tool_name.value)
-                    continue
-                case _:
-                    pass
-            tool = _tool_from_call(tool_call)
-            tool_result = await run_tool(
-                ToolExecutionRequest(
-                    workspace_info=request.workspace_info,
-                    tool=tool,
-                    repo_index=request.repo_index,
-                )
-            )
-            completed_tool_calls.append(tool_call.tool_name.value)
-            match tool:
-                case RunTests(command=command):
-                    tests_run.append(command)
-                    test_results.append(_test_result_from_tool_result(command, tool_result))
-                case GitDiff():
-                    saw_diff = saw_diff or bool(tool_result.stdout.strip())
-                case _:
-                    pass
-            observations.append(
-                f"tool={tool_call.tool_name} exit_code={tool_result.exit_code}\n"
-                f"stdout:\n{tool_result.stdout}\n"
-                f"stderr:\n{tool_result.stderr}"
-            )
-        messages.append(Message(role="assistant", content=agent_turn.model_dump_json()))
-        messages.append(Message(role="user", content="\n\n".join(observations)))
+                case tool:
+                    tool_result = await run_tool(
+                        ToolExecutionRequest(
+                            workspace_info=request.workspace_info,
+                            tool=tool,
+                            repo_index=request.repo_index,
+                        )
+                    )
+                    observations.append(
+                        f'tool={tool_call.tool_name} exit_code={tool_result.exit_code}\n'
+                        f'stdout:\n{tool_result.stdout}\n'
+                        f'stderr:\n{tool_result.stderr}'
+                    )
+                    completed_tool_calls.append(tool_call.tool_name.value)
+                    match tool:
+                        case RunTests(command=command):
+                            tests_run.append(command)
+                            test_results.append(_test_result_from_tool_result(command, tool_result))
+                        case GitDiff():
+                            saw_diff = saw_diff or bool(tool_result.stdout.strip())
+                        case _:
+                            pass
+        messages.append(Message(role='assistant', content=agent_turn.model_dump_json()))
+        messages.append(Message(role='user', content='\n\n'.join(observations)))
 
-    return failed_worker_result("maximum implementation tool rounds reached")
+    return failed_worker_result('maximum implementation tool rounds reached')
 
 
 def _llm_user_payload(request: ImplementationTurnRequest) -> dict[str, object]:
     return {
-        "plan_step": request.plan_step.model_dump(mode="json"),
-        "context_pack": request.context_pack.model_dump(mode="json"),
-        "task_contract": request.task_contract.model_dump(mode="json"),
-        "workspace_info": request.workspace_info.model_dump(mode="json"),
-        "available_tools": list(IMPLEMENTATION_AVAILABLE_TOOLS),
+        'plan_step': request.plan_step.model_dump(mode='json'),
+        'context_pack': request.context_pack.model_dump(mode='json'),
+        'task_contract': request.task_contract.model_dump(mode='json'),
+        'workspace_info': request.workspace_info.model_dump(mode='json'),
+        'available_tools': list(IMPLEMENTATION_AVAILABLE_TOOLS),
     }
 
 
@@ -201,27 +200,26 @@ def _context_budget_blocked_worker_result(
     completed_tool_calls: list[str],
     pending_tool_calls: list[str],
 ) -> WorkerResult:
-    completed_summary = ", ".join(completed_tool_calls) if completed_tool_calls else "none"
-    pending_summary = ", ".join(pending_tool_calls) if pending_tool_calls else "none"
+    completed_summary = ', '.join(completed_tool_calls) if completed_tool_calls else 'none'
+    pending_summary = ', '.join(pending_tool_calls) if pending_tool_calls else 'none'
     return WorkerResult(
         status=WorkerStatus.BLOCKED,
         patch_id=None,
-        diff_summary="Implementation stopped before exceeding the context window budget.",
+        diff_summary='Implementation stopped before exceeding the context window budget.',
         tests_run=[],
         test_results=[],
-        discovered_issues=["context utilization exceeded 80 percent"],
+        discovered_issues=['context utilization exceeded 80 percent'],
         confidence=Confidence.LOW,
         replan_suggestion=(
-            "Context budget exceeded. Completed tool calls: "
-            f"{completed_summary}. Pending tool calls: {pending_summary}."
+            'Context budget exceeded. Completed tool calls: '
+            f'{completed_summary}. Pending tool calls: {pending_summary}.'
         ),
     )
 
 
-@durable_activity(retries=0, timeout=120)
 async def get_full_diff(workspace_info: WorkspaceInfo) -> str:
     tool_result = await run_tool(
-        ToolExecutionRequest(workspace_info=workspace_info, tool=GitDiff(path="."))
+        ToolExecutionRequest(workspace_info=workspace_info, tool=GitDiff(path='.'))
     )
     return tool_result.stdout
 
@@ -230,7 +228,7 @@ def failed_worker_result(reason: str) -> WorkerResult:
     return WorkerResult(
         status=WorkerStatus.FAILED,
         patch_id=None,
-        diff_summary="Implementation did not complete within the iteration budget.",
+        diff_summary='Implementation did not complete within the iteration budget.',
         tests_run=[],
         test_results=[],
         discovered_issues=[reason],
@@ -249,11 +247,11 @@ def _worker_result_with_evidence(
     test_results = [*worker_result.test_results, *evidence.test_results]
     has_diff_evidence = evidence.saw_diff
     if not has_diff_evidence and not test_results:
-        return failed_worker_result("success result missing diff or test evidence")
+        return failed_worker_result('success result missing diff or test evidence')
     return worker_result.model_copy(
         update={
-            "tests_run": tests_run,
-            "test_results": test_results,
+            'tests_run': tests_run,
+            'test_results': test_results,
         }
     )
 
@@ -266,11 +264,3 @@ def _test_result_from_tool_result(command: str, tool_result: ToolResult) -> Test
         stderr_summary=tool_result.stderr,
         passed=tool_result.exit_code == 0,
     )
-
-
-def _tool_from_call(tool_call: ImplementationToolCall) -> Tool:
-    match tool_call:
-        case GatherContext():
-            raise AssertionError("gather_context must be dispatched before tool conversion")
-        case _:
-            return tool_call

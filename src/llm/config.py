@@ -9,17 +9,20 @@ from src.runtime_enums import StrEnum
 DEFAULT_CONTEXT_LIMIT_TOKENS = 200_000
 CONTEXT_UTILIZATION_STOP_THRESHOLD = 0.80
 
+# TODO collect all settings for this project here - don't distribute the settings througout the files - that way we have a single source of truth for all settings, and it's easier to manage and update them - right now we have some settings in env vars, some hardcoded in code, some in json files, it's a mess - we should unify this and have a clear structure for how settings are defined and loaded in this project
+
 
 class ModelRole(StrEnum):
-    CONTRACT_BUILDER = "contract_builder"
-    PLANNER = "planner"
-    COMPLEXITY_ASSESSOR = "complexity_assessor"
-    CONTEXT_GATHERER = "context_gatherer"
-    IMPLEMENTATION = "implementation"
-    REVIEWER = "reviewer"
-    SUMMARIZER = "summarizer"
+    CONTRACT_BUILDER = 'contract_builder'
+    PLANNER = 'planner'
+    COMPLEXITY_ASSESSOR = 'complexity_assessor'
+    CONTEXT_GATHERER = 'context_gatherer'
+    IMPLEMENTATION = 'implementation'
+    REVIEWER = 'reviewer'
+    SUMMARIZER = 'summarizer'
 
 
+# TODO Have a model definition - with context limits, costs, model name/id, etc - and load that from a json/db rather than hardcoding it in code and env vars, that way we can easily add new models and update context limits and costs without changing code
 class ModelContextLimit(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -56,27 +59,28 @@ class ModelConfiguration(BaseModel):
             case ModelRole.SUMMARIZER:
                 return self.summarizer_model
             case _:
-                raise AssertionError(f"No model configured for role: {role}")
+                raise AssertionError(f'No model configured for role: {role}')
 
     def context_limit_for_role(self, role: ModelRole) -> int:
         model = self.model_for_role(role)
         for model_context_limit in self.model_context_limits:
             if model_context_limit.model == model:
                 return model_context_limit.context_limit_tokens
-        raise ValueError(f"Context limit is required for model: {model}")
+        raise ValueError(f'Context limit is required for model: {model}')
 
 
 def load_model_configuration() -> ModelConfiguration:
-    contract_builder_model = os.getenv("MODEL_CONTRACT_BUILDER", "claude-opus-4-7")
-    planner_model = os.getenv("MODEL_PLANNER", "claude-opus-4-7")
-    complexity_assessor_model = os.getenv("MODEL_COMPLEXITY_ASSESSOR", "claude-opus-4-7")
+    # TODO these should be required env args, no defaults, and we should validate that the models are valid/available before starting the service - i.e. verify, that they are in the json/db mentioned below.
+    contract_builder_model = os.getenv('MODEL_CONTRACT_BUILDER', 'claude-opus-4-7')
+    planner_model = os.getenv('MODEL_PLANNER', 'claude-opus-4-7')
+    complexity_assessor_model = os.getenv('MODEL_COMPLEXITY_ASSESSOR', 'claude-opus-4-7')
     context_gatherer_model = os.getenv(
-        "MODEL_CONTEXT_GATHERER",
-        "claude-haiku-4-5-20251001",
+        'MODEL_CONTEXT_GATHERER',
+        'claude-haiku-4-5-20251001',
     )
-    implementation_model = os.getenv("MODEL_IMPLEMENTATION", "claude-sonnet-4-6")
-    reviewer_model = os.getenv("MODEL_REVIEWER", "claude-sonnet-4-6")
-    summarizer_model = os.getenv("MODEL_SUMMARIZER", "claude-haiku-4-5-20251001")
+    implementation_model = os.getenv('MODEL_IMPLEMENTATION', 'claude-sonnet-4-6')
+    reviewer_model = os.getenv('MODEL_REVIEWER', 'claude-sonnet-4-6')
+    summarizer_model = os.getenv('MODEL_SUMMARIZER', 'claude-haiku-4-5-20251001')
     return ModelConfiguration(
         contract_builder_model=contract_builder_model,
         planner_model=planner_model,
@@ -101,6 +105,7 @@ def load_model_configuration() -> ModelConfiguration:
 
 def _context_limits_for_models(models: list[str]) -> list[ModelContextLimit]:
     return [
+        # TODO we need a json/db where we define the models, their context limits, costs, and other relevant metadata, rather than hardcoding this in code.
         ModelContextLimit(model=model, context_limit_tokens=DEFAULT_CONTEXT_LIMIT_TOKENS)
         for model in sorted(set(models))
     ]

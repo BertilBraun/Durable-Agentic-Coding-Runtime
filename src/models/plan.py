@@ -6,9 +6,9 @@ from src.runtime_enums import StrEnum
 
 
 class Risk(StrEnum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
+    LOW = 'low'
+    MEDIUM = 'medium'
+    HIGH = 'high'
 
 
 class PlanStep(BaseModel):
@@ -17,7 +17,7 @@ class PlanStep(BaseModel):
     id: str
     goal: str
     target_files: list[str] = Field(default_factory=list)
-    allowed_files: list[str] = Field(default_factory=list)
+    allowed_files: list[str] = Field(default_factory=list)  # TODO really necessary?
     tests_to_run: list[str] = Field(default_factory=list)
     expected_result: str
     risk: Risk

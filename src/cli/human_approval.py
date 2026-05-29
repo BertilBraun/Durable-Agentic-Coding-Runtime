@@ -27,7 +27,7 @@ class HttpClient(Protocol):
 
 def build_signal_request(approval: HumanApprovalSignal) -> HumanApprovalSignalRequest:
     return HumanApprovalSignalRequest(
-        signal_type="human_approval",
+        signal_type='human_approval',
         payload=approval,
     )
 
@@ -36,12 +36,12 @@ async def send_human_approval_signal(
     temporal_api_url: str,
     workflow_id: str,
     approval: HumanApprovalSignal,
-    http_client: HttpClient,
+    http_client: httpx.AsyncClient,
 ) -> None:
     signal_request = build_signal_request(approval)
     response = await http_client.post(
-        url=f"{temporal_api_url.rstrip('/')}/workflows/{workflow_id}/signals",
-        json=signal_request.model_dump(mode="json"),
+        url=f'{temporal_api_url.rstrip("/")}/workflows/{workflow_id}/signals',
+        json=signal_request.model_dump(mode='json'),
     )
     response.raise_for_status()
 
@@ -62,17 +62,17 @@ async def run_from_arguments(arguments: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--temporal-api-url", required=True)
-    parser.add_argument("--workflow-id", required=True)
+    parser.add_argument('--temporal-api-url', required=True)
+    parser.add_argument('--workflow-id', required=True)
     parser.add_argument(
-        "--decision",
+        '--decision',
         choices=[decision.value for decision in ApprovalDecision],
         required=True,
     )
-    parser.add_argument("--feedback", required=False)
+    parser.add_argument('--feedback', required=False)
     arguments = parser.parse_args()
     asyncio.run(run_from_arguments(arguments))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -13,7 +13,7 @@ def test_build_signal_request_uses_human_approval_signal_type() -> None:
         HumanApprovalSignal(decision=ApprovalDecision.APPROVE, feedback=None)
     )
 
-    assert signal_request.signal_type == "human_approval"
+    assert signal_request.signal_type == 'human_approval'
     assert signal_request.payload.decision == ApprovalDecision.APPROVE
     assert signal_request.payload.feedback is None
 
@@ -23,16 +23,16 @@ async def test_send_human_approval_signal_posts_to_temporal() -> None:
     http_client = FakeHttpClient()
 
     await send_human_approval_signal(
-        temporal_api_url="http://temporal",
-        workflow_id="workflow-1",
-        approval=HumanApprovalSignal(decision=ApprovalDecision.REVISE, feedback="Narrow scope"),
+        temporal_api_url='http://temporal',
+        workflow_id='workflow-1',
+        approval=HumanApprovalSignal(decision=ApprovalDecision.REVISE, feedback='Narrow scope'),
         http_client=http_client,
     )
 
-    assert http_client.posted_url == "http://temporal/workflows/workflow-1/signals"
+    assert http_client.posted_url == 'http://temporal/workflows/workflow-1/signals'
     assert http_client.posted_json == {
-        "signal_type": "human_approval",
-        "payload": {"decision": "revise", "feedback": "Narrow scope"},
+        'signal_type': 'human_approval',
+        'payload': {'decision': 'revise', 'feedback': 'Narrow scope'},
     }
 
 
@@ -58,9 +58,9 @@ class FakeHttpClient:
 
 def test_signal_request_type_is_frozen() -> None:
     signal_request = HumanApprovalSignalRequest(
-        signal_type="human_approval",
+        signal_type='human_approval',
         payload=HumanApprovalSignal(decision=ApprovalDecision.APPROVE, feedback=None),
     )
 
     with pytest.raises(ValidationError):
-        signal_request.signal_type = "other"
+        signal_request.signal_type = 'other'

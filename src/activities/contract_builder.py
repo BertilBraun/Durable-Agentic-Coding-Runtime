@@ -14,10 +14,10 @@ async def build_contract(request: TaskRequest) -> TaskContract:
         role=ModelRole.CONTRACT_BUILDER,
         messages=[
             Message(
-                role="system",
+                role='system',
                 content=system_prompt_for_role(ModelRole.CONTRACT_BUILDER),
             ),
-            Message(role="user", content=request.model_dump_json()),
+            Message(role='user', content=request.model_dump_json()),
         ],
         output_type=TaskContract,
     )

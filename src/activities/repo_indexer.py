@@ -13,15 +13,15 @@ from src.models.repo import FileEntry, Language, RepoIndex, Symbol, SymbolKind
 
 SKIPPED_DIRECTORY_NAMES = frozenset(
     {
-        ".git",
-        ".venv",
-        "venv",
-        "node_modules",
-        "__pycache__",
-        "dist",
-        "build",
-        "vendor",
-        "generated",
+        '.git',
+        '.venv',
+        'venv',
+        'node_modules',
+        '__pycache__',
+        'dist',
+        'build',
+        'vendor',
+        'generated',
     }
 )
 
@@ -32,7 +32,7 @@ async def build_repo_index(workspace_info: WorkspaceInfo) -> RepoIndex:
     file_entries: list[FileEntry] = []
     symbols: list[Symbol] = []
 
-    for file_path in sorted(workspace_path.rglob("*")):
+    for file_path in sorted(workspace_path.rglob('*')):
         if not file_path.is_file() or _is_skipped_path(file_path):
             continue
 
@@ -58,15 +58,15 @@ def _is_skipped_path(file_path: Path) -> bool:
 
 def _language_for_path(file_path: Path) -> Language:
     match file_path.suffix:
-        case ".py":
+        case '.py':
             return Language.PYTHON
-        case ".ts":
+        case '.ts':
             return Language.TYPESCRIPT
-        case ".tsx":
+        case '.tsx':
             return Language.TSX
-        case ".js":
+        case '.js':
             return Language.JAVASCRIPT
-        case ".jsx":
+        case '.jsx':
             return Language.JSX
         case _:
             return Language.UNKNOWN
@@ -89,7 +89,7 @@ def _symbols_for_file(file_path: Path, relative_path: str, language: Language) -
                 language=language,
             )
         case _:
-            raise AssertionError(f"Unhandled language in _symbols_for_file: {language}")
+            raise AssertionError(f'Unhandled language in _symbols_for_file: {language}')
 
 
 def _tree_sitter_symbols_for_file(
@@ -108,7 +108,7 @@ def _tree_sitter_symbols_for_file(
                 symbols.extend(_javascript_tree_sitter_symbols(node, relative_path, language))
             case _:
                 raise AssertionError(
-                    f"Unhandled language in _tree_sitter_symbols_for_file: {language}"
+                    f'Unhandled language in _tree_sitter_symbols_for_file: {language}'
                 )
     return symbols
 
@@ -123,16 +123,16 @@ def _tree_sitter_parser(language: Language) -> Parser:
             parser.language = TreeSitterLanguage(tree_sitter_javascript.language())
             return parser
         case Language.UNKNOWN:
-            raise ValueError("Cannot create a tree-sitter parser for unknown language")
+            raise ValueError('Cannot create a tree-sitter parser for unknown language')
 
 
 def _python_tree_sitter_symbols(node: Node, relative_path: str) -> list[Symbol]:
-    if node.type not in {"function_definition", "class_definition"}:
+    if node.type not in {'function_definition', 'class_definition'}:
         return []
-    name_node = node.child_by_field_name("name")
+    name_node = node.child_by_field_name('name')
     if name_node is None:
         return []
-    kind = SymbolKind.CLASS if node.type == "class_definition" else SymbolKind.FUNCTION
+    kind = SymbolKind.CLASS if node.type == 'class_definition' else SymbolKind.FUNCTION
     return [_node_symbol(name_node, node, kind, relative_path, Language.PYTHON)]
 
 
@@ -142,14 +142,14 @@ def _javascript_tree_sitter_symbols(
     language: Language,
 ) -> list[Symbol]:
     match node.type:
-        case "function_declaration" | "class_declaration":
+        case 'function_declaration' | 'class_declaration':
             return _javascript_named_declaration_symbols(node, relative_path, language)
-        case "export_statement":
-            declaration_node = node.child_by_field_name("declaration")
+        case 'export_statement':
+            declaration_node = node.child_by_field_name('declaration')
             if declaration_node is None:
                 return []
             return _javascript_tree_sitter_symbols(declaration_node, relative_path, language)
-        case "lexical_declaration" | "variable_declaration":
+        case 'lexical_declaration' | 'variable_declaration':
             return _javascript_variable_symbols(node, relative_path, language)
         case _:
             return []
@@ -160,10 +160,10 @@ def _javascript_named_declaration_symbols(
     relative_path: str,
     language: Language,
 ) -> list[Symbol]:
-    name_node = node.child_by_field_name("name")
+    name_node = node.child_by_field_name('name')
     if name_node is None:
         return []
-    kind = SymbolKind.CLASS if node.type == "class_declaration" else SymbolKind.FUNCTION
+    kind = SymbolKind.CLASS if node.type == 'class_declaration' else SymbolKind.FUNCTION
     return [_node_symbol(name_node, node, kind, relative_path, language)]
 
 
@@ -174,12 +174,12 @@ def _javascript_variable_symbols(
 ) -> list[Symbol]:
     symbols: list[Symbol] = []
     for child in node.children:
-        if child.type != "variable_declarator":
+        if child.type != 'variable_declarator':
             continue
-        value_node = child.child_by_field_name("value")
-        if value_node is None or value_node.type != "arrow_function":
+        value_node = child.child_by_field_name('value')
+        if value_node is None or value_node.type != 'arrow_function':
             continue
-        name_node = child.child_by_field_name("name")
+        name_node = child.child_by_field_name('name')
         if name_node is None:
             continue
         symbols.append(_node_symbol(name_node, child, SymbolKind.FUNCTION, relative_path, language))
@@ -194,7 +194,7 @@ def _node_symbol(
     language: Language,
 ) -> Symbol:
     return Symbol(
-        name=name_node.text.decode("utf-8", errors="replace"),
+        name=name_node.text.decode('utf-8', errors='replace'),
         kind=kind,
         file_path=relative_path,
         start_line=source_node.start_point[0] + 1,

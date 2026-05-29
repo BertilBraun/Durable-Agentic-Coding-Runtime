@@ -15,24 +15,24 @@ class FakeCompletions:
     async def create(self, **keyword_arguments: object) -> ChatCompletion:
         return ChatCompletion.model_validate(
             {
-                "id": "chatcmpl-test",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "completion-model",
-                "choices": [
+                'id': 'chatcmpl-test',
+                'object': 'chat.completion',
+                'created': 0,
+                'model': 'completion-model',
+                'choices': [
                     {
-                        "index": 0,
-                        "finish_reason": "stop",
-                        "message": {
-                            "role": "assistant",
-                            "content": json.dumps({"requires_human_approval": False}),
+                        'index': 0,
+                        'finish_reason': 'stop',
+                        'message': {
+                            'role': 'assistant',
+                            'content': json.dumps({'requires_human_approval': False}),
                         },
                     }
                 ],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 4,
-                    "total_tokens": 14,
+                'usage': {
+                    'prompt_tokens': 10,
+                    'completion_tokens': 4,
+                    'total_tokens': 14,
                 },
             }
         )
@@ -42,36 +42,36 @@ class FakeCompletions:
         response_format: type[ComplexityVerdict],
         **keyword_arguments: object,
     ) -> ParsedChatCompletion[ComplexityVerdict]:
-        self.parse_calls.append({"response_format": response_format, **keyword_arguments})
+        self.parse_calls.append({'response_format': response_format, **keyword_arguments})
         return ParsedChatCompletion[ComplexityVerdict].model_validate(
             {
-                "id": "chatcmpl-test",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "structured-model",
-                "choices": [
+                'id': 'chatcmpl-test',
+                'object': 'chat.completion',
+                'created': 0,
+                'model': 'structured-model',
+                'choices': [
                     {
-                        "index": 0,
-                        "finish_reason": "stop",
-                        "message": {
-                            "role": "assistant",
-                            "content": json.dumps(
+                        'index': 0,
+                        'finish_reason': 'stop',
+                        'message': {
+                            'role': 'assistant',
+                            'content': json.dumps(
                                 {
-                                    "requires_human_approval": False,
-                                    "reasoning": "Narrow bugfix.",
+                                    'requires_human_approval': False,
+                                    'reasoning': 'Narrow bugfix.',
                                 }
                             ),
-                            "parsed": {
-                                "requires_human_approval": False,
-                                "reasoning": "Narrow bugfix.",
+                            'parsed': {
+                                'requires_human_approval': False,
+                                'reasoning': 'Narrow bugfix.',
                             },
                         },
                     }
                 ],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 4,
-                    "total_tokens": 14,
+                'usage': {
+                    'prompt_tokens': 10,
+                    'completion_tokens': 4,
+                    'total_tokens': 14,
                 },
             }
         )
@@ -106,12 +106,12 @@ async def test_structured_generation_parses_model_and_records_usage() -> None:
 
     verdict = await llm_client.generate_structured(
         role=ModelRole.COMPLEXITY_ASSESSOR,
-        messages=[Message(role="user", content="Assess this task")],
+        messages=[Message(role='user', content='Assess this task')],
         output_type=ComplexityVerdict,
     )
 
     assert verdict.requires_human_approval is False
-    assert async_openai_client.completions.parse_calls[0]["response_format"] == ComplexityVerdict
+    assert async_openai_client.completions.parse_calls[0]['response_format'] == ComplexityVerdict
     assert llm_client.usage_ledger.total_input_tokens == 10
     assert llm_client.usage_ledger.total_output_tokens == 4
     assert llm_client.last_input_token_count == 10
@@ -132,7 +132,7 @@ async def test_completion_extracts_string_content_and_records_usage() -> None:
 
     content = await llm_client.complete(
         role=ModelRole.COMPLEXITY_ASSESSOR,
-        messages=[Message(role="user", content="Assess this task")],
+        messages=[Message(role='user', content='Assess this task')],
     )
 
     assert content == '{"requires_human_approval": false}'
@@ -142,23 +142,23 @@ async def test_completion_extracts_string_content_and_records_usage() -> None:
 
 def _model_configuration() -> ModelConfiguration:
     model_names: dict[str, Any] = {
-        "contract_builder_model": "contract",
-        "planner_model": "planner",
-        "complexity_assessor_model": "complexity",
-        "context_gatherer_model": "context",
-        "implementation_model": "implementation",
-        "reviewer_model": "review",
-        "summarizer_model": "summary",
+        'contract_builder_model': 'contract',
+        'planner_model': 'planner',
+        'complexity_assessor_model': 'complexity',
+        'context_gatherer_model': 'context',
+        'implementation_model': 'implementation',
+        'reviewer_model': 'review',
+        'summarizer_model': 'summary',
     }
     return ModelConfiguration(
         **model_names,
         model_context_limits=[
-            ModelContextLimit(model="contract", context_limit_tokens=100),
-            ModelContextLimit(model="planner", context_limit_tokens=100),
-            ModelContextLimit(model="complexity", context_limit_tokens=100),
-            ModelContextLimit(model="context", context_limit_tokens=100),
-            ModelContextLimit(model="implementation", context_limit_tokens=100),
-            ModelContextLimit(model="review", context_limit_tokens=100),
-            ModelContextLimit(model="summary", context_limit_tokens=100),
+            ModelContextLimit(model='contract', context_limit_tokens=100),
+            ModelContextLimit(model='planner', context_limit_tokens=100),
+            ModelContextLimit(model='complexity', context_limit_tokens=100),
+            ModelContextLimit(model='context', context_limit_tokens=100),
+            ModelContextLimit(model='implementation', context_limit_tokens=100),
+            ModelContextLimit(model='review', context_limit_tokens=100),
+            ModelContextLimit(model='summary', context_limit_tokens=100),
         ],
     )

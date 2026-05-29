@@ -6,16 +6,16 @@ from src.runtime_enums import StrEnum
 
 
 class WorkerStatus(StrEnum):
-    SUCCESS = "success"
-    FAILED = "failed"
-    BLOCKED = "blocked"
-    NEEDS_REPLAN = "needs_replan"
+    SUCCESS = 'success'
+    FAILED = 'failed'
+    BLOCKED = 'blocked'
+    NEEDS_REPLAN = 'needs_replan'
 
 
 class Confidence(StrEnum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
+    LOW = 'low'
+    MEDIUM = 'medium'
+    HIGH = 'high'
 
 
 class TestResult(BaseModel):

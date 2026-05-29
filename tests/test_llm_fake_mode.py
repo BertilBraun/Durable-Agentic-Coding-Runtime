@@ -15,7 +15,7 @@ async def test_test_local_fake_openai_generates_task_contract() -> None:
 
     task_contract = await llm_client.generate_structured(
         role=ModelRole.CONTRACT_BUILDER,
-        messages=[Message(role="user", content="Fix the test")],
+        messages=[Message(role='user', content='Fix the test')],
         output_type=TaskContract,
     )
 
@@ -28,7 +28,7 @@ async def test_test_local_fake_openai_generates_single_step_plan() -> None:
 
     plan = await llm_client.generate_structured(
         role=ModelRole.PLANNER,
-        messages=[Message(role="user", content="Plan this")],
+        messages=[Message(role='user', content='Plan this')],
         output_type=Plan,
     )
 
@@ -43,7 +43,7 @@ async def test_test_local_fake_openai_implementation_first_turn_emits_patch_and_
 
     turn = await llm_client.generate_structured(
         role=ModelRole.IMPLEMENTATION,
-        messages=[Message(role="user", content="Implement smoke patch")],
+        messages=[Message(role='user', content='Implement smoke patch')],
         output_type=ImplementationAgentTurn,
     )
 
@@ -62,13 +62,13 @@ async def test_test_local_fake_openai_implementation_second_turn_reports_success
     turn = await llm_client.generate_structured(
         role=ModelRole.IMPLEMENTATION,
         messages=[
-            Message(role="user", content="Implement smoke patch"),
-            Message(role="assistant", content='{"done":false}'),
-            Message(role="user", content="tool=run_tests exit_code=0\nstdout:\n1 passed"),
+            Message(role='user', content='Implement smoke patch'),
+            Message(role='assistant', content='{"done":false}'),
+            Message(role='user', content='tool=run_tests exit_code=0\nstdout:\n1 passed'),
         ],
         output_type=ImplementationAgentTurn,
     )
 
     assert turn.done is True
     assert turn.worker_result is not None
-    assert turn.worker_result.diff_summary == "Added smoke subtract function and test."
+    assert turn.worker_result.diff_summary == 'Added smoke subtract function and test.'

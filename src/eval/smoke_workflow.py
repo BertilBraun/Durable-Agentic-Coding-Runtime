@@ -59,7 +59,7 @@ class SmokeWorkflowResult(BaseModel):
 class WorkflowCompletedEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    type: Literal["workflow_completed"]
+    type: Literal['workflow_completed']
     result: SmokeWorkflowFinalResult
 
 
@@ -69,7 +69,7 @@ class SmokeWorkflowFinalResult(BaseModel):
     worker_results: list[WorkerResult]
 
 
-TERMINAL_STATUSES = frozenset({"completed", "failed"})
+TERMINAL_STATUSES = frozenset({'completed', 'failed'})
 
 
 async def run_smoke_workflow(
@@ -98,12 +98,12 @@ async def run_smoke_workflow(
 def _start_worker(temporal_database_url: str, workspace_image: str) -> subprocess.Popen[str]:
     environment = {
         **os.environ,
-        "TEMPORAL_DATABASE_URL": temporal_database_url,
-        "WORKSPACE_IMAGE": workspace_image,
-        "WORKSPACE_ROOT": ".agentic-workspaces",
+        'TEMPORAL_DATABASE_URL': temporal_database_url,
+        'WORKSPACE_IMAGE': workspace_image,
+        'WORKSPACE_ROOT': '.agentic-workspaces',
     }
     return subprocess.Popen(
-        [sys.executable, "-m", "src.worker"],
+        [sys.executable, '-m', 'src.worker'],
         env=environment,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -112,24 +112,24 @@ def _start_worker(temporal_database_url: str, workspace_image: str) -> subproces
 
 
 def _create_smoke_repository(temporary_directory: Path) -> Path:
-    repository_path = temporary_directory / "repo"
+    repository_path = temporary_directory / 'repo'
     repository_path.mkdir()
-    (repository_path / "app.py").write_text(
-        "def add(first_number: int, second_number: int) -> int:\n"
-        "    return first_number + second_number\n",
-        encoding="utf-8",
+    (repository_path / 'app.py').write_text(
+        'def add(first_number: int, second_number: int) -> int:\n'
+        '    return first_number + second_number\n',
+        encoding='utf-8',
     )
-    _run_git(repository_path, "init")
-    _run_git(repository_path, "config", "user.email", "test@example.com")
-    _run_git(repository_path, "config", "user.name", "Test User")
-    _run_git(repository_path, "add", ".")
-    _run_git(repository_path, "commit", "-m", "initial")
+    _run_git(repository_path, 'init')
+    _run_git(repository_path, 'config', 'user.email', 'test@example.com')
+    _run_git(repository_path, 'config', 'user.name', 'Test User')
+    _run_git(repository_path, 'add', '.')
+    _run_git(repository_path, 'commit', '-m', 'initial')
     return repository_path
 
 
 def _run_git(repository_path: Path, *arguments: str) -> None:
     subprocess.run(
-        ["git", *arguments],
+        ['git', *arguments],
         cwd=repository_path,
         check=True,
         capture_output=True,
@@ -143,19 +143,19 @@ async def _start_and_wait_for_workflow(
     timeout_seconds: int,
 ) -> SmokeWorkflowResult:
     request = SmokeWorkflowRequest(
-        workflow_name="main_workflow",
+        workflow_name='main_workflow',
         workflow_input=SmokeWorkflowInput(
             request=TaskRequest(
-                raw_request="Smoke test the durable agent workflow",
+                raw_request='Smoke test the durable agent workflow',
                 repo_path=str(repository_path),
-                run_id="smoke-live",
+                run_id='smoke-live',
             )
         ),
     )
     async with httpx.AsyncClient(timeout=30) as http_client:
         start_response = await http_client.post(
-            f"{temporal_api_url.rstrip('/')}/workflows",
-            json=request.model_dump(mode="json"),
+            f'{temporal_api_url.rstrip("/")}/workflows',
+            json=request.model_dump(mode='json'),
         )
         start_response.raise_for_status()
         workflow_start = WorkflowStartResponse.model_validate(start_response.json())
@@ -175,23 +175,23 @@ async def _poll_workflow(
 ) -> SmokeWorkflowResult:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        response = await http_client.get(f"{temporal_api_url.rstrip('/')}/workflows/{workflow_id}")
+        response = await http_client.get(f'{temporal_api_url.rstrip("/")}/workflows/{workflow_id}')
         response.raise_for_status()
         workflow_status = WorkflowStatusResponse.model_validate(response.json())
         if workflow_status.status in TERMINAL_STATUSES:
-            if workflow_status.status == "completed":
+            if workflow_status.status == 'completed':
                 completed_event = await _read_completed_event(
                     http_client=http_client,
                     temporal_api_url=temporal_api_url,
                     workflow_id=workflow_id,
                 )
                 return _smoke_result_from_completed_event(
-                    completed_event.model_dump(mode="json"),
+                    completed_event.model_dump(mode='json'),
                     workflow_id=workflow_id,
                 )
-            return SmokeWorkflowResult(workflow_id=workflow_status.workflow_id, status="failed")
+            return SmokeWorkflowResult(workflow_id=workflow_status.workflow_id, status='failed')
         await asyncio.sleep(2)
-    return SmokeWorkflowResult(workflow_id=workflow_id, status="timeout")
+    return SmokeWorkflowResult(workflow_id=workflow_id, status='timeout')
 
 
 async def _read_completed_event(
@@ -200,26 +200,26 @@ async def _read_completed_event(
     workflow_id: str,
 ) -> WorkflowCompletedEvent:
     async with http_client.stream(
-        "GET",
-        f"{temporal_api_url.rstrip('/')}/workflows/{workflow_id}/stream",
+        'GET',
+        f'{temporal_api_url.rstrip("/")}/workflows/{workflow_id}/stream',
     ) as response:
         response.raise_for_status()
         async for line in response.aiter_lines():
-            if not line.startswith("data: "):
+            if not line.startswith('data: '):
                 continue
-            event_payload = json.loads(line.removeprefix("data: "))
-            if event_payload.get("type") == "workflow_completed":
+            event_payload = json.loads(line.removeprefix('data: '))
+            if event_payload.get('type') == 'workflow_completed':
                 return WorkflowCompletedEvent.model_validate(event_payload)
-    raise ValueError(f"Workflow {workflow_id} stream ended without completion event")
+    raise ValueError(f'Workflow {workflow_id} stream ended without completion event')
 
 
 def _smoke_result_from_completed_event(
     event_payload: dict[str, object],
-    workflow_id: str = "",
+    workflow_id: str = '',
 ) -> SmokeWorkflowResult:
     completed_event = WorkflowCompletedEvent.model_validate(event_payload)
     changed_diff = any(
-        worker_result.diff_summary.strip() and "no-op" not in worker_result.diff_summary.lower()
+        worker_result.diff_summary.strip() and 'no-op' not in worker_result.diff_summary.lower()
         for worker_result in completed_event.result.worker_results
     )
     test_result_passed = any(
@@ -227,7 +227,7 @@ def _smoke_result_from_completed_event(
         for worker_result in completed_event.result.worker_results
         for test_result in worker_result.test_results
     )
-    status = "completed" if changed_diff and test_result_passed else "verification_failed"
+    status = 'completed' if changed_diff and test_result_passed else 'verification_failed'
     return SmokeWorkflowResult(
         workflow_id=workflow_id,
         status=status,
@@ -238,13 +238,13 @@ def _smoke_result_from_completed_event(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--temporal-api-url", default="http://localhost:8080")
+    parser.add_argument('--temporal-api-url', default='http://localhost:8080')
     parser.add_argument(
-        "--temporal-database-url",
-        default="postgresql://tl:changeme@localhost:5432/temporal_light",
+        '--temporal-database-url',
+        default='postgresql://tl:changeme@localhost:5432/temporal_light',
     )
-    parser.add_argument("--workspace-image", default="durable-agentic-workspace:latest")
-    parser.add_argument("--timeout-seconds", type=int, default=120)
+    parser.add_argument('--workspace-image', default='durable-agentic-workspace:latest')
+    parser.add_argument('--timeout-seconds', type=int, default=120)
     arguments = parser.parse_args()
     result = asyncio.run(
         run_smoke_workflow(
@@ -257,5 +257,5 @@ def main() -> None:
     print(result.model_dump_json(indent=2))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

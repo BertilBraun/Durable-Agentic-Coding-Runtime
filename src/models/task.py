@@ -6,13 +6,13 @@ from src.runtime_enums import StrEnum
 
 
 class TaskType(StrEnum):
-    BUGFIX = "bugfix"
-    FEATURE = "feature"
-    REFACTOR = "refactor"
-    FRONTEND = "frontend"
-    TEST = "test"
-    DOCS = "docs"
-    UNKNOWN = "unknown"
+    BUGFIX = 'bugfix'
+    FEATURE = 'feature'
+    REFACTOR = 'refactor'
+    FRONTEND = 'frontend'
+    TEST = 'test'
+    DOCS = 'docs'
+    UNKNOWN = 'unknown'
 
 
 class TaskRequest(BaseModel):

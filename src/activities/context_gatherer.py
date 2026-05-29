@@ -17,10 +17,7 @@ from src.llm.config import CONTEXT_UTILIZATION_STOP_THRESHOLD, ModelRole
 from src.llm.prompts import system_prompt_for_role
 from src.models.context import ContextPack
 from src.models.repo import RepoIndex
-from src.tools.definitions import (
-    ContextGathererToolCall,
-    Tool,
-)
+from src.tools.definitions import ContextGathererToolCall
 
 
 class ContextGatherRequest(BaseModel):
@@ -39,24 +36,25 @@ class ContextGathererTurn(BaseModel):
     tool_calls: list[ContextGathererToolCall] = Field(default_factory=list)
 
 
+# TODO run_tool and llm generation are activities not the gather_context itself, everything around llm generation and run_tool is basically just deterministic orchestration
 @durable_activity(retries=1, timeout=300, backoff_seconds=5)
 async def gather_context(request: ContextGatherRequest) -> ContextPack:
     llm_client = LLMClient()
     messages = [
         Message(
-            role="system",
+            role='system',
             content=system_prompt_for_role(ModelRole.CONTEXT_GATHERER),
         ),
         Message(
-            role="user",
+            role='user',
             content=(
-                f"Prompt: {request.gatherer_prompt}\n\n"
-                f"Repository index: {request.repo_index.model_dump_json()}"
+                f'Prompt: {request.gatherer_prompt}\n\nRepository index: {request.repo_index.model_dump_json()}'
             ),
         ),
     ]
     observations: list[str] = []
-    max_tool_calls = int(os.getenv("CONTEXT_GATHERER_MAX_TOOL_CALLS", "10"))
+    # TODO from a config
+    max_tool_calls = int(os.getenv('CONTEXT_GATHERER_MAX_TOOL_CALLS', '10'))
     tool_call_count = 0
 
     while tool_call_count < max_tool_calls:
@@ -71,20 +69,9 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
             return turn.context_pack
 
         turn_observations: list[str] = []
-        for tool_call in turn.tool_calls:
+        for tool in turn.tool_calls:
             if tool_call_count >= max_tool_calls:
                 break
-            try:
-                tool = _tool_from_call(tool_call)
-            except AssertionError as error:
-                observation = (
-                    f"invalid_tool_call tool={tool_call.tool_name}: {error}. "
-                    "This restriction applies only to context gathering; implementation "
-                    "workers may use mutating tools when their phase allows it."
-                )
-                observations.append(observation)
-                turn_observations.append(observation)
-                continue
             tool_result = await run_tool(
                 ToolExecutionRequest(
                     workspace_info=request.workspace_info,
@@ -96,9 +83,10 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
             observations.append(observation)
             turn_observations.append(observation)
             tool_call_count += 1
-        messages.append(Message(role="assistant", content=turn.model_dump_json()))
-        messages.append(Message(role="user", content="\n".join(turn_observations)))
+        messages.append(Message(role='assistant', content=turn.model_dump_json()))
+        messages.append(Message(role='user', content='\n'.join(turn_observations)))
 
+    # TODO the best effort context pack is really just a fallback, we should be trying to get the LLM to summarize observations and build the context pack for us, rather than just returning all observations as relevant snippets which is not really what we want, we want the LLM to do the work of figuring out what is actually relevant and summarizing it for us, this is just a stop gap to prevent complete failure when we hit token limits or something else goes wrong with the LLM generation process
     return _best_effort_context_pack(request, observations)
 
 
@@ -111,10 +99,6 @@ def _best_effort_context_pack(
         relevant_snippets=observations,
         recent_observations=[],
         failed_attempt_summaries=[],
-        available_tools=["read_file_range", "search_text", "find_symbol", "find_references"],
+        available_tools=['read_file_range', 'search_text', 'find_symbol', 'find_references'],
         budget_remaining=0,
     )
-
-
-def _tool_from_call(tool_call: ContextGathererToolCall) -> Tool:
-    return tool_call

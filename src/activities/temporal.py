@@ -9,7 +9,10 @@ from typing import TypeVar, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
-ActivityFunction = TypeVar("ActivityFunction", bound=Callable[..., Awaitable[object]])
+ActivityFunction = TypeVar('ActivityFunction', bound=Callable[..., Awaitable[object]])
+
+
+# TODO the entire concept here is to allow pydantic models / dataclasses in temporal, right? If so - that is now natively supported in temporal-light - it handles the serialization and deserialization of pydantic models and dataclasses for you, so we can remove all of this custom serialization / deserialization code and just use temporal-light's native support for this - temporal also handles the return type, not just parameters.
 
 
 def durable_activity(
@@ -19,13 +22,15 @@ def durable_activity(
 ) -> Callable[[ActivityFunction], ActivityFunction]:
     try:
         from temporal_light import activity as temporal_activity
-    except ImportError:
-        return _identity_decorator
+    except ImportError as err:
+        raise RuntimeError(
+            "Temporal Light is not installed. Please install it with 'pip install temporal-light' to use the durable_activity decorator.",
+        ) from err
 
     def decorator(activity_function: ActivityFunction) -> ActivityFunction:
         signature = inspect.signature(activity_function)
         type_hints = get_type_hints(activity_function)
-        return_type = type_hints.get("return")
+        return_type = type_hints.get('return')
 
         @functools.wraps(activity_function)
         async def serialized_activity_function(
@@ -68,10 +73,6 @@ def durable_activity(
     return decorator
 
 
-def _identity_decorator(activity_function: ActivityFunction) -> ActivityFunction:
-    return activity_function
-
-
 @dataclasses.dataclass(frozen=True)
 class RestoredArguments:
     args: tuple[object, ...]
@@ -95,7 +96,7 @@ def _restore_arguments(
 def _json_safe_value(value: object) -> object:
     match value:
         case BaseModel():
-            return value.model_dump(mode="json")
+            return value.model_dump(mode='json')
         case list():
             return [_json_safe_value(item) for item in value]
         case tuple():
@@ -105,8 +106,8 @@ def _json_safe_value(value: object) -> object:
         case _:
             if dataclasses.is_dataclass(value) and not isinstance(value, type):
                 return {
-                    "__dataclass_type__": type(value).__name__,
-                    "fields": dataclasses.asdict(value),
+                    '__dataclass_type__': type(value).__name__,
+                    'fields': dataclasses.asdict(value),
                 }
             return value
 
@@ -133,7 +134,7 @@ def _restore_union_value(value: object, annotation: object) -> object | None:
         return None
     if not isinstance(value, dict):
         return None
-    dataclass_type_name = value.get("__dataclass_type__")
+    dataclass_type_name = value.get('__dataclass_type__')
     if not isinstance(dataclass_type_name, str):
         return None
     for union_member in get_args(annotation):
@@ -145,7 +146,7 @@ def _restore_union_value(value: object, annotation: object) -> object | None:
 
 
 def _dataclass_fields(value: dict[object, object]) -> dict[str, object]:
-    fields = value.get("fields", value)
+    fields = value.get('fields', value)
     if not isinstance(fields, dict):
-        raise ValueError("Serialized dataclass fields must be an object")
+        raise ValueError('Serialized dataclass fields must be an object')
     return {str(key): field_value for key, field_value in fields.items()}

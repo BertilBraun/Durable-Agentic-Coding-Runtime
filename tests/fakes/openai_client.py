@@ -7,28 +7,28 @@ from openai.types.chat import ChatCompletion, ParsedChatCompletion
 from pydantic import BaseModel
 from src.llm.client import Message
 
-StructuredFakeOutput = TypeVar("StructuredFakeOutput", bound=BaseModel)
+StructuredFakeOutput = TypeVar('StructuredFakeOutput', bound=BaseModel)
 
 
 class FakeOpenAICompletions:
     async def create(self, **keyword_arguments: object) -> ChatCompletion:
         return ChatCompletion.model_validate(
             {
-                "id": "chatcmpl-fake",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "fake-completion-model",
-                "choices": [
+                'id': 'chatcmpl-fake',
+                'object': 'chat.completion',
+                'created': 0,
+                'model': 'fake-completion-model',
+                'choices': [
                     {
-                        "index": 0,
-                        "finish_reason": "stop",
-                        "message": {"role": "assistant", "content": "{}"},
+                        'index': 0,
+                        'finish_reason': 'stop',
+                        'message': {'role': 'assistant', 'content': '{}'},
                     }
                 ],
-                "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2,
+                'usage': {
+                    'prompt_tokens': 1,
+                    'completion_tokens': 1,
+                    'total_tokens': 2,
                 },
             }
         )
@@ -38,32 +38,32 @@ class FakeOpenAICompletions:
         response_format: type[StructuredFakeOutput],
         **keyword_arguments: object,
     ) -> ParsedChatCompletion[StructuredFakeOutput]:
-        raw_messages = cast(list[dict[str, str]], keyword_arguments["messages"])
+        raw_messages = cast(list[dict[str, str]], keyword_arguments['messages'])
         messages = [Message.model_validate(raw_message) for raw_message in raw_messages]
         content = _fake_structured_content(response_format=response_format, messages=messages)
         parsed = response_format.model_validate_json(content)
         parsed_completion_type = ParsedChatCompletion[response_format]
         return parsed_completion_type.model_validate(
             {
-                "id": "chatcmpl-fake",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "fake-structured-model",
-                "choices": [
+                'id': 'chatcmpl-fake',
+                'object': 'chat.completion',
+                'created': 0,
+                'model': 'fake-structured-model',
+                'choices': [
                     {
-                        "index": 0,
-                        "finish_reason": "stop",
-                        "message": {
-                            "role": "assistant",
-                            "content": content,
-                            "parsed": parsed.model_dump(mode="json"),
+                        'index': 0,
+                        'finish_reason': 'stop',
+                        'message': {
+                            'role': 'assistant',
+                            'content': content,
+                            'parsed': parsed.model_dump(mode='json'),
                         },
                     }
                 ],
-                "usage": {
-                    "prompt_tokens": _token_count(messages),
-                    "completion_tokens": len(content.split()),
-                    "total_tokens": _token_count(messages) + len(content.split()),
+                'usage': {
+                    'prompt_tokens': _token_count(messages),
+                    'completion_tokens': len(content.split()),
+                    'total_tokens': _token_count(messages) + len(content.split()),
                 },
             }
         )
@@ -88,14 +88,14 @@ class FakeAsyncOpenAI:
 
 def _fake_structured_content(response_format: type[BaseModel], messages: list[Message]) -> str:
     match response_format.__name__:
-        case "TaskContract":
+        case 'TaskContract':
             return (
                 '{"task_type":"bugfix","goal":"Run the smoke workflow",'
                 '"acceptance_criteria":["Workflow completes"],"non_goals":[],'
                 '"affected_areas":["smoke"],"risk_areas":[],"tests_expected":[],'
                 '"open_questions":[]}'
             )
-        case "Plan":
+        case 'Plan':
             return (
                 '{"summary":"Smoke test plan","steps":[{"id":"step_1",'
                 '"goal":"Add a deterministic smoke patch","target_files":["app.py","test_app.py"],'
@@ -105,7 +105,7 @@ def _fake_structured_content(response_format: type[BaseModel], messages: list[Me
                 '"integration_tests":["pytest -q"],"rollback_strategy":"Discard workspace",'
                 '"definition_of_done":["Diff is non-empty","Smoke test passes"]}'
             )
-        case "ImplementationAgentTurn":
+        case 'ImplementationAgentTurn':
             if _implementation_has_test_observation(messages):
                 return (
                     '{"done":true,"worker_result":{"status":"success","patch_id":"smoke",'
@@ -115,34 +115,34 @@ def _fake_structured_content(response_format: type[BaseModel], messages: list[Me
                 )
             return _implementation_tool_turn()
         case _:
-            raise ValueError(f"No fake structured response for {response_format.__name__}")
+            raise ValueError(f'No fake structured response for {response_format.__name__}')
 
 
 def _implementation_has_test_observation(messages: list[Message]) -> bool:
-    return any("tool=run_tests" in message.content for message in messages)
+    return any('tool=run_tests' in message.content for message in messages)
 
 
 def _implementation_tool_turn() -> str:
     patch = (
-        "diff --git a/app.py b/app.py\n"
-        "--- a/app.py\n"
-        "+++ b/app.py\n"
-        "@@ -1,2 +1,5 @@\n"
-        " def add(first_number: int, second_number: int) -> int:\n"
-        "     return first_number + second_number\n"
-        "+\n"
-        "+def subtract(first_number: int, second_number: int) -> int:\n"
-        "+    return first_number - second_number\n"
-        "diff --git a/test_app.py b/test_app.py\n"
-        "new file mode 100644\n"
-        "--- /dev/null\n"
-        "+++ b/test_app.py\n"
-        "@@ -0,0 +1,5 @@\n"
-        "+from app import subtract\n"
-        "+\n"
-        "+\n"
-        "+def test_subtract() -> None:\n"
-        "+    assert subtract(3, 1) == 2\n"
+        'diff --git a/app.py b/app.py\n'
+        '--- a/app.py\n'
+        '+++ b/app.py\n'
+        '@@ -1,2 +1,5 @@\n'
+        ' def add(first_number: int, second_number: int) -> int:\n'
+        '     return first_number + second_number\n'
+        '+\n'
+        '+def subtract(first_number: int, second_number: int) -> int:\n'
+        '+    return first_number - second_number\n'
+        'diff --git a/test_app.py b/test_app.py\n'
+        'new file mode 100644\n'
+        '--- /dev/null\n'
+        '+++ b/test_app.py\n'
+        '@@ -0,0 +1,5 @@\n'
+        '+from app import subtract\n'
+        '+\n'
+        '+\n'
+        '+def test_subtract() -> None:\n'
+        '+    assert subtract(3, 1) == 2\n'
     )
     escaped_patch = json.dumps(patch)
     return (
@@ -151,7 +151,7 @@ def _implementation_tool_turn() -> str:
         '{"tool_name":"run_tests","command":"pytest -q",'
         '"timeout_seconds":60,"directory":"."},'
         '{"tool_name":"git_diff","path":"."}'
-        "]}"
+        ']}'
     )
 
 

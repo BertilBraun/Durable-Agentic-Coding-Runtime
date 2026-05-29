@@ -6,11 +6,11 @@ from src.runtime_enums import StrEnum
 
 
 class ArtifactKind(StrEnum):
-    TEST_OUTPUT = "test_output"
-    DIFF = "diff"
-    LOG = "log"
-    SCREENSHOT = "screenshot"
-    REPO_INDEX = "repo_index"
+    TEST_OUTPUT = 'test_output'
+    DIFF = 'diff'
+    LOG = 'log'
+    SCREENSHOT = 'screenshot'
+    REPO_INDEX = 'repo_index'
 
 
 class ArtifactReference(BaseModel):

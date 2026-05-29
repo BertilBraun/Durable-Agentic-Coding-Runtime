@@ -31,10 +31,10 @@ async def review_patch(request: ReviewRequest) -> ReviewVerdict:
         role=ModelRole.REVIEWER,
         messages=[
             Message(
-                role="system",
+                role='system',
                 content=system_prompt_for_role(ModelRole.REVIEWER),
             ),
-            Message(role="user", content=request.model_dump_json()),
+            Message(role='user', content=request.model_dump_json()),
         ],
         output_type=ReviewVerdict,
     )

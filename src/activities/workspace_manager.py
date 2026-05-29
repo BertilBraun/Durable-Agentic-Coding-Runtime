@@ -33,14 +33,14 @@ from src.tools.definitions import (
 )
 from src.tools.handlers import command_for_tool
 
-WORKSPACE_IMAGE_ENVIRONMENT_NAME = "WORKSPACE_IMAGE"
-DEFAULT_WORKSPACE_IMAGE = "durable-agentic-workspace:latest"
-CONTAINER_WORKSPACE_PATH = "/workspace/repository"
+WORKSPACE_IMAGE_ENVIRONMENT_NAME = 'WORKSPACE_IMAGE'
+DEFAULT_WORKSPACE_IMAGE = 'durable-agentic-workspace:latest'
+CONTAINER_WORKSPACE_PATH = '/workspace/repository'
 MAX_OUTPUT_CHARACTERS = 20_000
 COMPACT_HEAD_CHARACTERS = 8_000
 COMPACT_TAIL_CHARACTERS = 4_000
-ARTIFACTS_ROOT_ENVIRONMENT_NAME = "ARTIFACTS_ROOT"
-DEFAULT_ARTIFACTS_ROOT = "/artifacts"
+ARTIFACTS_ROOT_ENVIRONMENT_NAME = 'ARTIFACTS_ROOT'
+DEFAULT_ARTIFACTS_ROOT = '/artifacts'
 
 
 class WorkspaceInfo(BaseModel):
@@ -71,20 +71,20 @@ class ToolExecutionRequest(BaseModel):
     tool: Tool
     repo_index: RepoIndex | None = None
 
-    @field_serializer("tool")
+    @field_serializer('tool')
     def serialize_tool(self, tool: Tool) -> dict[str, object]:
         return {
-            "tool_name": tool_definition_for_tool(tool).name,
-            "payload": tool.model_dump(mode="json", exclude={"tool_name"}),
+            'tool_name': tool_definition_for_tool(tool).name,
+            'payload': tool.model_dump(mode='json', exclude={'tool_name'}),
         }
 
-    @field_validator("tool", mode="before")
+    @field_validator('tool', mode='before')
     @classmethod
     def restore_tool(cls, value: object) -> object:
         if not isinstance(value, dict):
             return value
-        tool_name = value.get("tool_name")
-        payload = value.get("payload")
+        tool_name = value.get('tool_name')
+        payload = value.get('payload')
         if not isinstance(tool_name, str) or not isinstance(payload, dict):
             return value
         return _tool_from_serialized_payload(ToolName(tool_name), payload)
@@ -95,11 +95,11 @@ async def create_workspace(
     run_id: str, repo_path: str, docker_image: str | None = None
 ) -> WorkspaceInfo:
     docker_client = _docker_client()
-    volume_name = f"agentic-coding-{run_id}"
-    branch_name = f"agentic-coding/{run_id}"
+    volume_name = f'agentic-coding-{run_id}'
+    branch_name = f'agentic-coding/{run_id}'
     docker_client.volumes.create(name=volume_name)
-    workspace_root = Path(os.getenv("WORKSPACE_ROOT", ".agentic-workspaces")).resolve()
-    worktree_path = workspace_root / run_id / "repository"
+    workspace_root = Path(os.getenv('WORKSPACE_ROOT', '.agentic-workspaces')).resolve()
+    worktree_path = workspace_root / run_id / 'repository'
     if worktree_path.exists():
         shutil.rmtree(worktree_path)
     worktree_path.mkdir(parents=True, exist_ok=True)
@@ -111,12 +111,12 @@ async def create_workspace(
         docker_client.containers.run(
             image=docker_image,
             command=[
-                "sh",
-                "-lc",
-                f"cp -rp /testbed/. /target/ && cd /target && git checkout -b {branch_name}",
+                'sh',
+                '-lc',
+                f'cp -rp /testbed/. /target/ && cd /target && git checkout -b {branch_name}',
             ],
             remove=True,
-            volumes={str(worktree_path): {"bind": "/target", "mode": "rw"}},
+            volumes={str(worktree_path): {'bind': '/target', 'mode': 'rw'}},
         )
         return WorkspaceInfo(
             run_id=run_id,
@@ -124,7 +124,7 @@ async def create_workspace(
             worktree_path=str(worktree_path),
             branch_name=branch_name,
             workspace_image=docker_image,
-            container_repo_path="/testbed",
+            container_repo_path='/testbed',
         )
 
     repository_source_path = os.path.abspath(repo_path)
@@ -132,19 +132,19 @@ async def create_workspace(
     docker_client.containers.run(
         image=_workspace_image(),
         command=[
-            "sh",
-            "-lc",
+            'sh',
+            '-lc',
             (
-                "rm -rf /target/repository && "
-                "git clone /source /target/repository && "
-                "cd /target/repository && "
-                f"git checkout -b {branch_name}"
+                'rm -rf /target/repository && '
+                'git clone /source /target/repository && '
+                'cd /target/repository && '
+                f'git checkout -b {branch_name}'
             ),
         ],
         remove=True,
         volumes={
-            repository_source_path: {"bind": "/source", "mode": "ro"},
-            str(worktree_path.parent): {"bind": "/target", "mode": "rw"},
+            repository_source_path: {'bind': '/source', 'mode': 'ro'},
+            str(worktree_path.parent): {'bind': '/target', 'mode': 'rw'},
         },
     )
     return WorkspaceInfo(
@@ -160,6 +160,7 @@ async def run_tool(request: ToolExecutionRequest) -> ToolResult:
     return await run_tool_in_workspace(request)
 
 
+# TODO should always be a activity
 async def run_tool_in_workspace(request: ToolExecutionRequest) -> ToolResult:
     indexed_result = _indexed_tool_result(request)
     if indexed_result is not None:
@@ -173,25 +174,25 @@ async def run_tool_in_workspace(request: ToolExecutionRequest) -> ToolResult:
         working_dir=container_repo_path,
         volumes={
             request.workspace_info.worktree_path: {
-                "bind": container_repo_path,
-                "mode": "rw",
+                'bind': container_repo_path,
+                'mode': 'rw',
             }
         },
     )
     try:
         wait_result = container.wait(timeout=_tool_timeout_seconds(request.tool))
-        stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-        stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+        stdout = container.logs(stdout=True, stderr=False).decode('utf-8', errors='replace')
+        stderr = container.logs(stdout=False, stderr=True).decode('utf-8', errors='replace')
     finally:
         container.remove(force=True)
     stdout_reference = _write_large_output_artifact(
         request=request,
-        stream_name="stdout",
+        stream_name='stdout',
         output=stdout,
     )
     stderr_reference = _write_large_output_artifact(
         request=request,
-        stream_name="stderr",
+        stream_name='stderr',
         output=stderr,
     )
     artifacts = [
@@ -202,7 +203,7 @@ async def run_tool_in_workspace(request: ToolExecutionRequest) -> ToolResult:
     return ToolResult(
         stdout=_compact_output(stdout),
         stderr=_compact_output(stderr),
-        exit_code=int(wait_result.get("StatusCode", 1)),
+        exit_code=int(wait_result.get('StatusCode', 1)),
         truncated=bool(artifacts),
         artifacts=artifacts,
     )
@@ -237,7 +238,7 @@ def _tool_from_serialized_payload(tool_name: ToolName, payload: dict[str, Any]) 
         case ToolName.GATHER_CONTEXT:
             return GatherContext(**payload)
         case _:
-            raise ValueError(f"Cannot deserialize unknown tool: {tool_name}")
+            raise ValueError(f'Cannot deserialize unknown tool: {tool_name}')
 
 
 def _indexed_tool_result(request: ToolExecutionRequest) -> ToolResult | None:
@@ -263,7 +264,7 @@ def _find_indexed_symbol(repository_index: RepoIndex, name: str, language: str) 
         if symbol.name == name and (not language or symbol.language == Language(language))
     ]
     lines = [_format_symbol(symbol) for symbol in matching_symbols]
-    return ToolResult(stdout="\n".join(lines), stderr="", exit_code=0, truncated=False)
+    return ToolResult(stdout='\n'.join(lines), stderr='', exit_code=0, truncated=False)
 
 
 def _find_indexed_references(
@@ -282,19 +283,16 @@ def _find_indexed_references(
         if not file_path.is_file():
             continue
         for line_number, line in enumerate(
-            file_path.read_text(encoding="utf-8", errors="replace").splitlines(),
+            file_path.read_text(encoding='utf-8', errors='replace').splitlines(),
             start=1,
         ):
             if symbol_name in line:
-                reference_lines.append(f"{relative_path}:{line_number}:{line}")
-    return ToolResult(stdout="\n".join(reference_lines), stderr="", exit_code=0, truncated=False)
+                reference_lines.append(f'{relative_path}:{line_number}:{line}')
+    return ToolResult(stdout='\n'.join(reference_lines), stderr='', exit_code=0, truncated=False)
 
 
 def _format_symbol(symbol: Symbol) -> str:
-    return (
-        f"{symbol.file_path}:{symbol.start_line}-{symbol.end_line} "
-        f"{symbol.kind.value} {symbol.name}"
-    )
+    return f'{symbol.file_path}:{symbol.start_line}-{symbol.end_line} {symbol.kind.value} {symbol.name}'
 
 
 def _tool_timeout_seconds(tool: Tool) -> int | None:
@@ -313,7 +311,7 @@ async def destroy_workspace(workspace_info: WorkspaceInfo) -> ToolResult:
     workspace_path = Path(workspace_info.worktree_path)
     if workspace_path.exists():
         shutil.rmtree(workspace_path.parent)
-    return ToolResult(stdout="", stderr="", exit_code=0, truncated=False)
+    return ToolResult(stdout='', stderr='', exit_code=0, truncated=False)
 
 
 def make_run_id() -> str:
@@ -336,13 +334,13 @@ def _write_large_output_artifact(
     if len(output) <= MAX_OUTPUT_CHARACTERS:
         return None
     tool_name = tool_definition_for_tool(request.tool).name.value
-    artifact_filename = f"{tool_name}-{uuid.uuid4()}-{stream_name}.log"
+    artifact_filename = f'{tool_name}-{uuid.uuid4()}-{stream_name}.log'
     artifact_path = Path(_artifacts_root()) / request.workspace_info.run_id / artifact_filename
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    artifact_path.write_text(output, encoding="utf-8")
+    artifact_path.write_text(output, encoding='utf-8')
     return ArtifactReference(
         path=artifact_path.as_posix(),
-        summary=f"{stream_name} output stored in artifact ({len(output)} characters)",
+        summary=f'{stream_name} output stored in artifact ({len(output)} characters)',
         kind=_artifact_kind_for_output(request.tool),
     )
 
@@ -365,4 +363,4 @@ def _compact_output(output: str) -> str:
     head = output[:COMPACT_HEAD_CHARACTERS]
     tail = output[-COMPACT_TAIL_CHARACTERS:]
     omitted = len(output) - COMPACT_HEAD_CHARACTERS - COMPACT_TAIL_CHARACTERS
-    return f"{head}\n\n[... {omitted} characters omitted ...]\n\n{tail}"
+    return f'{head}\n\n[... {omitted} characters omitted ...]\n\n{tail}'

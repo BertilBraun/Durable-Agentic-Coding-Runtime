@@ -47,7 +47,7 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
             await present_plan_to_human(
                 HumanPlanPresentationRequest(run_id=run_id, contract=contract, plan=plan),
             )
-            signal_payload = await wait_for_signal("human_approval")
+            signal_payload = await wait_for_signal('human_approval')
             approval = HumanApprovalSignal.model_validate(signal_payload)
             if approval.decision == ApprovalDecision.APPROVE:
                 break
@@ -64,15 +64,17 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
     pending_plan_steps = plan.steps
     while pending_plan_steps:
         plan_step = pending_plan_steps.pop(0)
+        # TODO extract the child run logic into a helper?
         child_id = await spawn_child(
-            "implementation_workflow",
-            step=plan_step.model_dump(mode="json"),
-            workspace=workspace_info.model_dump(mode="json"),
-            contract=contract.model_dump(mode="json"),
-            repo_index=repo_index.model_dump(mode="json"),
+            'implementation_workflow',
+            step=plan_step.model_dump(mode='json'),
+            workspace=workspace_info.model_dump(mode='json'),
+            contract=contract.model_dump(mode='json'),
+            repo_index=repo_index.model_dump(mode='json'),
         )
         child_result = await wait_for_child(child_id)
         worker_result = WorkerResult.model_validate(child_result)
+        # TODO until here
         worker_results.append(worker_result)
         match worker_result.status:
             case WorkerStatus.NEEDS_REPLAN:
@@ -86,7 +88,7 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
                 )
                 pending_plan_steps = plan.steps
             case WorkerStatus.FAILED | WorkerStatus.BLOCKED:
-                pending_plan_steps = []
+                pending_plan_steps = []  # TODO break here instead - break seems cleaner than mutating the list in place
             case WorkerStatus.SUCCESS:
                 pass
 
@@ -113,4 +115,4 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
         ),
     )
     await destroy_workspace(workspace_info)
-    return final_report.model_dump(mode="json")
+    return final_report.model_dump(mode='json')

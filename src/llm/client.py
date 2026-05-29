@@ -10,13 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.llm.config import ModelConfiguration, ModelRole, load_model_configuration
 
-StructuredOutput = TypeVar("StructuredOutput", bound=BaseModel)
+StructuredOutput = TypeVar('StructuredOutput', bound=BaseModel)
 
 
 class Message(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    role: Literal["system", "user", "assistant"]
+    role: Literal['system', 'user', 'assistant']
     content: str
 
 
@@ -79,6 +79,7 @@ class AsyncOpenAIClient(Protocol):
 
 
 class LLMClient:
+    # TODO again - note that global varaibles will not survive across activity invocations in temporal, so this global usage ledger will not work as intended, need to store in durable storage and pass around
     _global_usage_ledger: ClassVar[LLMUsageLedger] = LLMUsageLedger()
 
     def __init__(
@@ -92,8 +93,8 @@ class LLMClient:
         self.last_input_token_count = 0
         self.last_context_limit = 1
         self.async_openai_client = async_openai_client or AsyncOpenAI(
-            api_key=os.getenv("LLM_API_KEY"),
-            base_url=os.getenv("LLM_BASE_URL"),
+            api_key=os.getenv('LLM_API_KEY'),
+            base_url=os.getenv('LLM_BASE_URL'),
         )
 
     async def complete(self, role: ModelRole, messages: list[Message]) -> str:
@@ -151,20 +152,20 @@ class LLMClient:
 
 
 def _format_messages_for_api(messages: list[Message]) -> list[ChatCompletionMessageParam]:
-    return [message.model_dump(mode="json") for message in messages]  # type: ignore[list-item]
+    return [message.model_dump(mode='json') for message in messages]  # type: ignore[list-item]
 
 
 def _extract_content(response: ChatCompletion) -> str:
     content = response.choices[0].message.content
     if content is None:
-        raise ValueError("LLM response did not include content")
+        raise ValueError('LLM response did not include content')
     return content
 
 
 def _extract_parsed(response: ParsedChatCompletion[StructuredOutput]) -> StructuredOutput:
     parsed = response.choices[0].message.parsed
     if parsed is None:
-        raise ValueError("LLM structured response did not include parsed content")
+        raise ValueError('LLM structured response did not include parsed content')
     return parsed
 
 
@@ -201,16 +202,16 @@ def _estimate_cost_usd(
     # TODO: add cache_control breakpoints for Anthropic-compatible providers.
     uncached_input_tokens = max(input_tokens - cache_read_tokens, 0)
     match model:
-        case "claude-opus-4-7":
+        case 'claude-opus-4-7':
             input_price = 15.0
             output_price = 75.0
-        case "claude-sonnet-4-6":
+        case 'claude-sonnet-4-6':
             input_price = 3.0
             output_price = 15.0
-        case "claude-haiku-4-5-20251001":
+        case 'claude-haiku-4-5-20251001':
             input_price = 0.8
             output_price = 4.0
-        case "gemini-3.1-flash-lite":
+        case 'gemini-3.1-flash-lite':
             input_price = 0.25
             output_price = 1.50
         case _:
