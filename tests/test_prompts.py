@@ -8,6 +8,7 @@ def test_implementation_prompt_defines_bounded_agent_behavior() -> None:
     assert "inspect, edit, diff, and test" in prompt
     assert "Return done=true with WorkerResult only" in prompt
     assert "mutating tools" in prompt
+    assert "fresh container" in prompt
 
 
 def test_context_gatherer_prompt_forbids_mutating_tools() -> None:

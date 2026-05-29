@@ -43,7 +43,9 @@ def system_prompt_for_role(role: ModelRole) -> str:
                 "when the step is complete, blocked, failed, or needs replanning. Use "
                 "mutating tools only when they directly serve the current step. Prefer "
                 "small patches, run relevant tests, inspect failures before editing again, "
-                "and ground success claims in observed git_diff or test output."
+                "and ground success claims in observed git_diff or test output. Each tool "
+                "call runs in a fresh container, so command-local environment setup must be "
+                "included in the same command that needs it."
             )
         case ModelRole.REVIEWER:
             return (
