@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
-import uuid
+import time
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -94,7 +94,7 @@ async def _start_and_wait_for_workflow(
     task_request = TaskRequest(
         raw_request='Add a subtract function to the app.py in the repo. Commit your work.',
         repo_path=str(repository_path),
-        run_id=f'smoke-live-{uuid.uuid4()}',
+        run_id=f'smoke-live-{time.time()}',
     )
     client = Client(temporal_api_url)
     handle = await client.start(
