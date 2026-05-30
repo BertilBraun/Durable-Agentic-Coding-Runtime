@@ -33,11 +33,7 @@ from src.tools.definitions import (
 )
 from src.tools.handlers import command_for_tool
 
-# TODO config?
 CONTAINER_WORKSPACE_PATH = '/workspace/repository'
-MAX_OUTPUT_CHARACTERS = 20_000
-COMPACT_HEAD_CHARACTERS = 8_000
-COMPACT_TAIL_CHARACTERS = 4_000
 
 
 class WorkspaceInfo(BaseModel):
@@ -323,7 +319,7 @@ def _write_large_output_artifact(
     stream_name: str,
     output: str,
 ) -> ArtifactReference | None:
-    if len(output) <= MAX_OUTPUT_CHARACTERS:
+    if len(output) <= CONFIG.tool_output_max_characters:
         return None
     tool_name = request.tool.tool_name.value
     artifact_filename = f'{tool_name}-{uuid.uuid4()}-{stream_name}.log'
@@ -350,9 +346,11 @@ def _artifacts_root() -> str:
 
 
 def _compact_output(output: str) -> str:
-    if len(output) <= MAX_OUTPUT_CHARACTERS:
+    if len(output) <= CONFIG.tool_output_max_characters:
         return output
-    head = output[:COMPACT_HEAD_CHARACTERS]
-    tail = output[-COMPACT_TAIL_CHARACTERS:]
-    omitted = len(output) - COMPACT_HEAD_CHARACTERS - COMPACT_TAIL_CHARACTERS
+    head_size = CONFIG.tool_output_compact_head_characters
+    tail_size = CONFIG.tool_output_compact_tail_characters
+    head = output[:head_size]
+    tail = output[-tail_size:]
+    omitted = len(output) - head_size - tail_size
     return f'{head}\n\n[... {omitted} characters omitted ...]\n\n{tail}'

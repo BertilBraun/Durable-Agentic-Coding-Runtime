@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 from src.activities.workspace_manager import (
-    MAX_OUTPUT_CHARACTERS,
     ToolExecutionRequest,
     WorkspaceInfo,
     run_tool,
 )
+from src.config import CONFIG
 from src.models.context import ArtifactKind
 from src.models.repo import FileEntry, Language, RepoIndex, Symbol, SymbolKind
 from src.tools.definitions import FindReferences, FindSymbol, GitStatus, RunTests
@@ -141,7 +141,7 @@ async def test_run_tool_writes_large_stdout_to_artifact(
     )
 
     assert result.truncated is True
-    assert len(result.stdout) < MAX_OUTPUT_CHARACTERS
+    assert len(result.stdout) < CONFIG.tool_output_max_characters
     assert 'characters omitted' in result.stdout
     assert len(result.artifacts) == 1
     artifact_reference = result.artifacts[0]
@@ -178,7 +178,7 @@ async def test_run_tool_writes_large_stderr_to_artifact(
     )
 
     assert result.truncated is True
-    assert len(result.stderr) < MAX_OUTPUT_CHARACTERS
+    assert len(result.stderr) < CONFIG.tool_output_max_characters
     assert 'characters omitted' in result.stderr
     assert len(result.artifacts) == 1
     artifact_reference = result.artifacts[0]

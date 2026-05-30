@@ -46,6 +46,10 @@ class Settings(BaseModel):
     implementation_workflow_max_iterations: int
     context_utilization_stop_threshold: float
 
+    tool_output_max_characters: int
+    tool_output_compact_head_characters: int
+    tool_output_compact_tail_characters: int
+
     models_by_id: dict[str, ModelEntry]
     model_by_role: dict[ModelRole, str]
 
@@ -73,7 +77,16 @@ def load_settings() -> Settings:
         implementation_max_tool_rounds=int(os.getenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '12')),
         context_gatherer_max_tool_calls=int(os.getenv('CONTEXT_GATHERER_MAX_TOOL_CALLS', '10')),
         implementation_workflow_max_iterations=int(os.getenv('IMPL_MAX_ITERATIONS', '5')),
-        context_utilization_stop_threshold=float(os.getenv('CONTEXT_UTILIZATION_STOP_THRESHOLD', '0.80')),
+        context_utilization_stop_threshold=float(
+            os.getenv('CONTEXT_UTILIZATION_STOP_THRESHOLD', '0.80')
+        ),
+        tool_output_max_characters=int(os.getenv('TOOL_OUTPUT_MAX_CHARACTERS', '20000')),
+        tool_output_compact_head_characters=int(
+            os.getenv('TOOL_OUTPUT_COMPACT_HEAD_CHARACTERS', '8000')
+        ),
+        tool_output_compact_tail_characters=int(
+            os.getenv('TOOL_OUTPUT_COMPACT_TAIL_CHARACTERS', '4000')
+        ),
         models_by_id=models_by_id,
         model_by_role=model_by_role,
     )
