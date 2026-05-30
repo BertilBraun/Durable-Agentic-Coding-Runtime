@@ -66,12 +66,17 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
     usage += run_usage
 
     diff = await get_full_diff(workspace_info)
+    aggregated_test_results = [
+        test_result
+        for worker_result in worker_results
+        for test_result in worker_result.test_results
+    ]
     final_verdict, review_usage = await review_patch(
         ReviewRequest(
             contract=contract,
             plan_step=None,
             diff=diff,
-            test_results=[],
+            test_results=aggregated_test_results,
             worker_results=worker_results,
             workspace_info=workspace_info,
         ),

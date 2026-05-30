@@ -59,8 +59,11 @@ async def gather_context(request: ContextGatherRequest) -> tuple[ContextPack, LL
     ]
     max_tool_calls = CONFIG.context_gatherer_max_tool_calls
     stop_threshold = CONFIG.context_utilization_stop_threshold
+    hard_stop_threshold = CONFIG.context_utilization_hard_stop_threshold
     tool_call_count = 0
     budget_exceeded = False
+    latest_utilization = 0.0
+    all_observations: list[str] = []
     usage = LLMUsage()
 
     while tool_call_count < max_tool_calls:
@@ -71,7 +74,8 @@ async def gather_context(request: ContextGatherRequest) -> tuple[ContextPack, LL
         )
         usage += completion.usage
         turn = completion.output
-        if completion.context_utilization() > stop_threshold:
+        latest_utilization = completion.context_utilization()
+        if latest_utilization > stop_threshold:
             budget_exceeded = True
             break
         if turn.done and turn.context_pack is not None:
@@ -91,13 +95,33 @@ async def gather_context(request: ContextGatherRequest) -> tuple[ContextPack, LL
             observation = tool_result.stdout or tool_result.stderr
             turn_observations.append(observation)
             tool_call_count += 1
+        all_observations.extend(turn_observations)
         messages.append(Message(role='assistant', content=turn.model_dump_json()))
         messages.append(Message(role='user', content='\n'.join(turn_observations)))
+
+    # Above the hard ceiling another LLM call would itself overflow, so assemble the pack
+    # deterministically from observations instead of asking the model to summarize.
+    if budget_exceeded and latest_utilization >= hard_stop_threshold:
+        return _deterministic_context_pack(request, all_observations), usage
 
     context_pack, finalize_usage = await _summarize_observations_into_context_pack(
         messages, budget_exceeded
     )
     return context_pack, usage + finalize_usage
+
+
+def _deterministic_context_pack(
+    request: ContextGatherRequest,
+    observations: list[str],
+) -> ContextPack:
+    return ContextPack(
+        task_summary=request.gatherer_prompt,
+        relevant_snippets=observations,
+        recent_observations=observations[-3:],
+        failed_attempt_summaries=[],
+        available_tools=[],
+        budget_remaining=0,
+    )
 
 
 async def _summarize_observations_into_context_pack(

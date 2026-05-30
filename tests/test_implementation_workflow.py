@@ -221,7 +221,7 @@ async def test_implementation_workflow_returns_blocked_result_immediately(
 
 
 @pytest.mark.asyncio
-async def test_implementation_workflow_retries_failed_results_until_iteration_limit(
+async def test_implementation_workflow_returns_failed_result_without_review(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     turn_calls = 0
@@ -256,20 +256,15 @@ async def test_implementation_workflow_retries_failed_results_until_iteration_li
             _zero_usage(),
         )
 
-    import src.workflows.implementation_workflow as implementation_workflow_module
+    async def fake_review_patch(request: object) -> tuple[ReviewVerdict, LLMUsage]:
+        raise AssertionError('failed worker results should not be reviewed')
 
-    monkeypatch.setattr(
-        implementation_workflow_module,
-        'CONFIG',
-        implementation_workflow_module.CONFIG.model_copy(
-            update={'implementation_workflow_max_iterations': 3}
-        ),
-    )
     monkeypatch.setattr('src.workflows.implementation_workflow.gather_context', fake_gather_context)
     monkeypatch.setattr(
         'src.workflows.implementation_workflow.run_implementation_turn',
         fake_run_implementation_turn,
     )
+    monkeypatch.setattr('src.workflows.implementation_workflow.review_patch', fake_review_patch)
 
     result = await implementation_workflow(
         step=_plan_step().model_dump(mode='json'),
@@ -278,11 +273,9 @@ async def test_implementation_workflow_retries_failed_results_until_iteration_li
         repo_index=RepoIndex().model_dump(mode='json'),
     )
 
-    assert turn_calls == 3
+    assert turn_calls == 1
     assert result['worker_result']['status'] == WorkerStatus.FAILED
-    assert result['worker_result']['discovered_issues'] == [
-        'maximum implementation iterations reached'
-    ]
+    assert result['worker_result']['discovered_issues'] == ['transient tool failure']
 
 
 def test_revise_review_verdict_requests_replan_with_blocking_feedback() -> None:

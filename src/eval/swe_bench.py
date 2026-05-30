@@ -246,7 +246,7 @@ def _run_oracle(
 ) -> OracleResult:
     command_results: list[OracleCommandResult] = []
     fail_to_pass_results = [
-        _run_oracle_command(container_id, test_identifier, docker_client)
+        _run_oracle_command(container_id, test_identifier, instance.language, docker_client)
         for test_identifier in instance.fail_to_pass
     ]
     command_results.extend(fail_to_pass_results)
@@ -258,7 +258,7 @@ def _run_oracle(
         )
 
     pass_to_pass_results = [
-        _run_oracle_command(container_id, test_identifier, docker_client)
+        _run_oracle_command(container_id, test_identifier, instance.language, docker_client)
         for test_identifier in instance.pass_to_pass
     ]
     command_results.extend(pass_to_pass_results)
@@ -276,6 +276,8 @@ def _evaluate_patch_with_oracle(
     patch: str,
     docker_client: docker.DockerClient,
 ) -> OracleResult:
+    if not patch.strip():
+        return OracleResult(resolved=False, reason='patch_apply_failed')
     _pull_official_image(instance, docker_client)
     container_id = _start_official_container(instance, docker_client)
     try:
@@ -302,12 +304,20 @@ def _materialize_patch(patch: str) -> str:
     return patch
 
 
+def _oracle_command(language: str | None, test_identifier: str) -> str:
+    normalized_language = (language or 'python').lower()
+    if normalized_language in {'javascript', 'typescript', 'js', 'ts'}:
+        return f'npx jest {test_identifier}'
+    return f'pytest {test_identifier}'
+
+
 def _run_oracle_command(
     container_id: str,
     test_identifier: str,
+    language: str | None,
     docker_client: docker.DockerClient,
 ) -> OracleCommandResult:
-    command = f'pytest {test_identifier}'
+    command = _oracle_command(language, test_identifier)
     container = docker_client.containers.get(container_id)
     result = container.exec_run(
         ['sh', '-lc', command],
@@ -478,7 +488,16 @@ def _extract_patch_from_llm_response(response_content: str) -> str:
         patch_end = response_content.find('```', patch_start + 1)
         if patch_start >= 0 and patch_end >= 0:
             return response_content[patch_start + 1 : patch_end]
-    return response_content
+    # Without a diff fence, only return content that is itself a unified diff; otherwise the
+    # model returned prose and there is no patch to apply.
+    if _looks_like_unified_diff(response_content):
+        return response_content
+    return ''
+
+
+def _looks_like_unified_diff(text: str) -> bool:
+    stripped_text = text.lstrip()
+    return stripped_text.startswith('diff --git ') or stripped_text.startswith('--- ')
 
 
 def _build_report(

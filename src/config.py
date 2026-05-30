@@ -43,8 +43,8 @@ class Settings(BaseModel):
 
     implementation_max_tool_rounds: int
     context_gatherer_max_tool_calls: int
-    implementation_workflow_max_iterations: int
     context_utilization_stop_threshold: float
+    context_utilization_hard_stop_threshold: float
 
     tool_output_max_characters: int
     tool_output_compact_head_characters: int
@@ -76,9 +76,11 @@ def load_settings() -> Settings:
         artifacts_root=os.getenv('ARTIFACTS_ROOT', '/artifacts'),
         implementation_max_tool_rounds=int(os.getenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '12')),
         context_gatherer_max_tool_calls=int(os.getenv('CONTEXT_GATHERER_MAX_TOOL_CALLS', '10')),
-        implementation_workflow_max_iterations=int(os.getenv('IMPL_MAX_ITERATIONS', '5')),
         context_utilization_stop_threshold=float(
             os.getenv('CONTEXT_UTILIZATION_STOP_THRESHOLD', '0.80')
+        ),
+        context_utilization_hard_stop_threshold=float(
+            os.getenv('CONTEXT_UTILIZATION_HARD_STOP_THRESHOLD', '0.95')
         ),
         tool_output_max_characters=int(os.getenv('TOOL_OUTPUT_MAX_CHARACTERS', '20000')),
         tool_output_compact_head_characters=int(

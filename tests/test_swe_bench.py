@@ -110,6 +110,18 @@ def test_extract_patch_from_llm_response_uses_diff_fence() -> None:
     assert patch == 'diff --git a/app.py b/app.py\n'
 
 
+def test_extract_patch_from_llm_response_returns_empty_for_prose() -> None:
+    patch = _extract_patch_from_llm_response('I could not determine the fix for this issue.')
+
+    assert patch == ''
+
+
+def test_extract_patch_from_llm_response_accepts_bare_unified_diff() -> None:
+    patch = _extract_patch_from_llm_response('diff --git a/app.py b/app.py\n')
+
+    assert patch == 'diff --git a/app.py b/app.py\n'
+
+
 def test_build_report_includes_required_summary_fields() -> None:
     report = _build_report(
         task_results=[

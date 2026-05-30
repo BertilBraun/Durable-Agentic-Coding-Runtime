@@ -11,7 +11,6 @@ from src.activities.implementation import (
 )
 from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict, review_patch
 from src.activities.workspace_manager import WorkspaceInfo
-from src.config import CONFIG
 from src.llm.client import LLMUsage
 from src.models.plan import PlanStep
 from src.models.repo import RepoIndex
@@ -41,37 +40,26 @@ async def implementation_workflow(
     )
     usage += gather_usage
 
-    max_iterations = CONFIG.implementation_workflow_max_iterations
-    for _ in range(max_iterations):
-        worker_result, turn_usage = await run_implementation_turn(
-            ImplementationTurnRequest(
-                plan_step=plan_step,
-                context_pack=context_pack,
-                task_contract=task_contract,
-                workspace_info=workspace_info,
-                repo_index=repository_index,
-            ),
-        )
-        usage += turn_usage
-        match worker_result.status:
-            case WorkerStatus.SUCCESS:
-                reviewed_result, review_usage = await _review_successful_step(
-                    plan_step=plan_step,
-                    workspace_info=workspace_info,
-                    task_contract=task_contract,
-                    worker_result=worker_result,
-                )
-                usage += review_usage
-                return _packaged_result(reviewed_result, usage)
-            case WorkerStatus.BLOCKED | WorkerStatus.NEEDS_REPLAN:
-                return _packaged_result(worker_result, usage)
-            case _:
-                pass
-
-    return _packaged_result(
-        failed_worker_result('maximum implementation iterations reached'),
-        usage,
+    worker_result, turn_usage = await run_implementation_turn(
+        ImplementationTurnRequest(
+            plan_step=plan_step,
+            context_pack=context_pack,
+            task_contract=task_contract,
+            workspace_info=workspace_info,
+            repo_index=repository_index,
+        ),
     )
+    usage += turn_usage
+    if worker_result.status == WorkerStatus.SUCCESS:
+        reviewed_result, review_usage = await _review_successful_step(
+            plan_step=plan_step,
+            workspace_info=workspace_info,
+            task_contract=task_contract,
+            worker_result=worker_result,
+        )
+        usage += review_usage
+        return _packaged_result(reviewed_result, usage)
+    return _packaged_result(worker_result, usage)
 
 
 def _packaged_result(worker_result: WorkerResult, usage: LLMUsage) -> dict[str, object]:

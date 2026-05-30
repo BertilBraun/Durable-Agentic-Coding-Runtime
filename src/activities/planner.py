@@ -9,13 +9,18 @@ from src.models.repo import RepoIndex
 from src.models.task import TaskContract
 from src.models.worker import WorkerResult
 
+# Future: lift this task-type guidance into a structured, deterministic step
+# template (reproduction-before-repair, generated regression tests, rollback
+# checkpoints) instead of relying on prompt wording — see PLAN.md milestone 2.
 PLANNER_SYSTEM_PROMPT = (
     'You are the planner. Build a minimal Plan from the task contract, '
     'repository index, context, and revision guidance. Use small, reviewable '
     'steps with explicit allowed files, expected tests, risk, rollback '
     'strategy, and definition of done. Avoid unrelated refactors and broad '
     'cleanup. If evidence is insufficient, plan an inspection step instead '
-    'of inventing implementation details.'
+    'of inventing implementation details. For bugfix tasks, make the first '
+    'step reproduce the failing behavior with a concrete failing test before '
+    'any step that changes production code.'
 )
 
 

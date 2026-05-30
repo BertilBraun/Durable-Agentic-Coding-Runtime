@@ -1451,7 +1451,7 @@ LLM layer:
 - `src/llm/client.py` centralizes all OpenAI-compatible calls with structured output parsing and usage ledger.
 - `LLMClient` records per-call usage into a workflow-visible usage summary.
 - `LLMClient` tracks `last_input_token_count` and exposes `context_utilization()` using configured model context limits.
-- `LLM_FAKE_MODE=1` provides deterministic structured responses for smoke workflows.
+- Tests inject a fake OpenAI client via `LLMClient(async_openai_client=...)` (see `tests/fakes/openai_client.py`). There is no production fake-mode branch; `CODING_STANDARDS.md` forbids test doubles in production code.
 
 Tools and workspace:
 
@@ -1608,10 +1608,31 @@ The follow-up work after the checkpoint completed these items:
 
 Work in small commits. Keep `ruff format`, `ruff check`, and `pytest -q` green before each commit.
 
-1. Run the first non-fake live smoke workflow against a small local repository and document the result.
-2. Run a small SWE-bench subset with a real model and inspect failures.
-3. Fix bugs exposed by the live smoke or SWE-bench subset before increasing benchmark size.
-4. Revisit workspace cleanup once Temporal-Light supports failure/cancellation compensation.
+Completed this pass (tool-correctness and rough-edge fixes):
+
+- `run_typecheck` now works: `mypy` added to the workspace image.
+- SWE-bench oracle dispatches the test command by instance language (pytest for Python, jest for JS/TS) instead of hardcoding pytest.
+- Symbol index now recurses into class/function bodies, so methods (`SymbolKind.METHOD`) and nested functions are indexed.
+- Final review receives the aggregated per-step `test_results` instead of an empty list.
+- The redundant outer retry loop in `implementation_workflow` was removed; `run_implementation_turn`'s internal tool-round loop is the single bounded loop.
+- The implementation turn checks `done` before the context-budget stop, so a successful final turn is no longer discarded as `BLOCKED`.
+- The context gatherer exits deterministically (no extra LLM call) once utilization reaches the hard ceiling (`CONTEXT_UTILIZATION_HARD_STOP_THRESHOLD`, default 0.95); below it the single finalize call still runs.
+- `find_references` uses word-boundary matching to cut substring/comment false positives.
+- The baseline SWE-bench runner only treats response content that is a unified diff as a patch; prose yields a clean `patch_apply_failed`.
+- The planner is nudged to put a reproduction step first for bugfix tasks (lightweight; see the future-work comment in `src/activities/planner.py`).
+
+Deferred — need a proper replan before implementation:
+
+1. **Context packer.** Split retrieval (typed, grounded code snippets from the cheap model) from packing (a deterministic assembler with a bounded observation window and artifact references). Redefine `ContextPack` to drop ungrounded fields. To be designed, not a drop-in change.
+2. **Parallel candidate search.** Requires deciding where candidates run, how data flows in/out, and per-candidate environment/branch isolation (each candidate needs its own worktree). Not a small addition.
+3. **Correctness mechanisms** (reproduction-before-repair as a structured step, generated regression tests, rollback checkpoints) — future milestone-2 work beyond the current planner-prompt nudge.
+
+Still open from before:
+
+4. Run the first non-fake live smoke workflow against a small local repository and document the result.
+5. Run a small SWE-bench subset with a real model and inspect failures.
+6. Fix bugs exposed by the live smoke or SWE-bench subset before increasing benchmark size.
+7. Revisit workspace cleanup once Temporal-Light supports failure/cancellation compensation.
 
 ### 22.6 Commands for Next Session
 

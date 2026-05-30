@@ -101,16 +101,6 @@ async def run_implementation_turn(
         )
         usage += completion.usage
         agent_turn = completion.output
-        if completion.context_utilization() > stop_threshold:
-            return (
-                _context_budget_blocked_worker_result(
-                    completed_tool_calls=completed_tool_calls,
-                    pending_tool_calls=[
-                        tool_call.tool_name.value for tool_call in agent_turn.tool_calls
-                    ],
-                ),
-                usage,
-            )
         if agent_turn.done:
             if agent_turn.worker_result is None:
                 raise ValueError('worker_result is required when implementation turn is done')
@@ -122,6 +112,16 @@ async def run_implementation_turn(
                         test_results=tuple(test_results),
                         saw_diff=saw_diff,
                     ),
+                ),
+                usage,
+            )
+        if completion.context_utilization() > stop_threshold:
+            return (
+                _context_budget_blocked_worker_result(
+                    completed_tool_calls=completed_tool_calls,
+                    pending_tool_calls=[
+                        tool_call.tool_name.value for tool_call in agent_turn.tool_calls
+                    ],
                 ),
                 usage,
             )

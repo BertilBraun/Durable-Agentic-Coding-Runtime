@@ -197,6 +197,61 @@ async def test_context_gatherer_summarizes_when_context_budget_is_high(
     assert context_pack.budget_remaining == 0
 
 
+@pytest.mark.asyncio
+async def test_context_gatherer_exits_deterministically_above_hard_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    call_count = 0
+
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            turn = output_type.model_validate(
+                {
+                    'done': False,
+                    'tool_calls': [
+                        {
+                            'tool_name': 'search_text',
+                            'pattern': 'handler',
+                            'directory': '.',
+                            'file_glob': '*.py',
+                        }
+                    ],
+                }
+            )
+            return _structured_completion(turn, context_utilization=0.0)
+        turn = output_type.model_validate(
+            {
+                'done': False,
+                'tool_calls': [
+                    {
+                        'tool_name': 'search_text',
+                        'pattern': 'again',
+                        'directory': '.',
+                        'file_glob': '*.py',
+                    }
+                ],
+            }
+        )
+        return _structured_completion(turn, context_utilization=0.97)
+
+    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+        return ToolResult(stdout='handler reference line', stderr='', exit_code=0, truncated=False)
+
+    _patch_generate_structured(monkeypatch, handler)
+    monkeypatch.setattr(context_gatherer_module, 'run_tool', fake_run_tool)
+
+    context_pack, _ = await gather_context(_context_gather_request())
+
+    assert call_count == 2
+    assert context_pack.task_summary == 'Find relevant code'
+    assert context_pack.relevant_snippets == ['handler reference line']
+    assert context_pack.budget_remaining == 0
+
+
 def _context_gather_request() -> ContextGatherRequest:
     return ContextGatherRequest(
         workspace_info=WorkspaceInfo(

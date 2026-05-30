@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -261,6 +262,7 @@ def _find_indexed_references(
     symbol_name: str,
 ) -> ToolResult:
     reference_lines: list[str] = []
+    symbol_pattern = re.compile(rf'\b{re.escape(symbol_name)}\b')
     indexed_paths = {
         file_entry.path
         for file_entry in repository_index.file_tree
@@ -274,7 +276,7 @@ def _find_indexed_references(
             file_path.read_text(encoding='utf-8', errors='replace').splitlines(),
             start=1,
         ):
-            if symbol_name in line:
+            if symbol_pattern.search(line):
                 reference_lines.append(f'{relative_path}:{line_number}:{line}')
     return ToolResult(stdout='\n'.join(reference_lines), stderr='', exit_code=0, truncated=False)
 

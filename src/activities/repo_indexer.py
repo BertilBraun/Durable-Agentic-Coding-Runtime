@@ -99,18 +99,14 @@ def _tree_sitter_symbols_for_file(
 ) -> list[Symbol]:
     parser = _tree_sitter_parser(language)
     syntax_tree = parser.parse(file_path.read_bytes())
-    symbols: list[Symbol] = []
-    for node in syntax_tree.root_node.children:
-        match language:
-            case Language.PYTHON:
-                symbols.extend(_python_tree_sitter_symbols(node, relative_path))
-            case Language.TYPESCRIPT | Language.TSX | Language.JAVASCRIPT | Language.JSX:
-                symbols.extend(_javascript_tree_sitter_symbols(node, relative_path, language))
-            case _:
-                raise AssertionError(
-                    f'Unhandled language in _tree_sitter_symbols_for_file: {language}'
-                )
-    return symbols
+    root_node = syntax_tree.root_node
+    match language:
+        case Language.PYTHON:
+            return _python_tree_sitter_symbols(root_node, relative_path, inside_class=False)
+        case Language.TYPESCRIPT | Language.TSX | Language.JAVASCRIPT | Language.JSX:
+            return _javascript_tree_sitter_symbols(root_node, relative_path, language)
+        case _:
+            raise AssertionError(f'Unhandled language in _tree_sitter_symbols_for_file: {language}')
 
 
 def _tree_sitter_parser(language: Language) -> Parser:
@@ -126,14 +122,38 @@ def _tree_sitter_parser(language: Language) -> Parser:
             raise ValueError('Cannot create a tree-sitter parser for unknown language')
 
 
-def _python_tree_sitter_symbols(node: Node, relative_path: str) -> list[Symbol]:
-    if node.type not in {'function_definition', 'class_definition'}:
-        return []
-    name_node = node.child_by_field_name('name')
-    if name_node is None:
-        return []
-    kind = SymbolKind.CLASS if node.type == 'class_definition' else SymbolKind.FUNCTION
-    return [_node_symbol(name_node, node, kind, relative_path, Language.PYTHON)]
+def _python_tree_sitter_symbols(
+    node: Node,
+    relative_path: str,
+    inside_class: bool,
+) -> list[Symbol]:
+    symbols: list[Symbol] = []
+    for child in node.children:
+        match child.type:
+            case 'class_definition':
+                name_node = child.child_by_field_name('name')
+                if name_node is not None:
+                    symbols.append(
+                        _node_symbol(
+                            name_node, child, SymbolKind.CLASS, relative_path, Language.PYTHON
+                        )
+                    )
+                symbols.extend(_python_tree_sitter_symbols(child, relative_path, inside_class=True))
+            case 'function_definition':
+                name_node = child.child_by_field_name('name')
+                if name_node is not None:
+                    kind = SymbolKind.METHOD if inside_class else SymbolKind.FUNCTION
+                    symbols.append(
+                        _node_symbol(name_node, child, kind, relative_path, Language.PYTHON)
+                    )
+                symbols.extend(
+                    _python_tree_sitter_symbols(child, relative_path, inside_class=False)
+                )
+            case _:
+                symbols.extend(
+                    _python_tree_sitter_symbols(child, relative_path, inside_class=inside_class)
+                )
+    return symbols
 
 
 def _javascript_tree_sitter_symbols(
@@ -141,49 +161,45 @@ def _javascript_tree_sitter_symbols(
     relative_path: str,
     language: Language,
 ) -> list[Symbol]:
+    symbols: list[Symbol] = []
+    for child in node.children:
+        symbols.extend(_javascript_symbol_for_node(child, relative_path, language))
+        symbols.extend(_javascript_tree_sitter_symbols(child, relative_path, language))
+    return symbols
+
+
+def _javascript_symbol_for_node(
+    node: Node,
+    relative_path: str,
+    language: Language,
+) -> list[Symbol]:
     match node.type:
-        case 'function_declaration' | 'class_declaration':
-            return _javascript_named_declaration_symbols(node, relative_path, language)
-        case 'export_statement':
-            declaration_node = node.child_by_field_name('declaration')
-            if declaration_node is None:
+        case 'function_declaration':
+            return _named_field_symbol(node, node, SymbolKind.FUNCTION, relative_path, language)
+        case 'class_declaration':
+            return _named_field_symbol(node, node, SymbolKind.CLASS, relative_path, language)
+        case 'method_definition':
+            return _named_field_symbol(node, node, SymbolKind.METHOD, relative_path, language)
+        case 'variable_declarator':
+            value_node = node.child_by_field_name('value')
+            if value_node is None or value_node.type != 'arrow_function':
                 return []
-            return _javascript_tree_sitter_symbols(declaration_node, relative_path, language)
-        case 'lexical_declaration' | 'variable_declaration':
-            return _javascript_variable_symbols(node, relative_path, language)
+            return _named_field_symbol(node, node, SymbolKind.FUNCTION, relative_path, language)
         case _:
             return []
 
 
-def _javascript_named_declaration_symbols(
-    node: Node,
+def _named_field_symbol(
+    name_source: Node,
+    source_node: Node,
+    kind: SymbolKind,
     relative_path: str,
     language: Language,
 ) -> list[Symbol]:
-    name_node = node.child_by_field_name('name')
+    name_node = name_source.child_by_field_name('name')
     if name_node is None:
         return []
-    kind = SymbolKind.CLASS if node.type == 'class_declaration' else SymbolKind.FUNCTION
-    return [_node_symbol(name_node, node, kind, relative_path, language)]
-
-
-def _javascript_variable_symbols(
-    node: Node,
-    relative_path: str,
-    language: Language,
-) -> list[Symbol]:
-    symbols: list[Symbol] = []
-    for child in node.children:
-        if child.type != 'variable_declarator':
-            continue
-        value_node = child.child_by_field_name('value')
-        if value_node is None or value_node.type != 'arrow_function':
-            continue
-        name_node = child.child_by_field_name('name')
-        if name_node is None:
-            continue
-        symbols.append(_node_symbol(name_node, child, SymbolKind.FUNCTION, relative_path, language))
-    return symbols
+    return [_node_symbol(name_node, source_node, kind, relative_path, language)]
 
 
 def _node_symbol(

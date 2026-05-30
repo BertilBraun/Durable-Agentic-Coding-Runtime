@@ -31,7 +31,29 @@ async def test_repo_indexer_finds_python_top_level_symbols(tmp_path: Path) -> No
     symbol_pairs = {(symbol.name, symbol.kind) for symbol in repository_index.symbols}
     assert ('Parser', SymbolKind.CLASS) in symbol_pairs
     assert ('build_parser', SymbolKind.FUNCTION) in symbol_pairs
+    assert ('parse', SymbolKind.METHOD) in symbol_pairs
     assert repository_index.file_tree[0].language == Language.PYTHON
+
+
+@pytest.mark.asyncio
+async def test_repo_indexer_indexes_javascript_class_methods(tmp_path: Path) -> None:
+    source_file = tmp_path / 'service.ts'
+    source_file.write_text(
+        'export class Service {\n  start() {\n    return true;\n  }\n}\n',
+        encoding='utf-8',
+    )
+    workspace_info = WorkspaceInfo(
+        run_id='run-1',
+        volume_name='volume',
+        worktree_path=str(tmp_path),
+        branch_name='branch',
+    )
+
+    repository_index = await build_repo_index(workspace_info)
+
+    symbol_pairs = {(symbol.name, symbol.kind) for symbol in repository_index.symbols}
+    assert ('Service', SymbolKind.CLASS) in symbol_pairs
+    assert ('start', SymbolKind.METHOD) in symbol_pairs
 
 
 @pytest.mark.asyncio
