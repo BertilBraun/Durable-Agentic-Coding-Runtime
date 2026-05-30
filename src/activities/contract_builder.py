@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from src.config import ModelRole
 from src.llm.client import Message, generate_structured
-from src.llm.config import ModelRole
 from src.models.task import TaskContract, TaskRequest
 
 CONTRACT_BUILDER_SYSTEM_PROMPT = (

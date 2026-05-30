@@ -11,6 +11,7 @@ import docker.models.containers
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 from temporal_light import activity
 
+from src.config import settings
 from src.models.context import ArtifactKind, ArtifactReference
 from src.models.repo import Language, RepoIndex, Symbol
 from src.tools.definitions import (
@@ -32,14 +33,10 @@ from src.tools.definitions import (
 )
 from src.tools.handlers import command_for_tool
 
-WORKSPACE_IMAGE_ENVIRONMENT_NAME = 'WORKSPACE_IMAGE'
-DEFAULT_WORKSPACE_IMAGE = 'durable-agentic-workspace:latest'
 CONTAINER_WORKSPACE_PATH = '/workspace/repository'
 MAX_OUTPUT_CHARACTERS = 20_000
 COMPACT_HEAD_CHARACTERS = 8_000
 COMPACT_TAIL_CHARACTERS = 4_000
-ARTIFACTS_ROOT_ENVIRONMENT_NAME = 'ARTIFACTS_ROOT'
-DEFAULT_ARTIFACTS_ROOT = '/artifacts'
 
 
 class WorkspaceInfo(BaseModel):
@@ -97,7 +94,7 @@ async def create_workspace(
     volume_name = f'agentic-coding-{run_id}'
     branch_name = f'agentic-coding/{run_id}'
     docker_client.volumes.create(name=volume_name)
-    workspace_root = Path(os.getenv('WORKSPACE_ROOT', '.agentic-workspaces')).resolve()
+    workspace_root = Path(settings.workspace_root).resolve()
     worktree_path = workspace_root / run_id / 'repository'
     if worktree_path.exists():
         shutil.rmtree(worktree_path)
@@ -318,7 +315,7 @@ def make_run_id() -> str:
 
 
 def _workspace_image() -> str:
-    return os.getenv(WORKSPACE_IMAGE_ENVIRONMENT_NAME, DEFAULT_WORKSPACE_IMAGE)
+    return settings.workspace_image
 
 
 def _docker_client() -> docker.DockerClient:
@@ -353,7 +350,7 @@ def _artifact_kind_for_output(tool: Tool) -> ArtifactKind:
 
 
 def _artifacts_root() -> str:
-    return os.getenv(ARTIFACTS_ROOT_ENVIRONMENT_NAME, DEFAULT_ARTIFACTS_ROOT)
+    return settings.artifacts_root
 
 
 def _compact_output(output: str) -> str:

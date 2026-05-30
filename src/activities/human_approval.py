@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 from temporal_light import activity
 
-from src.activities.workspace_manager import ARTIFACTS_ROOT_ENVIRONMENT_NAME, DEFAULT_ARTIFACTS_ROOT
+from src.config import settings
 from src.models.plan import Plan
 from src.models.task import TaskContract
 
@@ -24,7 +23,7 @@ class HumanPlanPresentationRequest(BaseModel):
 
 @activity(retries=0, timeout=30)
 async def present_plan_to_human(request: HumanPlanPresentationRequest) -> str:
-    artifacts_root = os.getenv(ARTIFACTS_ROOT_ENVIRONMENT_NAME, DEFAULT_ARTIFACTS_ROOT)
+    artifacts_root = settings.artifacts_root
     artifact_directory = Path(artifacts_root) / request.run_id
     artifact_directory.mkdir(parents=True, exist_ok=True)
     plan_path = artifact_directory / 'plan_for_approval.json'

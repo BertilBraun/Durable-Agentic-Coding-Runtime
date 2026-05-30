@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.activities.workspace_manager import (
@@ -9,8 +7,8 @@ from src.activities.workspace_manager import (
     WorkspaceInfo,
     run_tool,
 )
+from src.config import ModelRole, settings
 from src.llm.client import Message, generate_structured
-from src.llm.config import CONTEXT_UTILIZATION_STOP_THRESHOLD, ModelRole
 from src.models.context import ContextPack
 from src.models.repo import RepoIndex
 from src.tools.definitions import ContextGathererToolCall
@@ -57,8 +55,8 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
         ),
     ]
     observations: list[str] = []
-    # TODO from a config
-    max_tool_calls = int(os.getenv('CONTEXT_GATHERER_MAX_TOOL_CALLS', '10'))
+    max_tool_calls = settings.context_gatherer_max_tool_calls
+    stop_threshold = settings.context_utilization_stop_threshold
     tool_call_count = 0
 
     while tool_call_count < max_tool_calls:
@@ -68,7 +66,7 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
             output_type=ContextGathererTurn,
         )
         turn = completion.output
-        if completion.result.context_utilization() > CONTEXT_UTILIZATION_STOP_THRESHOLD:
+        if completion.result.context_utilization() > stop_threshold:
             return _best_effort_context_pack(request, observations)
         if turn.done and turn.context_pack is not None:
             return turn.context_pack

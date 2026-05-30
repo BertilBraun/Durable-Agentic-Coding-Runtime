@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,8 +15,8 @@ from src.activities.workspace_manager import (
     WorkspaceInfo,
     run_tool,
 )
+from src.config import ModelRole, settings
 from src.llm.client import Message, generate_structured
-from src.llm.config import CONTEXT_UTILIZATION_STOP_THRESHOLD, ModelRole
 from src.models.context import ContextPack
 from src.models.plan import PlanStep
 from src.models.repo import RepoIndex
@@ -95,8 +94,8 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
         ),
         Message(role='user', content=json.dumps(_llm_user_payload(request))),
     ]
-    # TODO config.py
-    max_tool_rounds = int(os.getenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '12'))
+    max_tool_rounds = settings.implementation_max_tool_rounds
+    stop_threshold = settings.context_utilization_stop_threshold
     tests_run: list[str] = []
     test_results: list[TestResult] = []
     saw_diff = False
@@ -108,7 +107,7 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
             output_type=ImplementationAgentTurn,
         )
         agent_turn = completion.output
-        if completion.result.context_utilization() > CONTEXT_UTILIZATION_STOP_THRESHOLD:
+        if completion.result.context_utilization() > stop_threshold:
             return _context_budget_blocked_worker_result(
                 completed_tool_calls=completed_tool_calls,
                 pending_tool_calls=[

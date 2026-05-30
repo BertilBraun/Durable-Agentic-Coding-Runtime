@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from src.activities.context_gatherer import ContextGatherRequest, gather_context
 from src.activities.implementation import (
     ImplementationTurnRequest,
@@ -11,6 +9,7 @@ from src.activities.implementation import (
 )
 from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict, review_patch
 from src.activities.workspace_manager import WorkspaceInfo
+from src.config import settings
 from src.models.plan import PlanStep
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
@@ -37,8 +36,7 @@ async def implementation_workflow(
         ),
     )
 
-    # TODO config.py
-    max_iterations = int(os.getenv('IMPL_MAX_ITERATIONS', '5'))
+    max_iterations = settings.implementation_workflow_max_iterations
     for _ in range(max_iterations):
         worker_result = await run_implementation_turn(
             ImplementationTurnRequest(

@@ -12,8 +12,8 @@ from src.activities.implementation import (
     run_implementation_turn,
 )
 from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceInfo
+from src.config import ModelRole
 from src.llm.client import LLMResult, Message, StructuredCompletion
-from src.llm.config import ModelRole
 from src.models.context import ContextPack
 from src.models.plan import PlanStep, Risk
 from src.models.repo import RepoIndex
@@ -263,7 +263,11 @@ async def test_implementation_turn_preserves_run_tests_timeout(
                 raise AssertionError(f'Unexpected tool: {request.tool}')
         return ToolResult(stdout='tests failed', stderr='', exit_code=1, truncated=False)
 
-    monkeypatch.setenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '1')
+    monkeypatch.setattr(
+        implementation_module,
+        'settings',
+        implementation_module.settings.model_copy(update={'implementation_max_tool_rounds': 1}),
+    )
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
 

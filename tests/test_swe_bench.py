@@ -4,6 +4,7 @@ from pathlib import Path
 from types import TracebackType
 
 import pytest
+from src.config import ModelRole
 from src.eval.swe_bench import (
     EvaluationTaskResult,
     SweBenchInstance,
@@ -20,7 +21,6 @@ from src.eval.swe_bench import (
     _start_official_container,
 )
 from src.llm.client import LLMResult, Message
-from src.llm.config import ModelRole
 
 
 def test_select_evaluation_instances_returns_five_supported_instances() -> None:

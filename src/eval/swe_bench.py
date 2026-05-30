@@ -12,8 +12,8 @@ import docker.models.containers
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.config import ModelRole
 from src.llm.client import Message, generate
-from src.llm.config import ModelRole
 
 
 class SweBenchInstance(BaseModel):

@@ -9,8 +9,8 @@ from src.activities.context_gatherer import (
     gather_context,
 )
 from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceInfo
+from src.config import ModelRole
 from src.llm.client import LLMResult, Message, StructuredCompletion
-from src.llm.config import ModelRole
 from src.models.repo import RepoIndex
 from src.tools.definitions import ContextGathererToolCallAdapter
 

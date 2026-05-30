@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
+from src.config import ModelRole
 from src.llm.client import Message, generate_structured
-from src.llm.config import ModelRole
 from src.models.plan import Plan
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract

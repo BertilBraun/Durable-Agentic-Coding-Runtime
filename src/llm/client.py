@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import ClassVar, Generic, Literal, Protocol, TypeVar
 
@@ -10,7 +9,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, Parsed
 from pydantic import BaseModel, ConfigDict, Field
 from temporal_light import activity
 
-from src.llm.config import ModelRole, load_model_configuration
+from src.config import ModelEntry, ModelRole, settings
 
 StructuredOutput = TypeVar('StructuredOutput', bound=BaseModel)
 
@@ -129,10 +128,13 @@ class LLMClient:
         async_openai_client: AsyncOpenAIClient | None = None,
     ) -> None:
         self.usage_ledger = usage_ledger or LLMUsageLedger()
-        self.async_openai_client = async_openai_client or AsyncOpenAI(
-            api_key=os.getenv('LLM_API_KEY'),
-            base_url=os.getenv('LLM_BASE_URL'),
-        )
+        if async_openai_client is None:
+            self.async_openai_client = AsyncOpenAI(
+                api_key=settings.llm_api_key,
+                base_url=settings.llm_base_url,
+            )
+        else:
+            self.async_openai_client = async_openai_client
 
     async def complete(
         self,
@@ -232,11 +234,10 @@ async def generate_structured_completion(
 
 
 async def generate(role: ModelRole, messages: list[Message]) -> LLMResult:
-    model_configuration = load_model_configuration()
     return await generate_completion(
         messages=messages,
-        model=model_configuration.model_for_role(role),
-        context_limit_tokens=model_configuration.context_limit_for_role(role),
+        model=settings.model_for_role(role),
+        context_limit_tokens=settings.context_limit_for_role(role),
     )
 
 
@@ -246,12 +247,11 @@ async def generate_structured(
     output_type: type[StructuredOutput],
 ) -> StructuredCompletion[StructuredOutput]:
     register_structured_output(output_type)
-    model_configuration = load_model_configuration()
     result = await generate_structured_completion(
         messages=messages,
         output_type_name=output_type.__name__,
-        model=model_configuration.model_for_role(role),
-        context_limit_tokens=model_configuration.context_limit_for_role(role),
+        model=settings.model_for_role(role),
+        context_limit_tokens=settings.context_limit_for_role(role),
     )
     return StructuredCompletion(
         output=output_type.model_validate_json(result.content),
@@ -322,21 +322,24 @@ def _estimate_cost_usd(
     cache_read_tokens: int,
 ) -> float:
     # TODO: add cache_control breakpoints for Anthropic-compatible providers.
+    entry = settings.models_by_id.get(model)
+    return _estimate_cost_from_entry(entry, input_tokens, output_tokens, cache_read_tokens)
+
+
+def _estimate_cost_from_entry(
+    entry: ModelEntry | None,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+) -> float:
+    if entry is None:
+        return 0.0
     uncached_input_tokens = max(input_tokens - cache_read_tokens, 0)
-    match model:
-        case 'claude-opus-4-7':
-            input_price = 15.0
-            output_price = 75.0
-        case 'claude-sonnet-4-6':
-            input_price = 3.0
-            output_price = 15.0
-        case 'claude-haiku-4-5-20251001':
-            input_price = 0.8
-            output_price = 4.0
-        case 'gemini-3.1-flash-lite':
-            input_price = 0.25
-            output_price = 1.50
-        case _:
-            input_price = 0.0
-            output_price = 0.0
-    return ((uncached_input_tokens * input_price) + (output_tokens * output_price)) / 1_000_000
+    input_price = entry.input_price_usd_per_mtok
+    output_price = entry.output_price_usd_per_mtok
+    cache_read_price = entry.cache_read_price_usd_per_mtok
+    return (
+        (uncached_input_tokens * input_price)
+        + (cache_read_tokens * cache_read_price)
+        + (output_tokens * output_price)
+    ) / 1_000_000

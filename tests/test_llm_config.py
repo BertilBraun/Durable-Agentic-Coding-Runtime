@@ -1,13 +1,8 @@
 from pytest import MonkeyPatch
-from src.llm.config import (
-    ModelConfiguration,
-    ModelContextLimit,
-    ModelRole,
-    load_model_configuration,
-)
+from src.config import ModelRole, load_settings
 
 
-def test_model_configuration_uses_default_models(monkeypatch: MonkeyPatch) -> None:
+def test_settings_use_default_models(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv('MODEL_CONTRACT_BUILDER', raising=False)
     monkeypatch.delenv('MODEL_PLANNER', raising=False)
     monkeypatch.delenv('MODEL_CONTEXT_GATHERER', raising=False)
@@ -15,57 +10,49 @@ def test_model_configuration_uses_default_models(monkeypatch: MonkeyPatch) -> No
     monkeypatch.delenv('MODEL_REVIEWER', raising=False)
     monkeypatch.delenv('MODEL_SUMMARIZER', raising=False)
 
-    model_configuration = load_model_configuration()
+    settings = load_settings()
 
-    assert model_configuration.model_for_role(ModelRole.CONTRACT_BUILDER) == 'claude-opus-4-7'
-    assert model_configuration.model_for_role(ModelRole.CONTEXT_GATHERER) == (
-        'claude-haiku-4-5-20251001'
-    )
-    assert model_configuration.model_for_role(ModelRole.IMPLEMENTATION) == 'claude-sonnet-4-6'
-    assert model_configuration.context_limit_for_role(ModelRole.IMPLEMENTATION) == 200_000
+    assert settings.model_for_role(ModelRole.CONTRACT_BUILDER) == 'claude-opus-4-7'
+    assert settings.model_for_role(ModelRole.CONTEXT_GATHERER) == 'claude-haiku-4-5-20251001'
+    assert settings.model_for_role(ModelRole.IMPLEMENTATION) == 'claude-sonnet-4-6'
+    assert settings.context_limit_for_role(ModelRole.IMPLEMENTATION) == 200_000
 
 
-def test_model_configuration_uses_environment_override(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setenv('MODEL_REVIEWER', 'review-model')
+def test_settings_use_environment_override(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv('MODEL_REVIEWER', 'claude-haiku-4-5-20251001')
 
-    model_configuration = load_model_configuration()
+    settings = load_settings()
 
-    assert model_configuration.model_for_role(ModelRole.REVIEWER) == 'review-model'
-
-
-def test_model_configuration_adds_context_limits_for_environment_models(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    monkeypatch.setenv('MODEL_IMPLEMENTATION', 'gemini-3.1-flash-lite')
-
-    model_configuration = load_model_configuration()
-
-    assert model_configuration.context_limit_for_role(ModelRole.IMPLEMENTATION) == 200_000
+    assert settings.model_for_role(ModelRole.REVIEWER) == 'claude-haiku-4-5-20251001'
 
 
-def test_model_configuration_is_frozen() -> None:
-    model_configuration = ModelConfiguration(
-        contract_builder_model='a',
-        planner_model='b',
-        complexity_assessor_model='c',
-        context_gatherer_model='d',
-        implementation_model='e',
-        reviewer_model='f',
-        summarizer_model='g',
-        model_context_limits=[
-            ModelContextLimit(model='a', context_limit_tokens=100),
-            ModelContextLimit(model='b', context_limit_tokens=100),
-            ModelContextLimit(model='c', context_limit_tokens=100),
-            ModelContextLimit(model='d', context_limit_tokens=100),
-            ModelContextLimit(model='e', context_limit_tokens=100),
-            ModelContextLimit(model='f', context_limit_tokens=100),
-            ModelContextLimit(model='g', context_limit_tokens=100),
-        ],
-    )
+def test_settings_rejects_unknown_model(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv('MODEL_REVIEWER', 'no-such-model-xyz')
 
     try:
-        model_configuration.reviewer_model = 'changed'
+        load_settings()
+    except ValueError as error:
+        assert 'no-such-model-xyz' in str(error)
+        return
+
+    raise AssertionError('load_settings should reject unknown model ids')
+
+
+def test_settings_model_entry_exposes_cost(monkeypatch: MonkeyPatch) -> None:
+    settings = load_settings()
+
+    opus_entry = settings.model_entry('claude-opus-4-7')
+
+    assert opus_entry.input_price_usd_per_mtok == 15.0
+    assert opus_entry.output_price_usd_per_mtok == 75.0
+
+
+def test_settings_is_frozen() -> None:
+    settings = load_settings()
+
+    try:
+        settings.workspace_root = 'changed'
     except Exception:
         return
 
-    raise AssertionError('ModelConfiguration should be immutable')
+    raise AssertionError('Settings should be immutable')

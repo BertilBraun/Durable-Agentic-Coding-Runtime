@@ -216,7 +216,15 @@ async def test_implementation_workflow_retries_failed_results_until_iteration_li
             replan_suggestion=None,
         )
 
-    monkeypatch.setenv('IMPL_MAX_ITERATIONS', '3')
+    import src.workflows.implementation_workflow as implementation_workflow_module
+
+    monkeypatch.setattr(
+        implementation_workflow_module,
+        'settings',
+        implementation_workflow_module.settings.model_copy(
+            update={'implementation_workflow_max_iterations': 3}
+        ),
+    )
     monkeypatch.setattr('src.workflows.implementation_workflow.gather_context', fake_gather_context)
     monkeypatch.setattr(
         'src.workflows.implementation_workflow.run_implementation_turn',
