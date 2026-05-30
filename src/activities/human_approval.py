@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
-from temporal_light import activity
+from temporal_light import activity, wait_for_signal
 
 from src.activities.planner import PlanRequest, build_plan
 from src.config import settings
@@ -11,7 +11,6 @@ from src.models.approval import ApprovalDecision, HumanApprovalSignal
 from src.models.plan import Plan
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
-from src.workflows.temporal import wait_for_signal
 
 
 class HumanPlanPresentationRequest(BaseModel):

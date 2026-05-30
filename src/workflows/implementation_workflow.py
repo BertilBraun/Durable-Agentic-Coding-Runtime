@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from temporal_light import workflow
+
 from src.activities.context_gatherer import ContextGatherRequest, gather_context
 from src.activities.implementation import (
     ImplementationTurnRequest,
@@ -14,7 +16,6 @@ from src.models.plan import PlanStep
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
 from src.models.worker import Confidence, WorkerResult, WorkerStatus
-from src.workflows.temporal import workflow
 
 
 @workflow

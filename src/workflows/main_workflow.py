@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from temporal_light import spawn_child, wait_for_child, workflow
+
 from src.activities.complexity_assessor import assess_complexity
 from src.activities.contract_builder import build_contract
 from src.activities.human_approval import approve_plan_or_replan
@@ -22,7 +24,6 @@ from src.models.plan import Plan, PlanStep
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract, TaskRequest
 from src.models.worker import WorkerResult, WorkerStatus
-from src.workflows.temporal import spawn_child, wait_for_child, workflow
 
 
 @workflow
