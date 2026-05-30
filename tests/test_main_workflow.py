@@ -17,6 +17,72 @@ def _unit_usage() -> LLMUsage:
 
 
 @pytest.mark.asyncio
+async def test_run_plan_steps_adds_child_workflow_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.workflows.main_workflow import _run_plan_steps
+
+    async def fake_spawn_child(
+        workflow_name: str,
+        step: dict[str, object],
+        workspace: dict[str, object],
+        contract: dict[str, object],
+        repo_index: dict[str, object],
+    ) -> str:
+        return 'child-1'
+
+    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
+        return {
+            'worker_result': WorkerResult(
+                status=WorkerStatus.SUCCESS,
+                patch_id='patch-1',
+                diff_summary='Implemented step.',
+                tests_run=[],
+                test_results=[],
+                discovered_issues=[],
+                confidence=Confidence.HIGH,
+                replan_suggestion=None,
+            ).model_dump(mode='json'),
+            'llm_usage': LLMUsage(
+                call_count=3,
+                total_input_tokens=30,
+                total_output_tokens=12,
+                total_cost_usd=0.05,
+            ).model_dump(mode='json'),
+        }
+
+    monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
+    monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
+
+    _, worker_results, usage = await _run_plan_steps(
+        plan=_plan_with_step('step-1'),
+        contract=TaskContract(
+            task_type=TaskType.FEATURE,
+            goal='Implement behavior',
+            acceptance_criteria=[],
+            non_goals=[],
+            affected_areas=[],
+            risk_areas=[],
+            tests_expected=[],
+            open_questions=[],
+        ),
+        repo_index=RepoIndex(),
+        workspace_info=WorkspaceInfo(
+            run_id='run-1',
+            volume_name='volume',
+            worktree_path='workspace',
+            branch_name='branch',
+        ),
+    )
+
+    assert len(worker_results) == 1
+    assert usage.call_count == 3
+    assert usage.total_input_tokens == 30
+    assert usage.total_output_tokens == 12
+    assert usage.total_cost_usd == 0.05
+
+
+@pytest.mark.asyncio
 async def test_main_workflow_replans_after_needs_replan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -147,7 +213,8 @@ async def test_main_workflow_replans_after_needs_replan(
     assert plan_requests[1].human_feedback == 'Add the generated file update.'
     assert len(plan_requests[1].worker_results) == 1
     assert report['worker_results'][-1]['status'] == WorkerStatus.SUCCESS
-    # build_contract + build_plan(initial) + assess_complexity + 2 children + build_plan(replan) + review_patch
+    # build_contract + build_plan(initial) + assess_complexity + 2 children
+    # + build_plan(replan) + review_patch
     assert report['llm_usage']['call_count'] == 7
     assert report['patch'] == 'diff --git a/generated.py b/generated.py'
 

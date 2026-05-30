@@ -347,7 +347,89 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
     assert worker_result.tests_run == ['pytest tests/test_app.py -q']
     assert len(worker_result.test_results) == 1
     assert worker_result.test_results[0].passed is True
+    assert worker_result.test_results[0].sequence == 1
     assert worker_result.test_results[0].stdout_summary == '1 passed'
+
+
+@pytest.mark.asyncio
+async def test_implementation_turn_keeps_latest_pass_or_failure_run_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    call_count = 0
+
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            turn = output_type.model_validate(
+                {
+                    'done': False,
+                    'tool_calls': [
+                        {
+                            'tool_name': 'run_tests',
+                            'command': 'pytest tests/test_app.py::test_old_failure -q',
+                            'timeout_seconds': 30,
+                            'directory': '.',
+                        },
+                        {
+                            'tool_name': 'run_tests',
+                            'command': 'pytest tests/test_app.py::test_fixed -q',
+                            'timeout_seconds': 30,
+                            'directory': '.',
+                        },
+                        {
+                            'tool_name': 'run_tests',
+                            'command': 'pytest tests/test_app.py::test_regression -q',
+                            'timeout_seconds': 30,
+                            'directory': '.',
+                        },
+                    ],
+                }
+            )
+        else:
+            turn = output_type.model_validate(
+                {
+                    'done': True,
+                    'worker_result': {
+                        'status': 'success',
+                        'patch_id': 'patch-1',
+                        'diff_summary': 'Updated app behavior.',
+                        'tests_run': [],
+                        'test_results': [],
+                        'discovered_issues': [],
+                        'confidence': 'high',
+                        'replan_suggestion': None,
+                    },
+                }
+            )
+        return _structured_completion(turn, context_utilization=0.0)
+
+    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+        match request.tool:
+            case RunTests(command=command):
+                exit_code = 0 if command.endswith('test_fixed -q') else 1
+                return ToolResult(
+                    stdout='passed' if exit_code == 0 else 'failed',
+                    stderr='',
+                    exit_code=exit_code,
+                    truncated=False,
+                )
+            case _:
+                raise AssertionError(f'Unexpected tool: {request.tool}')
+
+    _patch_generate_structured(monkeypatch, handler)
+    monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
+
+    worker_result, _ = await run_implementation_turn(_implementation_request())
+
+    assert [result.sequence for result in worker_result.test_results] == [2, 3]
+    assert [result.passed for result in worker_result.test_results] == [True, False]
+    assert worker_result.tests_run == [
+        'pytest tests/test_app.py::test_fixed -q',
+        'pytest tests/test_app.py::test_regression -q',
+    ]
 
 
 @pytest.mark.asyncio

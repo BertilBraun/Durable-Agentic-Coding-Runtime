@@ -21,6 +21,7 @@ class Confidence(StrEnum):
 class TestResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    sequence: int = 0
     command: str
     exit_code: int
     stdout_summary: str

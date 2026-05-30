@@ -9,7 +9,7 @@ from src.activities.workspace_manager import (
 from src.config import CONFIG
 from src.models.context import ArtifactKind
 from src.models.repo import FileEntry, Language, RepoIndex, Symbol, SymbolKind
-from src.tools.definitions import FindReferences, FindSymbol, GitStatus, RunTests
+from src.tools.definitions import FindReferences, FindSymbol, GitStatus, RunTests, ToolName
 
 
 class FakeContainer:
@@ -85,6 +85,7 @@ async def test_run_tool_applies_tool_timeout(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     assert result.exit_code == 0
+    assert result.tool_name == ToolName.RUN_TESTS
     assert container.timeout_seconds == 17
     assert container.removed is True
 

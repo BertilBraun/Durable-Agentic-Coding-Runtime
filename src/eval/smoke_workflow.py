@@ -94,8 +94,7 @@ def _create_smoke_repository(temporary_directory: Path) -> Path:
     repository_path = temporary_directory / 'repo'
     repository_path.mkdir()
     (repository_path / 'app.py').write_text(
-        'def add(first_number: int, second_number: int) -> int:\n'
-        '    return first_number + second_number\n',
+        'def add(first_number: int, second_number: int) -> int:\n    return first_number + second_number\n',
         encoding='utf-8',
     )
     _run_git(repository_path, 'init')
@@ -122,7 +121,7 @@ async def _start_and_wait_for_workflow(
     timeout_seconds: int,
 ) -> SmokeWorkflowResult:
     task_request = TaskRequest(
-        raw_request='Smoke test the durable agent workflow',
+        raw_request='Add a subtract function to the app.py in the repo. Commit your work.',
         repo_path=str(repository_path),
         run_id='smoke-live',
     )

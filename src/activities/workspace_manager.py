@@ -51,6 +51,7 @@ class WorkspaceInfo(BaseModel):
 class ToolResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    tool_name: ToolName | None = None
     stdout: str
     stderr: str
     exit_code: int
@@ -190,6 +191,7 @@ async def run_tool(request: ToolExecutionRequest) -> ToolResult:
         if artifact_reference is not None
     ]
     return ToolResult(
+        tool_name=request.tool.tool_name,
         stdout=_compact_output(stdout),
         stderr=_compact_output(stderr),
         exit_code=int(wait_result.get('StatusCode', 1)),
@@ -253,7 +255,13 @@ def _find_indexed_symbol(repository_index: RepoIndex, name: str, language: str) 
         if symbol.name == name and (not language or symbol.language == Language(language))
     ]
     lines = [_format_symbol(symbol) for symbol in matching_symbols]
-    return ToolResult(stdout='\n'.join(lines), stderr='', exit_code=0, truncated=False)
+    return ToolResult(
+        tool_name=ToolName.FIND_SYMBOL,
+        stdout='\n'.join(lines),
+        stderr='',
+        exit_code=0,
+        truncated=False,
+    )
 
 
 def _find_indexed_references(
@@ -278,11 +286,18 @@ def _find_indexed_references(
         ):
             if symbol_pattern.search(line):
                 reference_lines.append(f'{relative_path}:{line_number}:{line}')
-    return ToolResult(stdout='\n'.join(reference_lines), stderr='', exit_code=0, truncated=False)
+    return ToolResult(
+        tool_name=ToolName.FIND_REFERENCES,
+        stdout='\n'.join(reference_lines),
+        stderr='',
+        exit_code=0,
+        truncated=False,
+    )
 
 
 def _format_symbol(symbol: Symbol) -> str:
-    return f'{symbol.file_path}:{symbol.start_line}-{symbol.end_line} {symbol.kind.value} {symbol.name}'
+    location = f'{symbol.file_path}:{symbol.start_line}-{symbol.end_line}'
+    return f'{location} {symbol.kind.value} {symbol.name}'
 
 
 def _tool_timeout_seconds(tool: Tool) -> int | None:
