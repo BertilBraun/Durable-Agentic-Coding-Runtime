@@ -45,13 +45,16 @@ async def gather_context(request: ContextGatherRequest) -> tuple[ContextPack, LL
         Message(
             role='system',
             content=CONTEXT_GATHERER_SYSTEM_PROMPT,
+            cacheable=True,
         ),
         Message(
             role='user',
-            content=(
-                f'Prompt: {request.gatherer_prompt}\n\n'
-                f'Repository index: {request.repo_index.model_dump_json()}'
-            ),
+            content=f'Repository index: {request.repo_index.model_dump_json()}',
+            cacheable=True,
+        ),
+        Message(
+            role='user',
+            content=f'Prompt: {request.gatherer_prompt}',
         ),
     ]
     max_tool_calls = CONFIG.context_gatherer_max_tool_calls

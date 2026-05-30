@@ -19,7 +19,7 @@ async def build_contract(request: TaskRequest) -> tuple[TaskContract, LLMUsage]:
     completion = await generate_structured(
         role=ModelRole.CONTRACT_BUILDER,
         messages=[
-            Message(role='system', content=CONTRACT_BUILDER_SYSTEM_PROMPT),
+            Message(role='system', content=CONTRACT_BUILDER_SYSTEM_PROMPT, cacheable=True),
             Message(role='user', content=request.model_dump_json()),
         ],
         output_type=TaskContract,

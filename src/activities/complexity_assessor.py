@@ -27,7 +27,7 @@ async def assess_complexity(contract: TaskContract) -> tuple[ComplexityVerdict, 
     completion = await generate_structured(
         role=ModelRole.COMPLEXITY_ASSESSOR,
         messages=[
-            Message(role='system', content=COMPLEXITY_ASSESSOR_SYSTEM_PROMPT),
+            Message(role='system', content=COMPLEXITY_ASSESSOR_SYSTEM_PROMPT, cacheable=True),
             Message(role='user', content=contract.model_dump_json()),
         ],
         output_type=ComplexityVerdict,

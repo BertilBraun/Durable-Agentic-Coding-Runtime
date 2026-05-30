@@ -55,7 +55,7 @@ async def review_patch(request: ReviewRequest) -> tuple[ReviewVerdict, LLMUsage]
     completion = await generate_structured(
         role=ModelRole.REVIEWER,
         messages=[
-            Message(role='system', content=REVIEWER_SYSTEM_PROMPT),
+            Message(role='system', content=REVIEWER_SYSTEM_PROMPT, cacheable=True),
             Message(role='user', content=request.model_dump_json()),
         ],
         output_type=ReviewVerdict,

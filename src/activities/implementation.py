@@ -82,6 +82,7 @@ async def run_implementation_turn(
         Message(
             role='system',
             content=IMPLEMENTATION_SYSTEM_PROMPT,
+            cacheable=True,
         ),
         Message(role='user', content=json.dumps(_llm_user_payload(request))),
     ]

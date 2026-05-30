@@ -36,7 +36,7 @@ async def build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
     completion = await generate_structured(
         role=ModelRole.PLANNER,
         messages=[
-            Message(role='system', content=PLANNER_SYSTEM_PROMPT),
+            Message(role='system', content=PLANNER_SYSTEM_PROMPT, cacheable=True),
             Message(
                 role='user',
                 content=(

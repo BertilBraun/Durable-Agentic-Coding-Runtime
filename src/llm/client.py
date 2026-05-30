@@ -18,6 +18,10 @@ class Message(BaseModel):
 
     role: Literal['system', 'user', 'assistant']
     content: str
+    # Mark long stable prefixes (system prompts, repo-index blobs) cacheable=True so
+    # Anthropic-compatible endpoints can attach cache_control breakpoints. OpenAI ignores
+    # the marker — it auto-caches stable prefixes.
+    cacheable: bool = False
 
 
 class LLMUsage(BaseModel):
@@ -112,7 +116,7 @@ class LLMClient:
     ) -> LLMResult:
         response = await self.async_openai_client.chat.completions.create(
             model=model,
-            messages=_format_messages_for_api(messages),
+            messages=_format_messages_for_api(messages, model),
         )
         return _llm_result_from_response(
             model=model,
@@ -129,7 +133,7 @@ class LLMClient:
     ) -> LLMResult:
         response = await self.async_openai_client.beta.chat.completions.parse(
             model=model,
-            messages=_format_messages_for_api(messages),
+            messages=_format_messages_for_api(messages, model),
             response_format=output_type,
         )
         return _llm_result_from_response(
@@ -196,8 +200,30 @@ async def generate_structured(
     )
 
 
-def _format_messages_for_api(messages: list[Message]) -> list[ChatCompletionMessageParam]:
-    return [message.model_dump(mode='json') for message in messages]  # type: ignore[list-item]
+def _format_messages_for_api(
+    messages: list[Message], model: str
+) -> list[ChatCompletionMessageParam]:
+    if model.startswith('claude-'):
+        return [_format_anthropic_message(message) for message in messages]  # type: ignore[list-item]
+    return [
+        {'role': message.role, 'content': message.content}  # type: ignore[misc]
+        for message in messages
+    ]
+
+
+def _format_anthropic_message(message: Message) -> dict[str, object]:
+    if not message.cacheable:
+        return {'role': message.role, 'content': message.content}
+    return {
+        'role': message.role,
+        'content': [
+            {
+                'type': 'text',
+                'text': message.content,
+                'cache_control': {'type': 'ephemeral'},
+            }
+        ],
+    }
 
 
 def _extract_content(response: ChatCompletion) -> str:
