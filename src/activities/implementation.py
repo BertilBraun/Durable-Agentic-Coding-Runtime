@@ -158,7 +158,13 @@ async def run_implementation_turn(
                     match tool:
                         case RunTests(command=command):
                             tests_run.append(command)
-                            test_results.append(_test_result_from_tool_result(command, tool_result))
+                            test_results.append(
+                                _test_result_from_tool_result(
+                                    command=command,
+                                    tool_result=tool_result,
+                                    sequence=len(test_results) + 1,
+                                )
+                            )
                         case GitDiff():
                             saw_diff = saw_diff or bool(tool_result.stdout.strip())
                         case _:
@@ -226,8 +232,13 @@ def _worker_result_with_evidence(
 ) -> WorkerResult:
     if worker_result.status != WorkerStatus.SUCCESS:
         return worker_result
-    tests_run = list(dict.fromkeys([*worker_result.tests_run, *evidence.tests_run]))
-    test_results = [*worker_result.test_results, *evidence.test_results]
+    test_results = _select_reported_test_results(
+        [*worker_result.test_results, *evidence.test_results]
+    )
+    if test_results:
+        tests_run = [test_result.command for test_result in test_results]
+    else:
+        tests_run = list(dict.fromkeys([*worker_result.tests_run, *evidence.tests_run]))
     has_diff_evidence = evidence.saw_diff
     if not has_diff_evidence and not test_results:
         return failed_worker_result('success result missing diff or test evidence')
@@ -239,8 +250,25 @@ def _worker_result_with_evidence(
     )
 
 
-def _test_result_from_tool_result(command: str, tool_result: ToolResult) -> TestResult:
+def _select_reported_test_results(test_results: list[TestResult]) -> list[TestResult]:
+    if not test_results:
+        return []
+    latest_result = test_results[-1]
+    if latest_result.passed:
+        return [latest_result]
+    for index in range(len(test_results) - 2, -1, -1):
+        if test_results[index].passed:
+            return test_results[index:]
+    return test_results
+
+
+def _test_result_from_tool_result(
+    command: str,
+    tool_result: ToolResult,
+    sequence: int,
+) -> TestResult:
     return TestResult(
+        sequence=sequence,
         command=command,
         exit_code=tool_result.exit_code,
         stdout_summary=tool_result.stdout,
