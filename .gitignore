@@ -17,3 +17,4 @@ artifacts/
 swe_bench_results.json
 
 *.log
+*.egg-info/
