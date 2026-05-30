@@ -139,7 +139,8 @@ async def run_implementation_turn(
                     )
                     usage += gather_usage
                     observations.append(
-                        f'tool={tool_call.tool_name} context_pack:\n{gathered_context.model_dump_json()}'
+                        f'tool={tool_call.tool_name} context_pack:\n'
+                        f'{gathered_context.model_dump_json()}'
                     )
                     completed_tool_calls.append(tool_call.tool_name.value)
                 case tool:
@@ -151,9 +152,7 @@ async def run_implementation_turn(
                         )
                     )
                     observations.append(
-                        f'tool={tool_call.tool_name} exit_code={tool_result.exit_code}\n'
-                        f'stdout:\n{tool_result.stdout}\n'
-                        f'stderr:\n{tool_result.stderr}'
+                        f'tool_result:\n{tool_result.model_dump_json()}'
                     )
                     completed_tool_calls.append(tool_call.tool_name.value)
                     match tool:
