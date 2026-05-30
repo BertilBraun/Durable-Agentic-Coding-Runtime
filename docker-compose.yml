@@ -15,10 +15,7 @@ services:
       - MODEL_SUMMARIZER=${MODEL_SUMMARIZER:-claude-haiku-4-5-20251001}
       - WORKSPACE_IMAGE=${WORKSPACE_IMAGE:-durable-agentic-workspace:latest}
     volumes:
-      - artifacts:/artifacts
+      - ./.agentic-artifacts:/app/.agentic-artifacts
       - /var/run/docker.sock:/var/run/docker.sock
       - ./.agentic-workspaces:/app/.agentic-workspaces
     depends_on: []
-
-volumes:
-  artifacts:

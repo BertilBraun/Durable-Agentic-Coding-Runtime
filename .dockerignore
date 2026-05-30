@@ -1,4 +1,5 @@
 .agentic-workspaces
+.agentic-artifacts
 .git
 .pytest_cache
 .ruff_cache

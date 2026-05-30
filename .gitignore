@@ -13,7 +13,7 @@ venv/
 
 .env
 .agentic-workspaces/
-artifacts/
+.agentic-artifacts/
 swe_bench_results.json
 
 *.log
