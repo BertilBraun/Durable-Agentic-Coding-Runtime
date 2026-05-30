@@ -6,49 +6,20 @@ import os
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
-from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 from temporal_light import Client, WorkflowFailedError
 
+from activities.report_builder import FinalReport
 from src.models.task import TaskRequest
-from src.models.worker import WorkerResult
-
-
-class SmokeWorkflowInput(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    request: TaskRequest
-
-
-class SmokeWorkflowRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    workflow_name: str
-    workflow_input: SmokeWorkflowInput
 
 
 class SmokeWorkflowResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
     workflow_id: str
     status: str
-    changed_diff: bool = False
-    test_result_passed: bool = False
-
-
-class WorkflowCompletedEvent(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    type: Literal['workflow_completed']
-    result: SmokeWorkflowFinalResult
-
-
-class SmokeWorkflowFinalResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    worker_results: list[WorkerResult]
+    report: FinalReport | None = None
 
 
 async def run_smoke_workflow(
@@ -123,7 +94,7 @@ async def _start_and_wait_for_workflow(
     task_request = TaskRequest(
         raw_request='Add a subtract function to the app.py in the repo. Commit your work.',
         repo_path=str(repository_path),
-        run_id='smoke-live',
+        run_id=f'smoke-live-{uuid.uuid4()}',
     )
     client = Client(temporal_api_url)
     handle = await client.start(
@@ -132,37 +103,15 @@ async def _start_and_wait_for_workflow(
     )
     try:
         workflow_result = await handle.result(timeout=timeout_seconds)
+        return SmokeWorkflowResult(
+            workflow_id=handle.workflow_id,
+            status='success',
+            report=FinalReport.model_validate(workflow_result),
+        )
     except TimeoutError:
         return SmokeWorkflowResult(workflow_id=handle.workflow_id, status='timeout')
     except WorkflowFailedError:
         return SmokeWorkflowResult(workflow_id=handle.workflow_id, status='failed')
-    return _smoke_result_from_workflow_result(
-        SmokeWorkflowFinalResult.model_validate(workflow_result),
-        workflow_id=handle.workflow_id,
-    )
-
-
-def _smoke_result_from_workflow_result(
-    workflow_result: SmokeWorkflowFinalResult,
-    workflow_id: str = '',
-) -> SmokeWorkflowResult:
-    completed_event = WorkflowCompletedEvent(type='workflow_completed', result=workflow_result)
-    changed_diff = any(
-        worker_result.diff_summary.strip() and 'no-op' not in worker_result.diff_summary.lower()
-        for worker_result in completed_event.result.worker_results
-    )
-    test_result_passed = any(
-        test_result.passed
-        for worker_result in completed_event.result.worker_results
-        for test_result in worker_result.test_results
-    )
-    status = 'completed' if changed_diff and test_result_passed else 'verification_failed'
-    return SmokeWorkflowResult(
-        workflow_id=workflow_id,
-        status=status,
-        changed_diff=changed_diff,
-        test_result_passed=test_result_passed,
-    )
 
 
 def main() -> None:
