@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -43,20 +44,9 @@ IMPLEMENTATION_SYSTEM_PROMPT = (
 )
 
 
-# TODO can that be extracted automatically somehow?
-IMPLEMENTATION_AVAILABLE_TOOLS = (
-    'read_file_range',
-    'search_text',
-    'write_file',
-    'apply_patch',
-    'git_diff',
-    'git_status',
-    'run_tests',
-    'run_lint',
-    'run_typecheck',
-    'find_symbol',
-    'find_references',
-    'gather_context',
+IMPLEMENTATION_AVAILABLE_TOOLS: tuple[str, ...] = tuple(
+    tool_type.model_fields['tool_name'].default.value
+    for tool_type in get_args(ImplementationToolCall)
 )
 
 

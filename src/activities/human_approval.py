@@ -5,9 +5,13 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 from temporal_light import activity
 
+from src.activities.planner import PlanRequest, build_plan
 from src.config import settings
+from src.models.approval import ApprovalDecision, HumanApprovalSignal
 from src.models.plan import Plan
+from src.models.repo import RepoIndex
 from src.models.task import TaskContract
+from src.workflows.temporal import wait_for_signal
 
 
 class HumanPlanPresentationRequest(BaseModel):
@@ -16,9 +20,6 @@ class HumanPlanPresentationRequest(BaseModel):
     run_id: str
     contract: TaskContract
     plan: Plan
-
-
-# TODO abstract the entire replanning loop from main_workflow here?
 
 
 @activity(retries=0, timeout=30)
@@ -32,3 +33,27 @@ async def present_plan_to_human(request: HumanPlanPresentationRequest) -> str:
         encoding='utf-8',
     )
     return str(plan_path)
+
+
+async def approve_plan_or_replan(
+    run_id: str,
+    contract: TaskContract,
+    repo_index: RepoIndex,
+    plan: Plan,
+) -> Plan:
+    while True:
+        await present_plan_to_human(
+            HumanPlanPresentationRequest(run_id=run_id, contract=contract, plan=plan),
+        )
+        signal_payload = await wait_for_signal('human_approval')
+        approval = HumanApprovalSignal.model_validate(signal_payload)
+        if approval.decision == ApprovalDecision.APPROVE:
+            return plan
+        plan = await build_plan(
+            PlanRequest(
+                contract=contract,
+                repo_index=repo_index,
+                worker_results=[],
+                human_feedback=approval.feedback,
+            ),
+        )
