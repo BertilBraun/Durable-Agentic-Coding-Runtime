@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.activities.workspace_manager import WorkspaceInfo
 from src.config import ModelRole
-from src.llm.client import Message, generate_structured
+from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.plan import PlanStep
 from src.models.task import TaskContract
 from src.models.worker import TestResult, WorkerResult
@@ -51,7 +51,7 @@ class ReviewRequest(BaseModel):
     workspace_info: WorkspaceInfo
 
 
-async def review_patch(request: ReviewRequest) -> ReviewVerdict:
+async def review_patch(request: ReviewRequest) -> tuple[ReviewVerdict, LLMUsage]:
     completion = await generate_structured(
         role=ModelRole.REVIEWER,
         messages=[
@@ -60,4 +60,4 @@ async def review_patch(request: ReviewRequest) -> ReviewVerdict:
         ],
         output_type=ReviewVerdict,
     )
-    return completion.output
+    return completion.output, completion.usage

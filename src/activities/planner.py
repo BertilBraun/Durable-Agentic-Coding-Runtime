@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 from src.config import ModelRole
-from src.llm.client import Message, generate_structured
+from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.plan import Plan
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
@@ -28,7 +28,7 @@ class PlanRequest(BaseModel):
     human_feedback: str | None = None
 
 
-async def build_plan(request: PlanRequest) -> Plan:
+async def build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
     revision_guidance = request.human_feedback or 'No human revision guidance provided.'
     worker_results_json = [
         worker_result.model_dump(mode='json') for worker_result in request.worker_results
@@ -49,4 +49,4 @@ async def build_plan(request: PlanRequest) -> Plan:
         ],
         output_type=Plan,
     )
-    return completion.output
+    return completion.output, completion.usage

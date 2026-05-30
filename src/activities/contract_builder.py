@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.config import ModelRole
-from src.llm.client import Message, generate_structured
+from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.task import TaskContract, TaskRequest
 
 CONTRACT_BUILDER_SYSTEM_PROMPT = (
@@ -15,7 +15,7 @@ CONTRACT_BUILDER_SYSTEM_PROMPT = (
 )
 
 
-async def build_contract(request: TaskRequest) -> TaskContract:
+async def build_contract(request: TaskRequest) -> tuple[TaskContract, LLMUsage]:
     completion = await generate_structured(
         role=ModelRole.CONTRACT_BUILDER,
         messages=[
@@ -24,4 +24,4 @@ async def build_contract(request: TaskRequest) -> TaskContract:
         ],
         output_type=TaskContract,
     )
-    return completion.output
+    return completion.output, completion.usage

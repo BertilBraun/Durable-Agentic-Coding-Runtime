@@ -12,6 +12,7 @@ from src.activities.implementation import (
 from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict, review_patch
 from src.activities.workspace_manager import WorkspaceInfo
 from src.config import CONFIG
+from src.llm.client import LLMUsage
 from src.models.plan import PlanStep
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
@@ -29,17 +30,20 @@ async def implementation_workflow(
     workspace_info = WorkspaceInfo.model_validate(workspace)
     task_contract = TaskContract.model_validate(contract)
     repository_index = RepoIndex.model_validate(repo_index)
-    context_pack = await gather_context(
+    usage = LLMUsage()
+
+    context_pack, gather_usage = await gather_context(
         ContextGatherRequest(
             workspace_info=workspace_info,
             repo_index=repository_index,
             gatherer_prompt=plan_step.goal,
         ),
     )
+    usage += gather_usage
 
     max_iterations = CONFIG.implementation_workflow_max_iterations
     for _ in range(max_iterations):
-        worker_result = await run_implementation_turn(
+        worker_result, turn_usage = await run_implementation_turn(
             ImplementationTurnRequest(
                 plan_step=plan_step,
                 context_pack=context_pack,
@@ -48,21 +52,33 @@ async def implementation_workflow(
                 repo_index=repository_index,
             ),
         )
+        usage += turn_usage
         match worker_result.status:
             case WorkerStatus.SUCCESS:
-                reviewed_result = await _review_successful_step(
+                reviewed_result, review_usage = await _review_successful_step(
                     plan_step=plan_step,
                     workspace_info=workspace_info,
                     task_contract=task_contract,
                     worker_result=worker_result,
                 )
-                return reviewed_result.model_dump(mode='json')
+                usage += review_usage
+                return _packaged_result(reviewed_result, usage)
             case WorkerStatus.BLOCKED | WorkerStatus.NEEDS_REPLAN:
-                return worker_result.model_dump(mode='json')
+                return _packaged_result(worker_result, usage)
             case _:
                 pass
 
-    return failed_worker_result('maximum implementation iterations reached').model_dump(mode='json')
+    return _packaged_result(
+        failed_worker_result('maximum implementation iterations reached'),
+        usage,
+    )
+
+
+def _packaged_result(worker_result: WorkerResult, usage: LLMUsage) -> dict[str, object]:
+    return {
+        'worker_result': worker_result.model_dump(mode='json'),
+        'llm_usage': usage.model_dump(mode='json'),
+    }
 
 
 async def _review_successful_step(
@@ -70,9 +86,9 @@ async def _review_successful_step(
     workspace_info: WorkspaceInfo,
     task_contract: TaskContract,
     worker_result: WorkerResult,
-) -> WorkerResult:
+) -> tuple[WorkerResult, LLMUsage]:
     diff = await get_full_diff(workspace_info)
-    review_verdict = await review_patch(
+    review_verdict, review_usage = await review_patch(
         ReviewRequest(
             contract=task_contract,
             plan_step=plan_step,
@@ -82,7 +98,7 @@ async def _review_successful_step(
             workspace_info=workspace_info,
         )
     )
-    return _worker_result_from_review(worker_result, review_verdict)
+    return _worker_result_from_review(worker_result, review_verdict), review_usage
 
 
 def _worker_result_from_review(

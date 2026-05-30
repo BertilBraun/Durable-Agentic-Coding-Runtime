@@ -7,6 +7,7 @@ from temporal_light import activity, wait_for_signal
 
 from src.activities.planner import PlanRequest, build_plan
 from src.config import CONFIG
+from src.llm.client import LLMUsage
 from src.models.approval import ApprovalDecision, HumanApprovalSignal
 from src.models.plan import Plan
 from src.models.repo import RepoIndex
@@ -39,7 +40,8 @@ async def approve_plan_or_replan(
     contract: TaskContract,
     repo_index: RepoIndex,
     plan: Plan,
-) -> Plan:
+) -> tuple[Plan, LLMUsage]:
+    usage = LLMUsage()
     while True:
         await present_plan_to_human(
             HumanPlanPresentationRequest(run_id=run_id, contract=contract, plan=plan),
@@ -47,8 +49,8 @@ async def approve_plan_or_replan(
         signal_payload = await wait_for_signal('human_approval')
         approval = HumanApprovalSignal.model_validate(signal_payload)
         if approval.decision == ApprovalDecision.APPROVE:
-            return plan
-        plan = await build_plan(
+            return plan, usage
+        plan, plan_usage = await build_plan(
             PlanRequest(
                 contract=contract,
                 repo_index=repo_index,
@@ -56,3 +58,4 @@ async def approve_plan_or_replan(
                 human_feedback=approval.feedback,
             ),
         )
+        usage += plan_usage

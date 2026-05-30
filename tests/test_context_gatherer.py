@@ -10,7 +10,7 @@ from src.activities.context_gatherer import (
 )
 from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceInfo
 from src.config import ModelRole
-from src.llm.client import LLMResult, Message, StructuredCompletion
+from src.llm.client import LLMUsage, Message, StructuredCompletion
 from src.models.repo import RepoIndex
 from src.tools.definitions import ContextGathererToolCallAdapter
 
@@ -54,15 +54,10 @@ def _structured_completion(output: BaseModel, context_utilization: float) -> Str
     input_tokens = int(context_utilization * 100)
     return StructuredCompletion(
         output=output,
-        result=LLMResult(
-            content=output.model_dump_json(),
-            model='fake-model',
-            input_tokens=input_tokens,
-            output_tokens=0,
-            cache_read_tokens=0,
-            cost_usd=0.0,
-            context_limit_tokens=100,
-        ),
+        content=output.model_dump_json(),
+        model='fake-model',
+        context_limit_tokens=100,
+        usage=LLMUsage(call_count=1, total_input_tokens=input_tokens),
     )
 
 
@@ -194,7 +189,7 @@ async def test_context_gatherer_summarizes_when_context_budget_is_high(
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(context_gatherer_module, 'run_tool', fake_run_tool)
 
-    context_pack = await gather_context(_context_gather_request())
+    context_pack, _ = await gather_context(_context_gather_request())
 
     assert context_pack.task_summary == 'LLM-summarized auth context'
     assert context_pack.relevant_snippets == ['summary line 1']

@@ -463,7 +463,7 @@ async def _run_baseline_task(
         instance_id=instance.instance_id,
         status='resolved' if oracle_result.resolved else 'failed',
         resolved=oracle_result.resolved,
-        cost_usd=patch_response.cost_usd,
+        cost_usd=patch_response.usage.total_cost_usd,
         llm_calls=1,
         wall_clock_seconds=time.monotonic() - started_at,
         reason=oracle_result.reason,

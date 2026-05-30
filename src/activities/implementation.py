@@ -16,8 +16,8 @@ from src.activities.workspace_manager import (
     WorkspaceInfo,
     run_tool,
 )
-from src.config import ModelRole, CONFIG
-from src.llm.client import Message, generate_structured
+from src.config import CONFIG, ModelRole
+from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.context import ContextPack
 from src.models.plan import PlanStep
 from src.models.repo import RepoIndex
@@ -45,7 +45,8 @@ IMPLEMENTATION_SYSTEM_PROMPT = (
 
 
 IMPLEMENTATION_AVAILABLE_TOOLS: tuple[str, ...] = tuple(
-    tool_type.model_fields['tool_name'].default.value for tool_type in get_args(ImplementationToolCall)
+    tool_type.model_fields['tool_name'].default.value
+    for tool_type in get_args(ImplementationToolCall)
 )
 
 
@@ -74,8 +75,9 @@ class ImplementationEvidence:
     saw_diff: bool
 
 
-# TODO very deeply nested.. But a lot of state to pass - so might be fine..
-async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerResult:
+async def run_implementation_turn(
+    request: ImplementationTurnRequest,
+) -> tuple[WorkerResult, LLMUsage]:
     messages = [
         Message(
             role='system',
@@ -89,41 +91,52 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
     test_results: list[TestResult] = []
     saw_diff = False
     completed_tool_calls: list[str] = []
+    usage = LLMUsage()
     for _ in range(max_tool_rounds):
         completion = await generate_structured(
             role=ModelRole.IMPLEMENTATION,
             messages=messages,
             output_type=ImplementationAgentTurn,
         )
+        usage += completion.usage
         agent_turn = completion.output
-        if completion.result.context_utilization() > stop_threshold:
-            return _context_budget_blocked_worker_result(
-                completed_tool_calls=completed_tool_calls,
-                pending_tool_calls=[tool_call.tool_name.value for tool_call in agent_turn.tool_calls],
+        if completion.context_utilization() > stop_threshold:
+            return (
+                _context_budget_blocked_worker_result(
+                    completed_tool_calls=completed_tool_calls,
+                    pending_tool_calls=[
+                        tool_call.tool_name.value for tool_call in agent_turn.tool_calls
+                    ],
+                ),
+                usage,
             )
         if agent_turn.done:
             if agent_turn.worker_result is None:
                 raise ValueError('worker_result is required when implementation turn is done')
-            return _worker_result_with_evidence(
-                worker_result=agent_turn.worker_result,
-                evidence=ImplementationEvidence(
-                    tests_run=tuple(tests_run),
-                    test_results=tuple(test_results),
-                    saw_diff=saw_diff,
+            return (
+                _worker_result_with_evidence(
+                    worker_result=agent_turn.worker_result,
+                    evidence=ImplementationEvidence(
+                        tests_run=tuple(tests_run),
+                        test_results=tuple(test_results),
+                        saw_diff=saw_diff,
+                    ),
                 ),
+                usage,
             )
 
         observations: list[str] = []
         for tool_call in agent_turn.tool_calls:
             match tool_call:
                 case GatherContext(prompt=prompt):
-                    gathered_context = await gather_context(
+                    gathered_context, gather_usage = await gather_context(
                         ContextGatherRequest(
                             workspace_info=request.workspace_info,
                             repo_index=request.repo_index,
                             gatherer_prompt=prompt,
                         )
                     )
+                    usage += gather_usage
                     observations.append(
                         f'tool={tool_call.tool_name} context_pack:\n{gathered_context.model_dump_json()}'
                     )
@@ -153,7 +166,7 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
         messages.append(Message(role='assistant', content=agent_turn.model_dump_json()))
         messages.append(Message(role='user', content='\n\n'.join(observations)))
 
-    return failed_worker_result('maximum implementation tool rounds reached')
+    return failed_worker_result('maximum implementation tool rounds reached'), usage
 
 
 def _llm_user_payload(request: ImplementationTurnRequest) -> dict[str, object]:
@@ -188,7 +201,9 @@ def _context_budget_blocked_worker_result(
 
 
 async def get_full_diff(workspace_info: WorkspaceInfo) -> str:
-    tool_result = await run_tool(ToolExecutionRequest(workspace_info=workspace_info, tool=GitDiff(path='.')))
+    tool_result = await run_tool(
+        ToolExecutionRequest(workspace_info=workspace_info, tool=GitDiff(path='.'))
+    )
     return tool_result.stdout
 
 

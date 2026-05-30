@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 from src.config import ModelRole
-from src.llm.client import Message, generate_structured
+from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.task import TaskContract
 
 COMPLEXITY_ASSESSOR_SYSTEM_PROMPT = (
@@ -23,7 +23,7 @@ class ComplexityVerdict(BaseModel):
     requires_human_approval: bool
 
 
-async def assess_complexity(contract: TaskContract) -> ComplexityVerdict:
+async def assess_complexity(contract: TaskContract) -> tuple[ComplexityVerdict, LLMUsage]:
     completion = await generate_structured(
         role=ModelRole.COMPLEXITY_ASSESSOR,
         messages=[
@@ -32,4 +32,4 @@ async def assess_complexity(contract: TaskContract) -> ComplexityVerdict:
         ],
         output_type=ComplexityVerdict,
     )
-    return completion.output
+    return completion.output, completion.usage

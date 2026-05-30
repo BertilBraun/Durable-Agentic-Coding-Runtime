@@ -7,8 +7,8 @@ from src.activities.workspace_manager import (
     WorkspaceInfo,
     run_tool,
 )
-from src.config import ModelRole, CONFIG
-from src.llm.client import Message, generate_structured
+from src.config import CONFIG, ModelRole
+from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.context import ContextPack
 from src.models.repo import RepoIndex
 from src.tools.definitions import ContextGathererToolCall
@@ -40,7 +40,7 @@ class ContextGathererTurn(BaseModel):
     tool_calls: list[ContextGathererToolCall] = Field(default_factory=list)
 
 
-async def gather_context(request: ContextGatherRequest) -> ContextPack:
+async def gather_context(request: ContextGatherRequest) -> tuple[ContextPack, LLMUsage]:
     messages = [
         Message(
             role='system',
@@ -48,13 +48,17 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
         ),
         Message(
             role='user',
-            content=(f'Prompt: {request.gatherer_prompt}\n\nRepository index: {request.repo_index.model_dump_json()}'),
+            content=(
+                f'Prompt: {request.gatherer_prompt}\n\n'
+                f'Repository index: {request.repo_index.model_dump_json()}'
+            ),
         ),
     ]
     max_tool_calls = CONFIG.context_gatherer_max_tool_calls
     stop_threshold = CONFIG.context_utilization_stop_threshold
     tool_call_count = 0
     budget_exceeded = False
+    usage = LLMUsage()
 
     while tool_call_count < max_tool_calls:
         completion = await generate_structured(
@@ -62,12 +66,13 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
             messages=messages,
             output_type=ContextGathererTurn,
         )
+        usage += completion.usage
         turn = completion.output
-        if completion.result.context_utilization() > stop_threshold:
+        if completion.context_utilization() > stop_threshold:
             budget_exceeded = True
             break
         if turn.done and turn.context_pack is not None:
-            return turn.context_pack
+            return turn.context_pack, usage
 
         turn_observations: list[str] = []
         for tool in turn.tool_calls:
@@ -86,13 +91,16 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
         messages.append(Message(role='assistant', content=turn.model_dump_json()))
         messages.append(Message(role='user', content='\n'.join(turn_observations)))
 
-    return await _summarize_observations_into_context_pack(messages, budget_exceeded)
+    context_pack, finalize_usage = await _summarize_observations_into_context_pack(
+        messages, budget_exceeded
+    )
+    return context_pack, usage + finalize_usage
 
 
 async def _summarize_observations_into_context_pack(
     messages: list[Message],
     budget_exceeded: bool,
-) -> ContextPack:
+) -> tuple[ContextPack, LLMUsage]:
     finalize_instruction = (
         'Stop gathering more evidence. Set done=true and return a ContextPack '
         'summarizing the observations so far. Do not propose more tool calls.'
@@ -108,4 +116,4 @@ async def _summarize_observations_into_context_pack(
     turn = completion.output
     if turn.context_pack is None:
         raise ValueError('Context gatherer failed to produce a ContextPack on finalization.')
-    return turn.context_pack
+    return turn.context_pack, completion.usage

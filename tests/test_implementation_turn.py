@@ -13,7 +13,7 @@ from src.activities.implementation import (
 )
 from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceInfo
 from src.config import ModelRole
-from src.llm.client import LLMResult, Message, StructuredCompletion
+from src.llm.client import LLMUsage, Message, StructuredCompletion
 from src.models.context import ContextPack
 from src.models.plan import PlanStep, Risk
 from src.models.repo import RepoIndex
@@ -31,15 +31,10 @@ def _structured_completion(output: BaseModel, context_utilization: float) -> Str
     input_tokens = int(context_utilization * 100)
     return StructuredCompletion(
         output=output,
-        result=LLMResult(
-            content=output.model_dump_json(),
-            model='fake-model',
-            input_tokens=input_tokens,
-            output_tokens=0,
-            cache_read_tokens=0,
-            cost_usd=0.0,
-            context_limit_tokens=100,
-        ),
+        content=output.model_dump_json(),
+        model='fake-model',
+        context_limit_tokens=100,
+        usage=LLMUsage(call_count=1, total_input_tokens=input_tokens),
     )
 
 
@@ -69,7 +64,9 @@ async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.Monke
 
     call_count = 0
 
-    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
         nonlocal call_count
         call_count += 1
         assert output_type.__name__ == 'ImplementationAgentTurn'
@@ -108,7 +105,7 @@ async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.Monke
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
 
-    worker_result = await run_implementation_turn(_implementation_request())
+    worker_result, _ = await run_implementation_turn(_implementation_request())
 
     assert worker_result.status == WorkerStatus.BLOCKED
     assert worker_result.confidence == Confidence.LOW
@@ -124,7 +121,9 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
     captured_gather_prompts: list[str] = []
     call_count = 0
 
-    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
         nonlocal call_count
         call_count += 1
         captured_messages.append(messages)
@@ -158,15 +157,20 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
             )
         return _structured_completion(turn, context_utilization=0.0)
 
-    async def fake_gather_context(request: ContextGatherRequest) -> ContextPack:
+    async def fake_gather_context(
+        request: ContextGatherRequest,
+    ) -> tuple[ContextPack, LLMUsage]:
         captured_gather_prompts.append(request.gatherer_prompt)
-        return ContextPack(
-            task_summary='Auth context',
-            relevant_snippets=['src/auth.py: token handler'],
-            recent_observations=['found caller'],
-            failed_attempt_summaries=[],
-            available_tools=['read_file_range'],
-            budget_remaining=4,
+        return (
+            ContextPack(
+                task_summary='Auth context',
+                relevant_snippets=['src/auth.py: token handler'],
+                recent_observations=['found caller'],
+                failed_attempt_summaries=[],
+                available_tools=['read_file_range'],
+                budget_remaining=4,
+            ),
+            LLMUsage(),
         )
 
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
@@ -176,7 +180,7 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
     monkeypatch.setattr(implementation_module, 'gather_context', fake_gather_context)
     monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
 
-    worker_result = await run_implementation_turn(_implementation_request())
+    worker_result, _ = await run_implementation_turn(_implementation_request())
 
     assert worker_result.status == WorkerStatus.BLOCKED
     assert captured_gather_prompts == ['Find auth callers']
@@ -233,7 +237,9 @@ async def test_implementation_turn_preserves_run_tests_timeout(
 ) -> None:
     captured_timeout_seconds: list[int] = []
 
-    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
         turn = output_type.model_validate(
             {
                 'done': False,
@@ -259,13 +265,13 @@ async def test_implementation_turn_preserves_run_tests_timeout(
 
     monkeypatch.setattr(
         implementation_module,
-        'settings',
+        'CONFIG',
         implementation_module.CONFIG.model_copy(update={'implementation_max_tool_rounds': 1}),
     )
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
 
-    worker_result = await run_implementation_turn(_implementation_request())
+    worker_result, _ = await run_implementation_turn(_implementation_request())
 
     assert worker_result.status == WorkerStatus.FAILED
     assert captured_timeout_seconds == [19]
@@ -277,7 +283,9 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
 ) -> None:
     call_count = 0
 
-    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -333,7 +341,7 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
 
-    worker_result = await run_implementation_turn(_implementation_request())
+    worker_result, _ = await run_implementation_turn(_implementation_request())
 
     assert worker_result.status == WorkerStatus.SUCCESS
     assert worker_result.tests_run == ['pytest tests/test_app.py -q']
@@ -346,7 +354,9 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
 async def test_implementation_turn_rejects_success_without_diff_or_test_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
         turn = output_type.model_validate(
             {
                 'done': True,
@@ -366,7 +376,7 @@ async def test_implementation_turn_rejects_success_without_diff_or_test_evidence
 
     _patch_generate_structured(monkeypatch, handler)
 
-    worker_result = await run_implementation_turn(_implementation_request())
+    worker_result, _ = await run_implementation_turn(_implementation_request())
 
     assert worker_result.status == WorkerStatus.FAILED
     assert worker_result.discovered_issues == ['success result missing diff or test evidence']
@@ -376,7 +386,9 @@ async def test_implementation_turn_rejects_success_without_diff_or_test_evidence
 async def test_implementation_turn_rejects_success_with_only_diff_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
         turn = output_type.model_validate(
             {
                 'done': True,
@@ -396,7 +408,7 @@ async def test_implementation_turn_rejects_success_with_only_diff_summary(
 
     _patch_generate_structured(monkeypatch, handler)
 
-    worker_result = await run_implementation_turn(_implementation_request())
+    worker_result, _ = await run_implementation_turn(_implementation_request())
 
     assert worker_result.status == WorkerStatus.FAILED
     assert worker_result.discovered_issues == ['success result missing diff or test evidence']
@@ -406,7 +418,9 @@ async def test_implementation_turn_rejects_success_with_only_diff_summary(
 async def test_implementation_turn_blocks_when_context_budget_is_high(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
         turn = output_type.model_validate(
             {
                 'done': False,
@@ -428,7 +442,7 @@ async def test_implementation_turn_blocks_when_context_budget_is_high(
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
 
-    worker_result = await run_implementation_turn(_implementation_request())
+    worker_result, _ = await run_implementation_turn(_implementation_request())
 
     assert worker_result.status == WorkerStatus.BLOCKED
     assert worker_result.confidence == Confidence.LOW
@@ -442,7 +456,9 @@ async def test_implementation_turn_user_message_excludes_repo_index(
 ) -> None:
     captured_user_payloads: list[dict[str, object]] = []
 
-    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
         captured_user_payloads.append(json.loads(messages[1].content))
         turn = output_type.model_validate(
             {

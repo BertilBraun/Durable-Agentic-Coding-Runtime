@@ -8,11 +8,7 @@ from src.activities.human_approval import approve_plan_or_replan
 from src.activities.implementation import get_full_diff
 from src.activities.planner import PlanRequest, build_plan
 from src.activities.repo_indexer import build_repo_index
-from src.activities.report_builder import (
-    FinalReport,
-    collect_llm_usage_summary,
-    reset_llm_usage_summary,
-)
+from src.activities.report_builder import FinalReport
 from src.activities.reviewer import ReviewRequest, review_patch
 from src.activities.workspace_manager import (
     WorkspaceInfo,
@@ -20,6 +16,7 @@ from src.activities.workspace_manager import (
     destroy_workspace,
     make_run_id,
 )
+from src.llm.client import LLMUsage
 from src.models.plan import Plan, PlanStep
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract, TaskRequest
@@ -30,15 +27,16 @@ from src.models.worker import WorkerResult, WorkerStatus
 async def main_workflow(request: dict[str, object]) -> dict[str, object]:
     task_request = TaskRequest.model_validate(request)
     run_id = task_request.run_id or make_run_id()
-    await reset_llm_usage_summary()
+    usage = LLMUsage()
 
-    contract = await build_contract(task_request)
+    contract, contract_usage = await build_contract(task_request)
+    usage += contract_usage
     workspace_info = await create_workspace(
         run_id, task_request.repo_path, task_request.docker_image
     )
     repo_index = await build_repo_index(workspace_info)
 
-    plan = await build_plan(
+    plan, plan_usage = await build_plan(
         PlanRequest(
             contract=contract,
             repo_index=repo_index,
@@ -46,25 +44,29 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
             human_feedback=None,
         ),
     )
-    complexity_verdict = await assess_complexity(contract)
+    usage += plan_usage
+    complexity_verdict, complexity_usage = await assess_complexity(contract)
+    usage += complexity_usage
 
     if complexity_verdict.requires_human_approval:
-        plan = await approve_plan_or_replan(
+        plan, approval_usage = await approve_plan_or_replan(
             run_id=run_id,
             contract=contract,
             repo_index=repo_index,
             plan=plan,
         )
+        usage += approval_usage
 
-    plan, worker_results = await _run_plan_steps(
+    plan, worker_results, run_usage = await _run_plan_steps(
         plan=plan,
         contract=contract,
         repo_index=repo_index,
         workspace_info=workspace_info,
     )
+    usage += run_usage
 
     diff = await get_full_diff(workspace_info)
-    final_verdict = await review_patch(
+    final_verdict, review_usage = await review_patch(
         ReviewRequest(
             contract=contract,
             plan_step=None,
@@ -74,6 +76,7 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
             workspace_info=workspace_info,
         ),
     )
+    usage += review_usage
     final_report = FinalReport(
         status=final_verdict.verdict.value,
         patch=diff,
@@ -82,7 +85,7 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
         worker_results=worker_results,
         final_verdict=final_verdict,
         workspace_info=workspace_info,
-        llm_usage=await collect_llm_usage_summary(),
+        llm_usage=usage,
     )
     await destroy_workspace(workspace_info)
     return final_report.model_dump(mode='json')
@@ -93,21 +96,23 @@ async def _run_plan_steps(
     contract: TaskContract,
     repo_index: RepoIndex,
     workspace_info: WorkspaceInfo,
-) -> tuple[Plan, list[WorkerResult]]:
+) -> tuple[Plan, list[WorkerResult], LLMUsage]:
     worker_results: list[WorkerResult] = []
     pending_plan_steps = list(plan.steps)
+    usage = LLMUsage()
     while pending_plan_steps:
         plan_step = pending_plan_steps.pop(0)
-        worker_result = await _run_implementation_child(
+        worker_result, child_usage = await _run_implementation_child(
             plan_step=plan_step,
             workspace_info=workspace_info,
             contract=contract,
             repo_index=repo_index,
         )
+        usage += child_usage
         worker_results.append(worker_result)
         match worker_result.status:
             case WorkerStatus.NEEDS_REPLAN:
-                plan = await build_plan(
+                plan, replan_usage = await build_plan(
                     PlanRequest(
                         contract=contract,
                         repo_index=repo_index,
@@ -115,12 +120,13 @@ async def _run_plan_steps(
                         human_feedback=worker_result.replan_suggestion,
                     ),
                 )
+                usage += replan_usage
                 pending_plan_steps = list(plan.steps)
             case WorkerStatus.FAILED | WorkerStatus.BLOCKED:
                 break
             case WorkerStatus.SUCCESS:
                 pass
-    return plan, worker_results
+    return plan, worker_results, usage
 
 
 async def _run_implementation_child(
@@ -128,7 +134,7 @@ async def _run_implementation_child(
     workspace_info: WorkspaceInfo,
     contract: TaskContract,
     repo_index: RepoIndex,
-) -> WorkerResult:
+) -> tuple[WorkerResult, LLMUsage]:
     child_id = await spawn_child(
         'implementation_workflow',
         step=plan_step.model_dump(mode='json'),
@@ -137,4 +143,8 @@ async def _run_implementation_child(
         repo_index=repo_index.model_dump(mode='json'),
     )
     child_result = await wait_for_child(child_id)
-    return WorkerResult.model_validate(child_result)
+    assert isinstance(child_result, dict), 'implementation_workflow returns a dict payload'
+    return (
+        WorkerResult.model_validate(child_result['worker_result']),
+        LLMUsage.model_validate(child_result['llm_usage']),
+    )

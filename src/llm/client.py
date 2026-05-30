@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import ClassVar, Generic, Literal, Protocol, TypeVar
+from typing import Generic, Literal, Protocol, TypeVar
 
 from openai import AsyncOpenAI
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ParsedChatCompletion
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 from temporal_light import activity
 
 from src.config import CONFIG, ModelRole
@@ -21,64 +20,41 @@ class Message(BaseModel):
     content: str
 
 
+class LLMUsage(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    call_count: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cost_usd: float = 0.0
+
+    def __add__(self, other: LLMUsage) -> LLMUsage:
+        return LLMUsage(
+            call_count=self.call_count + other.call_count,
+            total_input_tokens=self.total_input_tokens + other.total_input_tokens,
+            total_output_tokens=self.total_output_tokens + other.total_output_tokens,
+            total_cache_read_tokens=(self.total_cache_read_tokens + other.total_cache_read_tokens),
+            total_cost_usd=self.total_cost_usd + other.total_cost_usd,
+        )
+
+
 class LLMResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     content: str
     model: str
     context_limit_tokens: int
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cost_usd: float = 0.0
+    usage: LLMUsage
 
     def context_utilization(self) -> float:
         if self.context_limit_tokens <= 0:
             return 0.0
-        return self.input_tokens / self.context_limit_tokens
+        return self.usage.total_input_tokens / self.context_limit_tokens
 
 
-@dataclass(frozen=True)
-class StructuredCompletion(Generic[StructuredOutput]):
+class StructuredCompletion(LLMResult, Generic[StructuredOutput]):
     output: StructuredOutput
-    result: LLMResult
-
-
-class LLMUsage(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    model: str
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cost_usd: float = 0.0
-
-
-class LLMUsageLedger(BaseModel):
-    model_config = ConfigDict(frozen=False)
-
-    calls: list[LLMUsage] = Field(default_factory=list)
-    total_input_tokens: int = 0
-    total_output_tokens: int = 0
-    total_cache_read_tokens: int = 0
-    total_cost_usd: float = 0.0
-
-    def record(self, usage: LLMUsage) -> None:
-        self.calls.append(usage)
-        self.total_input_tokens += usage.input_tokens
-        self.total_output_tokens += usage.output_tokens
-        self.total_cache_read_tokens += usage.cache_read_tokens
-        self.total_cost_usd += usage.cost_usd
-
-
-class LLMUsageSummary(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    call_count: int
-    total_input_tokens: int
-    total_output_tokens: int
-    total_cache_read_tokens: int
-    total_cost_usd: float
 
 
 class ChatCompletionCreator(Protocol):
@@ -119,15 +95,7 @@ def _structured_output_type(name: str) -> type[BaseModel]:
 
 
 class LLMClient:
-    # TODO again - note that global varaibles will not survive across activity invocations in temporal, so this global usage ledger will not work as intended, need to store in durable storage and pass around
-    _global_usage_ledger: ClassVar[LLMUsageLedger] = LLMUsageLedger()
-
-    def __init__(
-        self,
-        usage_ledger: LLMUsageLedger | None = None,
-        async_openai_client: AsyncOpenAIClient | None = None,
-    ) -> None:
-        self.usage_ledger = usage_ledger or LLMUsageLedger()
+    def __init__(self, async_openai_client: AsyncOpenAIClient | None = None) -> None:
         if async_openai_client is None:
             self.async_openai_client = AsyncOpenAI(
                 api_key=CONFIG.llm_api_key,
@@ -146,13 +114,11 @@ class LLMClient:
             model=model,
             messages=_format_messages_for_api(messages),
         )
-        result = _llm_result_from_response(
+        return _llm_result_from_response(
             model=model,
             context_limit_tokens=context_limit_tokens,
             response=response,
         )
-        self._record_usage(result)
-        return result
 
     async def generate_structured(
         self,
@@ -166,38 +132,11 @@ class LLMClient:
             messages=_format_messages_for_api(messages),
             response_format=output_type,
         )
-        result = _llm_result_from_response(
+        return _llm_result_from_response(
             model=model,
             context_limit_tokens=context_limit_tokens,
             response=response,
         )
-        self._record_usage(result)
-        return result
-
-    @classmethod
-    def reset_global_usage(cls) -> None:
-        cls._global_usage_ledger = LLMUsageLedger()
-
-    @classmethod
-    def global_usage_summary(cls) -> LLMUsageSummary:
-        return LLMUsageSummary(
-            call_count=len(cls._global_usage_ledger.calls),
-            total_input_tokens=cls._global_usage_ledger.total_input_tokens,
-            total_output_tokens=cls._global_usage_ledger.total_output_tokens,
-            total_cache_read_tokens=cls._global_usage_ledger.total_cache_read_tokens,
-            total_cost_usd=cls._global_usage_ledger.total_cost_usd,
-        )
-
-    def _record_usage(self, result: LLMResult) -> None:
-        usage = LLMUsage(
-            model=result.model,
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-            cache_read_tokens=result.cache_read_tokens,
-            cost_usd=result.cost_usd,
-        )
-        self.usage_ledger.record(usage)
-        self._global_usage_ledger.record(usage)
 
 
 @activity(retries=2, timeout=120, backoff_seconds=10)
@@ -248,9 +187,12 @@ async def generate_structured(
         model=CONFIG.model_for_role(role),
         context_limit_tokens=CONFIG.context_limit_for_role(role),
     )
-    return StructuredCompletion(
+    return StructuredCompletion[output_type](
         output=output_type.model_validate_json(result.content),
-        result=result,
+        content=result.content,
+        model=result.model,
+        context_limit_tokens=result.context_limit_tokens,
+        usage=result.usage,
     )
 
 
@@ -271,24 +213,27 @@ def _llm_result_from_response(
     response: ChatCompletion,
 ) -> LLMResult:
     content = _extract_content(response)
-    usage = response.usage
-    if usage is None:
-        return LLMResult(
-            content=content,
-            model=model,
-            context_limit_tokens=context_limit_tokens,
+    response_usage = response.usage
+    if response_usage is None:
+        usage = LLMUsage(call_count=1)
+    else:
+        input_tokens = response_usage.prompt_tokens
+        output_tokens = response_usage.completion_tokens
+        cache_read_tokens = _cache_read_tokens(response_usage)
+        usage = LLMUsage(
+            call_count=1,
+            total_input_tokens=input_tokens,
+            total_output_tokens=output_tokens,
+            total_cache_read_tokens=cache_read_tokens,
+            total_cost_usd=_estimate_cost_usd(
+                model, input_tokens, output_tokens, cache_read_tokens
+            ),
         )
-    input_tokens = usage.prompt_tokens
-    output_tokens = usage.completion_tokens
-    cache_read_tokens = _cache_read_tokens(usage)
     return LLMResult(
         content=content,
         model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cache_read_tokens,
-        cost_usd=_estimate_cost_usd(model, input_tokens, output_tokens, cache_read_tokens),
         context_limit_tokens=context_limit_tokens,
+        usage=usage,
     )
 
 
@@ -305,7 +250,6 @@ def _estimate_cost_usd(
     output_tokens: int,
     cache_read_tokens: int,
 ) -> float:
-    # TODO: add cache_control breakpoints for Anthropic-compatible providers.
     entry = CONFIG.models_by_id.get(model)
     if entry is None:
         return 0.0
@@ -314,5 +258,7 @@ def _estimate_cost_usd(
     output_price = entry.output_price_usd_per_mtok
     cache_read_price = entry.cache_read_price_usd_per_mtok
     return (
-        (uncached_input_tokens * input_price) + (cache_read_tokens * cache_read_price) + (output_tokens * output_price)
+        (uncached_input_tokens * input_price)
+        + (cache_read_tokens * cache_read_price)
+        + (output_tokens * output_price)
     ) / 1_000_000

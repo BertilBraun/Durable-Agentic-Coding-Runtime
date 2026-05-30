@@ -20,7 +20,7 @@ from src.eval.swe_bench import (
     _select_evaluation_instances,
     _start_official_container,
 )
-from src.llm.client import LLMResult, Message
+from src.llm.client import LLMResult, LLMUsage, Message
 
 
 def test_select_evaluation_instances_returns_five_supported_instances() -> None:
@@ -204,11 +204,12 @@ async def test_run_baseline_task_scores_generated_patch_with_oracle(
         return LLMResult(
             content='```diff\ndiff --git a/app.py b/app.py\n```\n',
             model='fake-model',
-            input_tokens=10,
-            output_tokens=2,
-            cache_read_tokens=0,
-            cost_usd=0.0,
             context_limit_tokens=100,
+            usage=LLMUsage(
+                call_count=1,
+                total_input_tokens=10,
+                total_output_tokens=2,
+            ),
         )
 
     monkeypatch.setattr('src.eval.swe_bench.generate', fake_generate)
