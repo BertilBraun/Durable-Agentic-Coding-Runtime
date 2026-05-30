@@ -43,6 +43,7 @@ class Settings(BaseModel):
     workspace_root: str
     workspace_image: str
     artifacts_root: str
+    human_approval_enabled: bool
 
     implementation_max_tool_rounds: int
     context_gatherer_max_tool_calls: int
@@ -78,6 +79,7 @@ def load_settings() -> Settings:
         workspace_root=os.getenv('WORKSPACE_ROOT', '.agentic-workspaces'),
         workspace_image=os.getenv('WORKSPACE_IMAGE', 'durable-agentic-workspace:latest'),
         artifacts_root=os.getenv('ARTIFACTS_ROOT', '.agentic-artifacts'),
+        human_approval_enabled=_parse_bool(os.getenv('HUMAN_APPROVAL_ENABLED'), default=True),
         implementation_max_tool_rounds=int(os.getenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '12')),
         context_gatherer_max_tool_calls=int(os.getenv('CONTEXT_GATHERER_MAX_TOOL_CALLS', '10')),
         context_utilization_stop_threshold=float(
@@ -96,6 +98,12 @@ def load_settings() -> Settings:
         models_by_id=models_by_id,
         model_by_role=model_by_role,
     )
+
+
+def _parse_bool(raw_value: str | None, default: bool) -> bool:
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def _load_models_csv(path: Path) -> dict[str, ModelEntry]:

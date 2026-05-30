@@ -14,6 +14,7 @@ services:
       - MODEL_REVIEWER=${MODEL_REVIEWER:-claude-sonnet-4-6}
       - MODEL_SUMMARIZER=${MODEL_SUMMARIZER:-claude-haiku-4-5-20251001}
       - WORKSPACE_IMAGE=${WORKSPACE_IMAGE:-durable-agentic-workspace:latest}
+      - HUMAN_APPROVAL_ENABLED=${HUMAN_APPROVAL_ENABLED:-true}
     volumes:
       - ./.agentic-artifacts:/app/.agentic-artifacts
       - /var/run/docker.sock:/var/run/docker.sock

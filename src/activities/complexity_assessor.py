@@ -2,17 +2,19 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-from src.config import ModelRole
+from src.config import CONFIG, ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.task import TaskContract
 
 COMPLEXITY_ASSESSOR_SYSTEM_PROMPT = (
     'You are the complexity assessor. Return one ComplexityVerdict using '
-    'only the task contract and repository evidence. Require human approval '
-    'for likely broad diffs, public APIs, migrations, authentication, '
-    'security, data integrity, ambiguous acceptance criteria, feature work, '
-    'or breaking-change risk. Do not assume safety from missing evidence; '
-    'explain uncertainty in the reasoning. Stop after the verdict.'
+    'only the task contract and repository evidence. Human approval is '
+    'expensive, so default to not requiring it. Require it only for the few '
+    'genuinely high-stakes cases: a complete or sweeping refactor, a highly '
+    'complex task, or a task so ambiguous that the intended outcome cannot be '
+    'pinned down from the contract. Ordinary feature work, bug fixes, and '
+    'contained changes do not require approval. When unsure, do not require '
+    'approval. Explain the decision in the reasoning. Stop after the verdict.'
 )
 
 
@@ -24,6 +26,12 @@ class ComplexityVerdict(BaseModel):
 
 
 async def assess_complexity(contract: TaskContract) -> tuple[ComplexityVerdict, LLMUsage]:
+    if not CONFIG.human_approval_enabled:
+        verdict = ComplexityVerdict(
+            requires_human_approval=False,
+            reasoning='Human approval disabled by configuration.',
+        )
+        return verdict, LLMUsage()
     completion = await generate_structured(
         role=ModelRole.COMPLEXITY_ASSESSOR,
         messages=[
