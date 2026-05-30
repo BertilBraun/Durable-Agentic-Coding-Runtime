@@ -88,7 +88,9 @@ class ToolExecutionRequest(BaseModel):
 
 
 @activity(retries=0, timeout=300)
-async def create_workspace(run_id: str, repo_path: str, docker_image: str | None = None) -> WorkspaceInfo:
+async def create_workspace(
+    run_id: str, repo_path: str, docker_image: str | None = None
+) -> WorkspaceInfo:
     docker_client = _docker_client()
     volume_name = f'agentic-coding-{run_id}'
     branch_name = f'agentic-coding/{run_id}'
@@ -152,11 +154,6 @@ async def create_workspace(run_id: str, repo_path: str, docker_image: str | None
 
 @activity(retries=0, timeout=300)
 async def run_tool(request: ToolExecutionRequest) -> ToolResult:
-    return await run_tool_in_workspace(request)
-
-
-# TODO should always be a activity
-async def run_tool_in_workspace(request: ToolExecutionRequest) -> ToolResult:
     indexed_result = _indexed_tool_result(request)
     if indexed_result is not None:
         return indexed_result
@@ -269,7 +266,9 @@ def _find_indexed_references(
 ) -> ToolResult:
     reference_lines: list[str] = []
     indexed_paths = {
-        file_entry.path for file_entry in repository_index.file_tree if file_entry.language != Language.UNKNOWN
+        file_entry.path
+        for file_entry in repository_index.file_tree
+        if file_entry.language != Language.UNKNOWN
     }
     for relative_path in sorted(indexed_paths):
         file_path = workspace_path / relative_path

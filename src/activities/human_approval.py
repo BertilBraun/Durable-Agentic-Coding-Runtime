@@ -49,7 +49,7 @@ async def approve_plan_or_replan(
         signal_payload = await wait_for_signal('human_approval')
         approval = HumanApprovalSignal.model_validate(signal_payload)
         if approval.decision == ApprovalDecision.APPROVE:
-            return plan, usage
+            break
         plan, plan_usage = await build_plan(
             PlanRequest(
                 contract=contract,
@@ -59,3 +59,5 @@ async def approve_plan_or_replan(
             ),
         )
         usage += plan_usage
+
+    return plan, usage
