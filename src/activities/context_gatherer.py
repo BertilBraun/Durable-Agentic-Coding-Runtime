@@ -54,10 +54,10 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
             ),
         ),
     ]
-    observations: list[str] = []
     max_tool_calls = settings.context_gatherer_max_tool_calls
     stop_threshold = settings.context_utilization_stop_threshold
     tool_call_count = 0
+    budget_exceeded = False
 
     while tool_call_count < max_tool_calls:
         completion = await generate_structured(
@@ -67,7 +67,8 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
         )
         turn = completion.output
         if completion.result.context_utilization() > stop_threshold:
-            return _best_effort_context_pack(request, observations)
+            budget_exceeded = True
+            break
         if turn.done and turn.context_pack is not None:
             return turn.context_pack
 
@@ -83,25 +84,31 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
                 )
             )
             observation = tool_result.stdout or tool_result.stderr
-            observations.append(observation)
             turn_observations.append(observation)
             tool_call_count += 1
         messages.append(Message(role='assistant', content=turn.model_dump_json()))
         messages.append(Message(role='user', content='\n'.join(turn_observations)))
 
-    # TODO the best effort context pack is really just a fallback, we should be trying to get the LLM to summarize observations and build the context pack for us, rather than just returning all observations as relevant snippets which is not really what we want, we want the LLM to do the work of figuring out what is actually relevant and summarizing it for us, this is just a stop gap to prevent complete failure when we hit token limits or something else goes wrong with the LLM generation process
-    return _best_effort_context_pack(request, observations)
+    return await _summarize_observations_into_context_pack(messages, budget_exceeded)
 
 
-def _best_effort_context_pack(
-    request: ContextGatherRequest,
-    observations: list[str],
+async def _summarize_observations_into_context_pack(
+    messages: list[Message],
+    budget_exceeded: bool,
 ) -> ContextPack:
-    return ContextPack(
-        task_summary=request.gatherer_prompt,
-        relevant_snippets=observations,
-        recent_observations=[],
-        failed_attempt_summaries=[],
-        available_tools=['read_file_range', 'search_text', 'find_symbol', 'find_references'],
-        budget_remaining=0,
+    finalize_instruction = (
+        'Stop gathering more evidence. Set done=true and return a ContextPack '
+        'summarizing the observations so far. Do not propose more tool calls.'
     )
+    if budget_exceeded:
+        finalize_instruction = f'The context budget is exhausted. {finalize_instruction}'
+    messages = [*messages, Message(role='user', content=finalize_instruction)]
+    completion = await generate_structured(
+        role=ModelRole.CONTEXT_GATHERER,
+        messages=messages,
+        output_type=ContextGathererTurn,
+    )
+    turn = completion.output
+    if turn.context_pack is None:
+        raise ValueError('Context gatherer failed to produce a ContextPack on finalization.')
+    return turn.context_pack

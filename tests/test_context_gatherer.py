@@ -146,26 +146,47 @@ async def test_context_gatherer_sends_only_current_turn_observations(
 
 
 @pytest.mark.asyncio
-async def test_context_gatherer_returns_best_effort_when_context_budget_is_high(
+async def test_context_gatherer_summarizes_when_context_budget_is_high(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    captured_finalize_message: list[str] = []
+    call_count = 0
+
     async def handler(
         messages: list[Message], output_type: type[BaseModel]
     ) -> StructuredCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            turn = output_type.model_validate(
+                {
+                    'done': False,
+                    'tool_calls': [
+                        {
+                            'tool_name': 'search_text',
+                            'pattern': 'handler',
+                            'directory': '.',
+                            'file_glob': '*.py',
+                        }
+                    ],
+                }
+            )
+            return _structured_completion(turn, context_utilization=0.81)
+        captured_finalize_message.append(messages[-1].content)
         turn = output_type.model_validate(
             {
-                'done': False,
-                'tool_calls': [
-                    {
-                        'tool_name': 'search_text',
-                        'pattern': 'handler',
-                        'directory': '.',
-                        'file_glob': '*.py',
-                    }
-                ],
+                'done': True,
+                'context_pack': {
+                    'task_summary': 'LLM-summarized auth context',
+                    'relevant_snippets': ['summary line 1'],
+                    'recent_observations': [],
+                    'failed_attempt_summaries': [],
+                    'available_tools': ['read_file_range'],
+                    'budget_remaining': 0,
+                },
             }
         )
-        return _structured_completion(turn, context_utilization=0.81)
+        return _structured_completion(turn, context_utilization=0.0)
 
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         raise AssertionError(f'run_tool should not run after budget stop: {request.tool}')
@@ -175,8 +196,9 @@ async def test_context_gatherer_returns_best_effort_when_context_budget_is_high(
 
     context_pack = await gather_context(_context_gather_request())
 
-    assert context_pack.task_summary == 'Find relevant code'
-    assert context_pack.relevant_snippets == []
+    assert context_pack.task_summary == 'LLM-summarized auth context'
+    assert context_pack.relevant_snippets == ['summary line 1']
+    assert 'context budget is exhausted' in captured_finalize_message[0]
     assert context_pack.budget_remaining == 0
 
 
