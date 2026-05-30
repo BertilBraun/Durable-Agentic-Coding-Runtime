@@ -9,8 +9,8 @@ from pathlib import Path
 
 import docker
 import docker.models.containers
-import httpx
 from pydantic import BaseModel, ConfigDict, Field
+from temporal_light import Client, WorkflowFailedError
 
 from src.config import ModelRole
 from src.llm.client import Message, generate
@@ -27,19 +27,6 @@ class SweBenchInstance(BaseModel):
     fail_to_pass: list[str] = Field(default_factory=list)
     pass_to_pass: list[str] = Field(default_factory=list)
     docker_image: str | None = None
-
-
-class WorkflowStartResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    workflow_id: str
-
-
-class WorkflowStatusResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    status: str
-    result: dict[str, object] | None = None
 
 
 class WorkflowUsageSummary(BaseModel):
@@ -120,9 +107,7 @@ class OracleResult(BaseModel):
 
 
 SUPPORTED_LANGUAGES = frozenset({'python', 'typescript', 'javascript', 'js', 'ts'})
-TERMINAL_WORKFLOW_STATUSES = frozenset({'completed', 'failed'})
 SWE_BENCH_WORKDIR = '/testbed'
-WORKFLOW_POLL_INTERVAL_SECONDS = 5
 WORKFLOW_POLL_TIMEOUT_SECONDS = 7200
 
 
@@ -366,31 +351,22 @@ async def _run_framework_task(
     docker_client: docker.DockerClient,
 ) -> EvaluationTaskResult:
     started_at = time.monotonic()
-    async with httpx.AsyncClient(timeout=60) as http_client:
-        response = await http_client.post(
-            f'{temporal_api_url.rstrip("/")}/workflows',
-            json={
-                'workflow_name': 'main_workflow',
-                'workflow_input': {
-                    'request': {
-                        'raw_request': instance.problem_statement,
-                        'repo_path': instance.repo,
-                        'docker_image': instance.docker_image,
-                        'run_id': instance.instance_id,
-                    }
-                },
-            },
-        )
-        response.raise_for_status()
-        workflow_start = WorkflowStartResponse.model_validate(response.json())
-        workflow_status = await _poll_workflow(
-            http_client, temporal_api_url, workflow_start.workflow_id
-        )
-
-    if workflow_status.status != 'completed' or workflow_status.result is None:
+    client = Client(temporal_api_url)
+    handle = await client.start(
+        'main_workflow',
+        request={
+            'raw_request': instance.problem_statement,
+            'repo_path': instance.repo,
+            'docker_image': instance.docker_image,
+            'run_id': instance.instance_id,
+        },
+    )
+    try:
+        workflow_result = await handle.result(timeout=WORKFLOW_POLL_TIMEOUT_SECONDS)
+    except TimeoutError:
         return EvaluationTaskResult(
             instance_id=instance.instance_id,
-            status=workflow_status.status,
+            status='timeout',
             resolved=False,
             cost_usd=0.0,
             llm_calls=0,
@@ -398,9 +374,32 @@ async def _run_framework_task(
             reason='workflow_failed_or_incomplete',
             patch=None,
         )
-    workflow_usage = _usage_from_workflow_result(workflow_status.result)
+    except WorkflowFailedError:
+        return EvaluationTaskResult(
+            instance_id=instance.instance_id,
+            status='failed',
+            resolved=False,
+            cost_usd=0.0,
+            llm_calls=0,
+            wall_clock_seconds=time.monotonic() - started_at,
+            reason='workflow_failed_or_incomplete',
+            patch=None,
+        )
+
+    if not isinstance(workflow_result, dict):
+        return EvaluationTaskResult(
+            instance_id=instance.instance_id,
+            status='failed',
+            resolved=False,
+            cost_usd=0.0,
+            llm_calls=0,
+            wall_clock_seconds=time.monotonic() - started_at,
+            reason='workflow_result_invalid',
+            patch=None,
+        )
+    workflow_usage = _usage_from_workflow_result(workflow_result)
     try:
-        patch = _extract_patch_from_workflow_result(workflow_status.result)
+        patch = _extract_patch_from_workflow_result(workflow_result)
     except ValueError:
         return EvaluationTaskResult(
             instance_id=instance.instance_id,
@@ -426,25 +425,6 @@ async def _run_framework_task(
         wall_clock_seconds=time.monotonic() - started_at,
         reason=oracle_result.reason,
         patch=patch,
-    )
-
-
-async def _poll_workflow(
-    http_client: httpx.AsyncClient,
-    temporal_api_url: str,
-    workflow_id: str,
-) -> WorkflowStatusResponse:
-    elapsed_seconds = 0
-    while elapsed_seconds < WORKFLOW_POLL_TIMEOUT_SECONDS:
-        response = await http_client.get(f'{temporal_api_url.rstrip("/")}/workflows/{workflow_id}')
-        response.raise_for_status()
-        workflow_status = WorkflowStatusResponse.model_validate(response.json())
-        if workflow_status.status in TERMINAL_WORKFLOW_STATUSES:
-            return workflow_status
-        await asyncio.sleep(WORKFLOW_POLL_INTERVAL_SECONDS)
-        elapsed_seconds += WORKFLOW_POLL_INTERVAL_SECONDS
-    raise TimeoutError(
-        f'Workflow {workflow_id} did not complete within {WORKFLOW_POLL_TIMEOUT_SECONDS} seconds'
     )
 
 

@@ -1,7 +1,6 @@
 import base64
 from dataclasses import dataclass
 from pathlib import Path
-from types import TracebackType
 
 import pytest
 from src.config import ModelRole
@@ -243,36 +242,30 @@ async def test_run_framework_task_scores_workflow_patch_with_oracle(
 ) -> None:
     docker_client = FakeDockerClient()
 
-    class FakeAsyncClient:
-        def __init__(self, timeout: int) -> None:
-            self.timeout = timeout
+    class FakeHandle:
+        async def result(self, timeout: int) -> dict[str, object]:
+            assert timeout == 7200
+            return {
+                'patch': 'diff --git a/app.py b/app.py\n',
+                'llm_usage': {'total_cost_usd': 1.25, 'call_count': 7},
+            }
 
-        async def __aenter__(self) -> 'FakeAsyncClient':
-            return self
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            self.base_url = base_url
 
-        async def __aexit__(
-            self,
-            exception_type: type[BaseException] | None,
-            exception: BaseException | None,
-            traceback: TracebackType | None,
-        ) -> None:
-            return None
+        async def start(self, workflow_name: str, **workflow_input: object) -> FakeHandle:
+            assert self.base_url == 'http://temporal'
+            assert workflow_name == 'main_workflow'
+            request = workflow_input['request']
+            assert isinstance(request, dict)
+            assert request['raw_request'] == 'Fix the bug'
+            assert request['repo_path'] == 'owner/repo'
+            assert request['docker_image'] == 'sweb.eval.x86_64.python-1:latest'
+            assert request['run_id'] == 'python-1'
+            return FakeHandle()
 
-        async def post(self, url: str, json: dict[str, object]) -> 'FakeHttpResponse':
-            return FakeHttpResponse({'workflow_id': 'workflow-1'})
-
-        async def get(self, url: str) -> 'FakeHttpResponse':
-            return FakeHttpResponse(
-                {
-                    'status': 'completed',
-                    'result': {
-                        'patch': 'diff --git a/app.py b/app.py\n',
-                        'llm_usage': {'total_cost_usd': 1.25, 'call_count': 7},
-                    },
-                }
-            )
-
-    monkeypatch.setattr('src.eval.swe_bench.httpx.AsyncClient', FakeAsyncClient)
+    monkeypatch.setattr('src.eval.swe_bench.Client', FakeClient, raising=False)
 
     result = await _run_framework_task(
         instance=_instance('python-1', 'python'),
@@ -471,17 +464,6 @@ class FakeUsageLedger:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.total_cost_usd = 0.5
-
-
-class FakeHttpResponse:
-    def __init__(self, response_json: dict[str, object]) -> None:
-        self.response_json = response_json
-
-    def raise_for_status(self) -> None:
-        return None
-
-    def json(self) -> dict[str, object]:
-        return self.response_json
 
 
 class FakeImages:
