@@ -33,7 +33,10 @@ markers = [
     "integration: requires external services such as Docker or Temporal-Light",
 ]
 
-# TODO ruff should use single quotes please - there are double quotes which I dont want - I prefer single quotes for strings in python - but ruff seems to be using double quotes - need to configure it to use single quotes instead
+[tool.pyright]
+include = ["src", "tests"]
+extraPaths = ["Temporal-Light"]
+pythonVersion = "3.10"
 
 [tool.ruff]
 target-version = "py310"
