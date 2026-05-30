@@ -7,7 +7,7 @@ from src.activities.workspace_manager import (
     WorkspaceInfo,
     run_tool,
 )
-from src.config import ModelRole, settings
+from src.config import ModelRole, CONFIG
 from src.llm.client import Message, generate_structured
 from src.models.context import ContextPack
 from src.models.repo import RepoIndex
@@ -48,14 +48,11 @@ async def gather_context(request: ContextGatherRequest) -> ContextPack:
         ),
         Message(
             role='user',
-            content=(
-                f'Prompt: {request.gatherer_prompt}\n\n'
-                f'Repository index: {request.repo_index.model_dump_json()}'
-            ),
+            content=(f'Prompt: {request.gatherer_prompt}\n\nRepository index: {request.repo_index.model_dump_json()}'),
         ),
     ]
-    max_tool_calls = settings.context_gatherer_max_tool_calls
-    stop_threshold = settings.context_utilization_stop_threshold
+    max_tool_calls = CONFIG.context_gatherer_max_tool_calls
+    stop_threshold = CONFIG.context_utilization_stop_threshold
     tool_call_count = 0
     budget_exceeded = False
 

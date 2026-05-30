@@ -11,7 +11,7 @@ import docker.models.containers
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 from temporal_light import activity
 
-from src.config import settings
+from src.config import CONFIG
 from src.models.context import ArtifactKind, ArtifactReference
 from src.models.repo import Language, RepoIndex, Symbol
 from src.tools.definitions import (
@@ -33,6 +33,7 @@ from src.tools.definitions import (
 )
 from src.tools.handlers import command_for_tool
 
+# TODO config?
 CONTAINER_WORKSPACE_PATH = '/workspace/repository'
 MAX_OUTPUT_CHARACTERS = 20_000
 COMPACT_HEAD_CHARACTERS = 8_000
@@ -87,14 +88,12 @@ class ToolExecutionRequest(BaseModel):
 
 
 @activity(retries=0, timeout=300)
-async def create_workspace(
-    run_id: str, repo_path: str, docker_image: str | None = None
-) -> WorkspaceInfo:
+async def create_workspace(run_id: str, repo_path: str, docker_image: str | None = None) -> WorkspaceInfo:
     docker_client = _docker_client()
     volume_name = f'agentic-coding-{run_id}'
     branch_name = f'agentic-coding/{run_id}'
     docker_client.volumes.create(name=volume_name)
-    workspace_root = Path(settings.workspace_root).resolve()
+    workspace_root = Path(CONFIG.workspace_root).resolve()
     worktree_path = workspace_root / run_id / 'repository'
     if worktree_path.exists():
         shutil.rmtree(worktree_path)
@@ -270,9 +269,7 @@ def _find_indexed_references(
 ) -> ToolResult:
     reference_lines: list[str] = []
     indexed_paths = {
-        file_entry.path
-        for file_entry in repository_index.file_tree
-        if file_entry.language != Language.UNKNOWN
+        file_entry.path for file_entry in repository_index.file_tree if file_entry.language != Language.UNKNOWN
     }
     for relative_path in sorted(indexed_paths):
         file_path = workspace_path / relative_path
@@ -315,7 +312,7 @@ def make_run_id() -> str:
 
 
 def _workspace_image() -> str:
-    return settings.workspace_image
+    return CONFIG.workspace_image
 
 
 def _docker_client() -> docker.DockerClient:
@@ -350,7 +347,7 @@ def _artifact_kind_for_output(tool: Tool) -> ArtifactKind:
 
 
 def _artifacts_root() -> str:
-    return settings.artifacts_root
+    return CONFIG.artifacts_root
 
 
 def _compact_output(output: str) -> str:

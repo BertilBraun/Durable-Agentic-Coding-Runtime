@@ -9,7 +9,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, Parsed
 from pydantic import BaseModel, ConfigDict, Field
 from temporal_light import activity
 
-from src.config import ModelEntry, ModelRole, settings
+from src.config import CONFIG, ModelRole
 
 StructuredOutput = TypeVar('StructuredOutput', bound=BaseModel)
 
@@ -26,11 +26,11 @@ class LLMResult(BaseModel):
 
     content: str
     model: str
-    input_tokens: int
-    output_tokens: int
-    cache_read_tokens: int
-    cost_usd: float
     context_limit_tokens: int
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cost_usd: float = 0.0
 
     def context_utilization(self) -> float:
         if self.context_limit_tokens <= 0:
@@ -130,8 +130,8 @@ class LLMClient:
         self.usage_ledger = usage_ledger or LLMUsageLedger()
         if async_openai_client is None:
             self.async_openai_client = AsyncOpenAI(
-                api_key=settings.llm_api_key,
-                base_url=settings.llm_base_url,
+                api_key=CONFIG.llm_api_key,
+                base_url=CONFIG.llm_base_url,
             )
         else:
             self.async_openai_client = async_openai_client
@@ -147,7 +147,6 @@ class LLMClient:
             messages=_format_messages_for_api(messages),
         )
         result = _llm_result_from_response(
-            content=_extract_content(response),
             model=model,
             context_limit_tokens=context_limit_tokens,
             response=response,
@@ -168,7 +167,6 @@ class LLMClient:
             response_format=output_type,
         )
         result = _llm_result_from_response(
-            content=_extract_parsed_content(response),
             model=model,
             context_limit_tokens=context_limit_tokens,
             response=response,
@@ -208,8 +206,7 @@ async def generate_completion(
     model: str,
     context_limit_tokens: int,
 ) -> LLMResult:
-    llm_client = LLMClient()
-    return await llm_client.complete(
+    return await LLMClient().complete(
         messages=messages,
         model=model,
         context_limit_tokens=context_limit_tokens,
@@ -223,11 +220,9 @@ async def generate_structured_completion(
     model: str,
     context_limit_tokens: int,
 ) -> LLMResult:
-    output_type = _structured_output_type(output_type_name)
-    llm_client = LLMClient()
-    return await llm_client.generate_structured(
+    return await LLMClient().generate_structured(
         messages=messages,
-        output_type=output_type,
+        output_type=_structured_output_type(output_type_name),
         model=model,
         context_limit_tokens=context_limit_tokens,
     )
@@ -236,8 +231,8 @@ async def generate_structured_completion(
 async def generate(role: ModelRole, messages: list[Message]) -> LLMResult:
     return await generate_completion(
         messages=messages,
-        model=settings.model_for_role(role),
-        context_limit_tokens=settings.context_limit_for_role(role),
+        model=CONFIG.model_for_role(role),
+        context_limit_tokens=CONFIG.context_limit_for_role(role),
     )
 
 
@@ -250,8 +245,8 @@ async def generate_structured(
     result = await generate_structured_completion(
         messages=messages,
         output_type_name=output_type.__name__,
-        model=settings.model_for_role(role),
-        context_limit_tokens=settings.context_limit_for_role(role),
+        model=CONFIG.model_for_role(role),
+        context_limit_tokens=CONFIG.context_limit_for_role(role),
     )
     return StructuredCompletion(
         output=output_type.model_validate_json(result.content),
@@ -270,28 +265,17 @@ def _extract_content(response: ChatCompletion) -> str:
     return content
 
 
-def _extract_parsed_content(response: ParsedChatCompletion[StructuredOutput]) -> str:
-    content = response.choices[0].message.content
-    if content is None:
-        raise ValueError('LLM structured response did not include content')
-    return content
-
-
 def _llm_result_from_response(
-    content: str,
     model: str,
     context_limit_tokens: int,
     response: ChatCompletion,
 ) -> LLMResult:
+    content = _extract_content(response)
     usage = response.usage
     if usage is None:
         return LLMResult(
             content=content,
             model=model,
-            input_tokens=0,
-            output_tokens=0,
-            cache_read_tokens=0,
-            cost_usd=0.0,
             context_limit_tokens=context_limit_tokens,
         )
     input_tokens = usage.prompt_tokens
@@ -322,16 +306,7 @@ def _estimate_cost_usd(
     cache_read_tokens: int,
 ) -> float:
     # TODO: add cache_control breakpoints for Anthropic-compatible providers.
-    entry = settings.models_by_id.get(model)
-    return _estimate_cost_from_entry(entry, input_tokens, output_tokens, cache_read_tokens)
-
-
-def _estimate_cost_from_entry(
-    entry: ModelEntry | None,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int,
-) -> float:
+    entry = CONFIG.models_by_id.get(model)
     if entry is None:
         return 0.0
     uncached_input_tokens = max(input_tokens - cache_read_tokens, 0)
@@ -339,7 +314,5 @@ def _estimate_cost_from_entry(
     output_price = entry.output_price_usd_per_mtok
     cache_read_price = entry.cache_read_price_usd_per_mtok
     return (
-        (uncached_input_tokens * input_price)
-        + (cache_read_tokens * cache_read_price)
-        + (output_tokens * output_price)
+        (uncached_input_tokens * input_price) + (cache_read_tokens * cache_read_price) + (output_tokens * output_price)
     ) / 1_000_000

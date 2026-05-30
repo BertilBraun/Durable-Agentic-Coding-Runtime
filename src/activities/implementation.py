@@ -16,7 +16,7 @@ from src.activities.workspace_manager import (
     WorkspaceInfo,
     run_tool,
 )
-from src.config import ModelRole, settings
+from src.config import ModelRole, CONFIG
 from src.llm.client import Message, generate_structured
 from src.models.context import ContextPack
 from src.models.plan import PlanStep
@@ -45,8 +45,7 @@ IMPLEMENTATION_SYSTEM_PROMPT = (
 
 
 IMPLEMENTATION_AVAILABLE_TOOLS: tuple[str, ...] = tuple(
-    tool_type.model_fields['tool_name'].default.value
-    for tool_type in get_args(ImplementationToolCall)
+    tool_type.model_fields['tool_name'].default.value for tool_type in get_args(ImplementationToolCall)
 )
 
 
@@ -84,8 +83,8 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
         ),
         Message(role='user', content=json.dumps(_llm_user_payload(request))),
     ]
-    max_tool_rounds = settings.implementation_max_tool_rounds
-    stop_threshold = settings.context_utilization_stop_threshold
+    max_tool_rounds = CONFIG.implementation_max_tool_rounds
+    stop_threshold = CONFIG.context_utilization_stop_threshold
     tests_run: list[str] = []
     test_results: list[TestResult] = []
     saw_diff = False
@@ -100,9 +99,7 @@ async def run_implementation_turn(request: ImplementationTurnRequest) -> WorkerR
         if completion.result.context_utilization() > stop_threshold:
             return _context_budget_blocked_worker_result(
                 completed_tool_calls=completed_tool_calls,
-                pending_tool_calls=[
-                    tool_call.tool_name.value for tool_call in agent_turn.tool_calls
-                ],
+                pending_tool_calls=[tool_call.tool_name.value for tool_call in agent_turn.tool_calls],
             )
         if agent_turn.done:
             if agent_turn.worker_result is None:
@@ -191,9 +188,7 @@ def _context_budget_blocked_worker_result(
 
 
 async def get_full_diff(workspace_info: WorkspaceInfo) -> str:
-    tool_result = await run_tool(
-        ToolExecutionRequest(workspace_info=workspace_info, tool=GitDiff(path='.'))
-    )
+    tool_result = await run_tool(ToolExecutionRequest(workspace_info=workspace_info, tool=GitDiff(path='.')))
     return tool_result.stdout
 
 

@@ -73,9 +73,7 @@ def load_settings() -> Settings:
         implementation_max_tool_rounds=int(os.getenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '12')),
         context_gatherer_max_tool_calls=int(os.getenv('CONTEXT_GATHERER_MAX_TOOL_CALLS', '10')),
         implementation_workflow_max_iterations=int(os.getenv('IMPL_MAX_ITERATIONS', '5')),
-        context_utilization_stop_threshold=float(
-            os.getenv('CONTEXT_UTILIZATION_STOP_THRESHOLD', '0.80')
-        ),
+        context_utilization_stop_threshold=float(os.getenv('CONTEXT_UTILIZATION_STOP_THRESHOLD', '0.80')),
         models_by_id=models_by_id,
         model_by_role=model_by_role,
     )
@@ -119,4 +117,4 @@ def _load_model_role_bindings(models_by_id: dict[str, ModelEntry]) -> dict[Model
     return resolved
 
 
-settings = load_settings()
+CONFIG = load_settings()

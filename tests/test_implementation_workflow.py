@@ -221,9 +221,7 @@ async def test_implementation_workflow_retries_failed_results_until_iteration_li
     monkeypatch.setattr(
         implementation_workflow_module,
         'settings',
-        implementation_workflow_module.settings.model_copy(
-            update={'implementation_workflow_max_iterations': 3}
-        ),
+        implementation_workflow_module.CONFIG.model_copy(update={'implementation_workflow_max_iterations': 3}),
     )
     monkeypatch.setattr('src.workflows.implementation_workflow.gather_context', fake_gather_context)
     monkeypatch.setattr(

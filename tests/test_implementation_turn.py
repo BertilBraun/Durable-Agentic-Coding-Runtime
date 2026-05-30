@@ -69,9 +69,7 @@ async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.Monke
 
     call_count = 0
 
-    async def handler(
-        messages: list[Message], output_type: type[BaseModel]
-    ) -> StructuredCompletion:
+    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
         nonlocal call_count
         call_count += 1
         assert output_type.__name__ == 'ImplementationAgentTurn'
@@ -126,9 +124,7 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
     captured_gather_prompts: list[str] = []
     call_count = 0
 
-    async def handler(
-        messages: list[Message], output_type: type[BaseModel]
-    ) -> StructuredCompletion:
+    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
         nonlocal call_count
         call_count += 1
         captured_messages.append(messages)
@@ -237,9 +233,7 @@ async def test_implementation_turn_preserves_run_tests_timeout(
 ) -> None:
     captured_timeout_seconds: list[int] = []
 
-    async def handler(
-        messages: list[Message], output_type: type[BaseModel]
-    ) -> StructuredCompletion:
+    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
         turn = output_type.model_validate(
             {
                 'done': False,
@@ -266,7 +260,7 @@ async def test_implementation_turn_preserves_run_tests_timeout(
     monkeypatch.setattr(
         implementation_module,
         'settings',
-        implementation_module.settings.model_copy(update={'implementation_max_tool_rounds': 1}),
+        implementation_module.CONFIG.model_copy(update={'implementation_max_tool_rounds': 1}),
     )
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
@@ -283,9 +277,7 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
 ) -> None:
     call_count = 0
 
-    async def handler(
-        messages: list[Message], output_type: type[BaseModel]
-    ) -> StructuredCompletion:
+    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -354,9 +346,7 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
 async def test_implementation_turn_rejects_success_without_diff_or_test_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def handler(
-        messages: list[Message], output_type: type[BaseModel]
-    ) -> StructuredCompletion:
+    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
         turn = output_type.model_validate(
             {
                 'done': True,
@@ -386,9 +376,7 @@ async def test_implementation_turn_rejects_success_without_diff_or_test_evidence
 async def test_implementation_turn_rejects_success_with_only_diff_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def handler(
-        messages: list[Message], output_type: type[BaseModel]
-    ) -> StructuredCompletion:
+    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
         turn = output_type.model_validate(
             {
                 'done': True,
@@ -418,9 +406,7 @@ async def test_implementation_turn_rejects_success_with_only_diff_summary(
 async def test_implementation_turn_blocks_when_context_budget_is_high(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def handler(
-        messages: list[Message], output_type: type[BaseModel]
-    ) -> StructuredCompletion:
+    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
         turn = output_type.model_validate(
             {
                 'done': False,
@@ -456,9 +442,7 @@ async def test_implementation_turn_user_message_excludes_repo_index(
 ) -> None:
     captured_user_payloads: list[dict[str, object]] = []
 
-    async def handler(
-        messages: list[Message], output_type: type[BaseModel]
-    ) -> StructuredCompletion:
+    async def handler(messages: list[Message], output_type: type[BaseModel]) -> StructuredCompletion:
         captured_user_payloads.append(json.loads(messages[1].content))
         turn = output_type.model_validate(
             {
