@@ -52,7 +52,7 @@ Module map (everything under `src/`):
 | Tool schema (`Tool` union, `ToolName`) / command building | [tools/definitions.py](src/tools/definitions.py), [tools/handlers.py](src/tools/handlers.py) |
 | Repo index (tree-sitter symbols + call/mention xref) | [activities/repo_indexer.py](src/activities/repo_indexer.py), [models/repo.py](src/models/repo.py) |
 | Contract / complexity / planner | [activities/contract_builder.py](src/activities/contract_builder.py), [activities/complexity_assessor.py](src/activities/complexity_assessor.py), [activities/planner.py](src/activities/planner.py) |
-| Context gatherer (cheap-model retrieval) | [activities/context_gatherer.py](src/activities/context_gatherer.py), [models/context.py](src/models/context.py) |
+| Context gatherer (cheap-model retrieval → deterministic grounded packing) | [activities/context_gatherer.py](src/activities/context_gatherer.py), [models/context.py](src/models/context.py) |
 | Implementation worker (bounded tool loop) | [activities/implementation.py](src/activities/implementation.py), [workflows/implementation_workflow.py](src/workflows/implementation_workflow.py) |
 | Reviewer / final report | [activities/reviewer.py](src/activities/reviewer.py), [activities/report_builder.py](src/activities/report_builder.py) |
 | Human approval (signal-driven) | [activities/human_approval.py](src/activities/human_approval.py), [cli/human_approval.py](src/cli/human_approval.py) |
@@ -145,8 +145,12 @@ self-contained, picked up in its own chat):
    real symbol + cross-reference (`find_definition` / `find_callers` / `find_callees`) index built
    through `run_command`; prompts now carry only the directory tree. —
    [prompts/01](prompts/01-indexer-shell-tool-rework.md)
-2. **Context packer rework** — typed, grounded context (file + line range + metadata) instead of
-   LLM-summarized prose; pull on demand. — [prompts/02](prompts/02-context-packer-rework.md)
+2. ~~**Context packer rework**~~ — done: the cheap-model gatherer loop now curates typed
+   `ContextSnippet` references (file + line range + reason) instead of paraphrasing code, and a
+   deterministic `pack_context` activity reads the real workspace lines into `PackedSnippet`s within
+   a character budget, spilling overflow to `CONTEXT_OVERFLOW` artifacts. The ungrounded prose fields
+   are gone; planner and implementer pull context on demand with no unbounded index/context dump. —
+   [prompts/02](prompts/02-context-packer-rework.md)
 3. **Reproduce → repair → regression loop** — gate bugfix success on a test that fails on base then
    passes after the fix. — [prompts/03](prompts/03-reproduce-repair-regression-loop.md)
 4. **Planner review → replan loop** — LLM plan review with context-gathering between rounds, plus

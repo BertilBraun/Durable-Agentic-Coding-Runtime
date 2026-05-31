@@ -28,11 +28,7 @@ class ContextSnippet(FrozenBaseModel):
     reason: str
 
 
-class PackedSnippet(FrozenBaseModel):
-    file_path: str
-    start_line: int
-    end_line: int
-    reason: str
+class PackedSnippet(ContextSnippet):
     content: str
 
 
