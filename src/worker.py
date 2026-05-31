@@ -18,13 +18,14 @@ from src.activities.workspace_manager import (
 from src.llm.client import generate_completion, generate_structured_completion
 from src.workflows.implementation_workflow import implementation_workflow
 from src.workflows.main_workflow import main_workflow
+from src.workflows.reproduction_workflow import reproduction_workflow
 
 
 def main() -> None:
     database_url = os.environ['TEMPORAL_DATABASE_URL']
     worker = Worker(
         database_url=database_url,
-        workflow_functions=[main_workflow, implementation_workflow],
+        workflow_functions=[main_workflow, implementation_workflow, reproduction_workflow],
         activity_functions=[
             begin_candidate,
             build_repo_index,
