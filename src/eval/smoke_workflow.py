@@ -9,14 +9,14 @@ import tempfile
 import time
 from pathlib import Path
 
-from pydantic import BaseModel
 from temporal_light import Client, WorkflowFailedError
 
 from activities.report_builder import FinalReport
-from src.models.task import TaskRequest
+from models.frozen_base_model import FrozenBaseModel
+from src.models.task import HostOrigin, TaskRequest
 
 
-class SmokeWorkflowResult(BaseModel):
+class SmokeWorkflowResult(FrozenBaseModel):
     workflow_id: str
     status: str
     report: FinalReport | None = None
@@ -25,15 +25,11 @@ class SmokeWorkflowResult(BaseModel):
 async def run_smoke_workflow(
     temporal_api_url: str,
     temporal_database_url: str,
-    workspace_image: str,
     timeout_seconds: int,
 ) -> SmokeWorkflowResult:
     with tempfile.TemporaryDirectory() as temporary_directory:
         repository_path = _create_smoke_repository(Path(temporary_directory))
-        worker_process = _start_worker(
-            temporal_database_url=temporal_database_url,
-            workspace_image=workspace_image,
-        )
+        worker_process = _start_worker(temporal_database_url=temporal_database_url)
         try:
             return await _start_and_wait_for_workflow(
                 temporal_api_url=temporal_api_url,
@@ -45,13 +41,8 @@ async def run_smoke_workflow(
             worker_process.wait(timeout=10)
 
 
-def _start_worker(temporal_database_url: str, workspace_image: str) -> subprocess.Popen[str]:
-    environment = {
-        **os.environ,
-        'TEMPORAL_DATABASE_URL': temporal_database_url,
-        'WORKSPACE_IMAGE': workspace_image,
-        'WORKSPACE_ROOT': '.agentic-workspaces',
-    }
+def _start_worker(temporal_database_url: str) -> subprocess.Popen[str]:
+    environment = {**os.environ, 'TEMPORAL_DATABASE_URL': temporal_database_url}
     return subprocess.Popen(
         [sys.executable, '-m', 'src.worker'],
         env=environment,
@@ -65,7 +56,8 @@ def _create_smoke_repository(temporary_directory: Path) -> Path:
     repository_path = temporary_directory / 'repo'
     repository_path.mkdir()
     (repository_path / 'app.py').write_text(
-        'def add(first_number: int, second_number: int) -> int:\n    return first_number + second_number\n',
+        'def add(first_number: int, second_number: int) -> int:\n'
+        '    return first_number + second_number\n',
         encoding='utf-8',
     )
     _run_git(repository_path, 'init')
@@ -93,7 +85,7 @@ async def _start_and_wait_for_workflow(
 ) -> SmokeWorkflowResult:
     task_request = TaskRequest(
         raw_request='Add a subtract function to the app.py in the repo. Commit your work.',
-        repo_path=str(repository_path),
+        origin=HostOrigin(repo_path=str(repository_path)),
         run_id=f'smoke-live-{time.time()}',
     )
     client = Client(temporal_api_url)
@@ -121,14 +113,12 @@ def main() -> None:
         '--temporal-database-url',
         default='postgresql://tl:changeme@localhost:5432/temporal_light',
     )
-    parser.add_argument('--workspace-image', default='durable-agentic-workspace:latest')
     parser.add_argument('--timeout-seconds', type=int, default=120)
     arguments = parser.parse_args()
     result = asyncio.run(
         run_smoke_workflow(
             temporal_api_url=arguments.temporal_api_url,
             temporal_database_url=arguments.temporal_database_url,
-            workspace_image=arguments.workspace_image,
             timeout_seconds=arguments.timeout_seconds,
         )
     )

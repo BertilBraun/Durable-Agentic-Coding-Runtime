@@ -4,7 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
+from temporal_light import activity
 
 from src.activities.context_gatherer import (
     ContextGatherRequest,
@@ -13,12 +14,13 @@ from src.activities.context_gatherer import (
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
     ToolResult,
-    WorkspaceInfo,
+    Workspace,
     run_tool,
 )
 from src.config import CONFIG, ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.context import ContextPack
+from src.models.frozen_base_model import FrozenBaseModel
 from src.models.plan import PlanStep
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
@@ -39,8 +41,8 @@ IMPLEMENTATION_SYSTEM_PROMPT = (
     'again. Return done=true with WorkerResult only for complete, blocked, '
     'failed, or needs_replan outcomes. Report success only with observed '
     'git_diff or test evidence. Do not fabricate progress, files, or test '
-    'results. Each tool call runs in a fresh container, so command-local '
-    'setup must be included in the same command.'
+    'results. The environment is persistent across tool calls, so installed '
+    'dependencies and prior edits remain available.'
 )
 
 
@@ -50,19 +52,15 @@ IMPLEMENTATION_AVAILABLE_TOOLS: tuple[str, ...] = tuple(
 )
 
 
-class ImplementationTurnRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class ImplementationTurnRequest(FrozenBaseModel):
     plan_step: PlanStep
     context_pack: ContextPack
     task_contract: TaskContract
-    workspace_info: WorkspaceInfo
+    workspace_info: Workspace
     repo_index: RepoIndex
 
 
-class ImplementationAgentTurn(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class ImplementationAgentTurn(FrozenBaseModel):
     done: bool
     worker_result: WorkerResult | None = None
     tool_calls: list[ImplementationToolCall] = Field(default_factory=list)
@@ -146,14 +144,12 @@ async def run_implementation_turn(
                 case tool:
                     tool_result = await run_tool(
                         ToolExecutionRequest(
-                            workspace_info=request.workspace_info,
+                            workspace=request.workspace_info,
                             tool=tool,
                             repo_index=request.repo_index,
                         )
                     )
-                    observations.append(
-                        f'tool_result:\n{tool_result.model_dump_json()}'
-                    )
+                    observations.append(f'tool_result:\n{tool_result.model_dump_json()}')
                     completed_tool_calls.append(tool_call.tool_name.value)
                     match tool:
                         case RunTests(command=command):
@@ -206,11 +202,9 @@ def _context_budget_blocked_worker_result(
     )
 
 
-async def get_full_diff(workspace_info: WorkspaceInfo) -> str:
-    tool_result = await run_tool(
-        ToolExecutionRequest(workspace_info=workspace_info, tool=GitDiff(path='.'))
-    )
-    return tool_result.stdout
+@activity(retries=0, timeout=120)
+async def get_full_diff(workspace: Workspace) -> str:
+    return workspace.diff_against_base()
 
 
 def failed_worker_result(reason: str) -> WorkerResult:

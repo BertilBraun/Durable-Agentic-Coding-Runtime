@@ -5,14 +5,12 @@ import asyncio
 from typing import Protocol
 
 import httpx
-from pydantic import BaseModel, ConfigDict
 
 from src.models.approval import ApprovalDecision, HumanApprovalSignal
+from src.models.frozen_base_model import FrozenBaseModel
 
 
-class HumanApprovalSignalRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class HumanApprovalSignalRequest(FrozenBaseModel):
     signal_type: str
     payload: HumanApprovalSignal
 

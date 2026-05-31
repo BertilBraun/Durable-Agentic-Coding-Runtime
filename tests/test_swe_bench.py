@@ -260,8 +260,9 @@ async def test_run_framework_task_scores_workflow_patch_with_oracle(
             request = workflow_input['request']
             assert isinstance(request, dict)
             assert request['raw_request'] == 'Fix the bug'
-            assert request['repo_path'] == 'owner/repo'
-            assert request['docker_image'] == 'sweb.eval.x86_64.python-1:latest'
+            assert request['origin']['kind'] == 'docker'
+            assert request['origin']['docker_image'] == 'sweb.eval.x86_64.python-1:latest'
+            assert request['origin']['container_repo_path'] == '/testbed'
             assert request['run_id'] == 'python-1'
             return FakeHandle()
 

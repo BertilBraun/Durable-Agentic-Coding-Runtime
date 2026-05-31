@@ -36,7 +36,10 @@ def command_for_tool(tool: Tool) -> list[str]:
         case WriteFile(file_path=file_path, content=content):
             encoded_content = base64.b64encode(content.encode('utf-8')).decode('ascii')
             quoted_path = shlex.quote(file_path)
-            write_command = f'mkdir -p $(dirname {quoted_path}) && printf %s {encoded_content} | base64 -d > {quoted_path}'
+            write_command = (
+                f'mkdir -p $(dirname {quoted_path}) && '
+                f'printf %s {encoded_content} | base64 -d > {quoted_path}'
+            )
             return [
                 'sh',
                 '-lc',

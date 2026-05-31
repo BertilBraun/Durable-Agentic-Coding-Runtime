@@ -3,8 +3,18 @@ from pathlib import Path
 import pytest
 from src.activities import repo_indexer
 from src.activities.repo_indexer import build_repo_index
-from src.activities.workspace_manager import WorkspaceInfo
+from src.activities.workspace_manager import HostWorkspace
 from src.models.repo import Language, SymbolKind
+
+
+def _host_workspace(repo_path: str) -> HostWorkspace:
+    return HostWorkspace(
+        run_id='run-1',
+        base_sha='basesha',
+        base_branch='main',
+        current_branch='main',
+        repo_path=repo_path,
+    )
 
 
 @pytest.mark.asyncio
@@ -19,14 +29,9 @@ async def test_repo_indexer_finds_python_top_level_symbols(tmp_path: Path) -> No
         '    return Parser()\n',
         encoding='utf-8',
     )
-    workspace_info = WorkspaceInfo(
-        run_id='run-1',
-        volume_name='volume',
-        worktree_path=str(tmp_path),
-        branch_name='branch',
-    )
+    workspace = _host_workspace(str(tmp_path))
 
-    repository_index = await build_repo_index(workspace_info)
+    repository_index = await build_repo_index(workspace)
 
     symbol_pairs = {(symbol.name, symbol.kind) for symbol in repository_index.symbols}
     assert ('Parser', SymbolKind.CLASS) in symbol_pairs
@@ -42,14 +47,9 @@ async def test_repo_indexer_indexes_javascript_class_methods(tmp_path: Path) -> 
         'export class Service {\n  start() {\n    return true;\n  }\n}\n',
         encoding='utf-8',
     )
-    workspace_info = WorkspaceInfo(
-        run_id='run-1',
-        volume_name='volume',
-        worktree_path=str(tmp_path),
-        branch_name='branch',
-    )
+    workspace = _host_workspace(str(tmp_path))
 
-    repository_index = await build_repo_index(workspace_info)
+    repository_index = await build_repo_index(workspace)
 
     symbol_pairs = {(symbol.name, symbol.kind) for symbol in repository_index.symbols}
     assert ('Service', SymbolKind.CLASS) in symbol_pairs
@@ -69,14 +69,9 @@ async def test_repo_indexer_finds_javascript_exported_symbols(tmp_path: Path) ->
         '};\n',
         encoding='utf-8',
     )
-    workspace_info = WorkspaceInfo(
-        run_id='run-1',
-        volume_name='volume',
-        worktree_path=str(tmp_path),
-        branch_name='branch',
-    )
+    workspace = _host_workspace(str(tmp_path))
 
-    repository_index = await build_repo_index(workspace_info)
+    repository_index = await build_repo_index(workspace)
 
     symbol_pairs = {(symbol.name, symbol.kind) for symbol in repository_index.symbols}
     assert ('Widget', SymbolKind.FUNCTION) in symbol_pairs

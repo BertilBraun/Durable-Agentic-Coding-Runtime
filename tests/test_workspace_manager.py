@@ -2,8 +2,9 @@ from pathlib import Path
 
 import pytest
 from src.activities.workspace_manager import (
+    CommandResult,
+    HostWorkspace,
     ToolExecutionRequest,
-    WorkspaceInfo,
     run_tool,
 )
 from src.config import CONFIG
@@ -12,109 +13,60 @@ from src.models.repo import FileEntry, Language, RepoIndex, Symbol, SymbolKind
 from src.tools.definitions import FindReferences, FindSymbol, GitStatus, RunTests, ToolName
 
 
-class FakeContainer:
-    def __init__(self, stdout: bytes = b'ok\n', stderr: bytes = b'') -> None:
-        self.timeout_seconds: int | None = None
-        self.removed = False
-        self.stdout = stdout
-        self.stderr = stderr
-
-    def wait(self, timeout: int | None = None) -> dict[str, int]:
-        self.timeout_seconds = timeout
-        return {'StatusCode': 0}
-
-    def logs(self, stdout: bool, stderr: bool) -> bytes:
-        if stdout:
-            return self.stdout
-        return self.stderr
-
-    def remove(self, force: bool) -> None:
-        self.removed = force
-
-
-class WaitFailingContainer(FakeContainer):
-    def wait(self, timeout: int | None = None) -> dict[str, int]:
-        self.timeout_seconds = timeout
-        raise TimeoutError('container timed out')
-
-
-class FakeContainers:
-    def __init__(self, container: FakeContainer) -> None:
-        self.container = container
-
-    def run(self, **keyword_arguments: object) -> FakeContainer:
-        return self.container
-
-
-class FakeDockerClient:
-    def __init__(self, container: FakeContainer) -> None:
-        self.containers = FakeContainers(container)
-
-
-class CyclingContainers:
-    def __init__(self, containers: list[FakeContainer]) -> None:
-        self.containers = containers
-
-    def run(self, **keyword_arguments: object) -> FakeContainer:
-        return self.containers.pop(0)
-
-
-class CyclingDockerClient:
-    def __init__(self, containers: list[FakeContainer]) -> None:
-        self.containers = CyclingContainers(containers)
+def _host_workspace(run_id: str = 'run-1', repo_path: str = 'workspace') -> HostWorkspace:
+    return HostWorkspace(
+        run_id=run_id,
+        base_sha='basesha',
+        base_branch='main',
+        current_branch='agentic/run-1/cand-0',
+        repo_path=repo_path,
+    )
 
 
 @pytest.mark.asyncio
-async def test_run_tool_applies_tool_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    container = FakeContainer()
-    monkeypatch.setattr(
-        'src.activities.workspace_manager._docker_client',
-        lambda: FakeDockerClient(container),
-    )
+async def test_run_tool_passes_tool_timeout_to_run_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, int | None] = {}
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        captured['timeout'] = timeout
+        return CommandResult(stdout='ok\n', stderr='', exit_code=0)
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
 
     result = await run_tool(
         ToolExecutionRequest(
-            workspace_info=WorkspaceInfo(
-                run_id='run-1',
-                volume_name='volume',
-                worktree_path='workspace',
-                branch_name='branch',
-            ),
+            workspace=_host_workspace(),
             tool=RunTests(command='pytest', timeout_seconds=17, directory='.'),
         ),
     )
 
     assert result.exit_code == 0
     assert result.tool_name == ToolName.RUN_TESTS
-    assert container.timeout_seconds == 17
-    assert container.removed is True
+    assert captured['timeout'] == 17
 
 
 @pytest.mark.asyncio
-async def test_run_tool_removes_container_when_wait_raises(
+async def test_run_tool_propagates_run_command_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    container = WaitFailingContainer()
-    monkeypatch.setattr(
-        'src.activities.workspace_manager._docker_client',
-        lambda: FakeDockerClient(container),
-    )
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        raise TimeoutError('command timed out')
 
-    with pytest.raises(TimeoutError, match='container timed out'):
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
+
+    with pytest.raises(TimeoutError, match='command timed out'):
         await run_tool(
             ToolExecutionRequest(
-                workspace_info=WorkspaceInfo(
-                    run_id='run-1',
-                    volume_name='volume',
-                    worktree_path='workspace',
-                    branch_name='branch',
-                ),
+                workspace=_host_workspace(),
                 tool=RunTests(command='pytest', timeout_seconds=17, directory='.'),
             ),
         )
-
-    assert container.timeout_seconds == 17
-    assert container.removed is True
 
 
 @pytest.mark.asyncio
@@ -122,21 +74,18 @@ async def test_run_tool_writes_large_stdout_to_artifact(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    container = FakeContainer(stdout=b'x' * 20_001)
     monkeypatch.setenv('ARTIFACTS_ROOT', str(tmp_path / 'artifacts'))
-    monkeypatch.setattr(
-        'src.activities.workspace_manager._docker_client',
-        lambda: FakeDockerClient(container),
-    )
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        return CommandResult(stdout='x' * 20_001, stderr='', exit_code=0)
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
 
     result = await run_tool(
         ToolExecutionRequest(
-            workspace_info=WorkspaceInfo(
-                run_id='run-large',
-                volume_name='volume',
-                worktree_path='workspace',
-                branch_name='branch',
-            ),
+            workspace=_host_workspace(run_id='run-large'),
             tool=RunTests(command='pytest', timeout_seconds=17, directory='.'),
         ),
     )
@@ -159,21 +108,18 @@ async def test_run_tool_writes_large_stderr_to_artifact(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    container = FakeContainer(stderr=b'e' * 20_001)
     monkeypatch.setenv('ARTIFACTS_ROOT', str(tmp_path / 'artifacts'))
-    monkeypatch.setattr(
-        'src.activities.workspace_manager._docker_client',
-        lambda: FakeDockerClient(container),
-    )
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        return CommandResult(stdout='', stderr='e' * 20_001, exit_code=0)
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
 
     result = await run_tool(
         ToolExecutionRequest(
-            workspace_info=WorkspaceInfo(
-                run_id='run-large',
-                volume_name='volume',
-                worktree_path='workspace',
-                branch_name='branch',
-            ),
+            workspace=_host_workspace(run_id='run-large'),
             tool=GitStatus(path='.'),
         ),
     )
@@ -196,31 +142,26 @@ async def test_run_tool_large_output_artifacts_do_not_collide_within_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    containers = [
-        FakeContainer(stdout=b'a' * 20_001),
-        FakeContainer(stdout=b'b' * 20_001),
-    ]
     monkeypatch.setenv('ARTIFACTS_ROOT', str(tmp_path / 'artifacts'))
-    monkeypatch.setattr(
-        'src.activities.workspace_manager._docker_client',
-        lambda: CyclingDockerClient(containers),
-    )
-    workspace_info = WorkspaceInfo(
-        run_id='run-large',
-        volume_name='volume',
-        worktree_path='workspace',
-        branch_name='branch',
-    )
+    outputs = ['a' * 20_001, 'b' * 20_001]
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        return CommandResult(stdout=outputs.pop(0), stderr='', exit_code=0)
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
+    workspace = _host_workspace(run_id='run-large')
 
     first_result = await run_tool(
         ToolExecutionRequest(
-            workspace_info=workspace_info,
+            workspace=workspace,
             tool=RunTests(command='pytest tests/test_a.py', timeout_seconds=17, directory='.'),
         ),
     )
     second_result = await run_tool(
         ToolExecutionRequest(
-            workspace_info=workspace_info,
+            workspace=workspace,
             tool=RunTests(command='pytest tests/test_b.py', timeout_seconds=17, directory='.'),
         ),
     )
@@ -234,12 +175,7 @@ async def test_run_tool_large_output_artifacts_do_not_collide_within_run(
 
 def test_tool_execution_request_preserves_tool_type_after_json_round_trip() -> None:
     request = ToolExecutionRequest(
-        workspace_info=WorkspaceInfo(
-            run_id='run-1',
-            volume_name='volume',
-            worktree_path='workspace',
-            branch_name='branch',
-        ),
+        workspace=_host_workspace(),
         tool=GitStatus(path='.'),
     )
 
@@ -248,8 +184,20 @@ def test_tool_execution_request_preserves_tool_type_after_json_round_trip() -> N
     assert restored_request.tool == GitStatus(path='.')
 
 
+def test_tool_execution_request_preserves_workspace_subclass_after_round_trip() -> None:
+    request = ToolExecutionRequest(
+        workspace=_host_workspace(),
+        tool=GitStatus(path='.'),
+    )
+
+    restored_request = ToolExecutionRequest.model_validate(request.model_dump(mode='json'))
+
+    assert isinstance(restored_request.workspace, HostWorkspace)
+    assert restored_request.workspace.repo_path == 'workspace'
+
+
 @pytest.mark.asyncio
-async def test_run_tool_finds_python_symbol_from_repo_index(tmp_path: Path) -> None:
+async def test_run_tool_finds_python_symbol_from_repo_index() -> None:
     repository_index = RepoIndex(
         symbols=[
             Symbol(
@@ -265,12 +213,7 @@ async def test_run_tool_finds_python_symbol_from_repo_index(tmp_path: Path) -> N
 
     result = await run_tool(
         ToolExecutionRequest(
-            workspace_info=WorkspaceInfo(
-                run_id='run-1',
-                volume_name='volume',
-                worktree_path=str(tmp_path),
-                branch_name='branch',
-            ),
+            workspace=_host_workspace(),
             tool=FindSymbol(name='Parser', language='python'),
             repo_index=repository_index,
         )
@@ -316,12 +259,7 @@ async def test_run_tool_finds_tsx_references_from_indexed_files(tmp_path: Path) 
 
     result = await run_tool(
         ToolExecutionRequest(
-            workspace_info=WorkspaceInfo(
-                run_id='run-1',
-                volume_name='volume',
-                worktree_path=str(tmp_path),
-                branch_name='branch',
-            ),
+            workspace=_host_workspace(repo_path=str(tmp_path)),
             tool=FindReferences(symbol_name='Widget', file_path='src/component.tsx'),
             repo_index=repository_index,
         )

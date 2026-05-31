@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
+from src.models.frozen_base_model import FrozenBaseModel
 from src.runtime_enums import StrEnum
 
 
@@ -18,9 +19,7 @@ class Confidence(StrEnum):
     HIGH = 'high'
 
 
-class TestResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class TestResult(FrozenBaseModel):
     sequence: int = 0
     command: str
     exit_code: int
@@ -29,9 +28,7 @@ class TestResult(BaseModel):
     passed: bool
 
 
-class WorkerResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class WorkerResult(FrozenBaseModel):
     diff_summary: str
     tests_run: list[str] = Field(default_factory=list)
     test_results: list[TestResult] = Field(default_factory=list)

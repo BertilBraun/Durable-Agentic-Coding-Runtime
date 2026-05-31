@@ -1,11 +1,11 @@
 from pydantic import ValidationError
 from src.models.approval import ApprovalDecision, HumanApprovalSignal
 from src.models.plan import PlanStep, Risk
-from src.models.task import TaskContract, TaskRequest, TaskType
+from src.models.task import HostOrigin, TaskContract, TaskRequest, TaskType
 
 
 def test_task_request_is_frozen() -> None:
-    task_request = TaskRequest(raw_request='Fix the parser', repo_path='C:/repo')
+    task_request = TaskRequest(raw_request='Fix the parser', origin=HostOrigin(repo_path='C:/repo'))
 
     try:
         task_request.raw_request = 'Change the parser'

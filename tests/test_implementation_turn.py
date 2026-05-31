@@ -11,7 +11,7 @@ from src.activities.implementation import (
     ImplementationTurnRequest,
     run_implementation_turn,
 )
-from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceInfo
+from src.activities.workspace_manager import HostWorkspace, ToolExecutionRequest, ToolResult
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, StructuredCompletion
 from src.models.context import ContextPack
@@ -603,11 +603,12 @@ def _implementation_request() -> ImplementationTurnRequest:
             tests_expected=[],
             open_questions=[],
         ),
-        workspace_info=WorkspaceInfo(
+        workspace_info=HostWorkspace(
             run_id='run-1',
-            volume_name='volume',
-            worktree_path='workspace',
-            branch_name='branch',
+            base_sha='basesha',
+            base_branch='main',
+            current_branch='main',
+            repo_path='workspace',
         ),
         repo_index=RepoIndex(),
     )

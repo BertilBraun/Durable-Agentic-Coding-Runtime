@@ -1,49 +1,57 @@
 from pathlib import Path
 
+import pytest
 from pytest import MonkeyPatch
-from src.eval.smoke_workflow import (
-    SmokeWorkflowFinalResult,
-    SmokeWorkflowInput,
-    SmokeWorkflowRequest,
-    _smoke_result_from_workflow_result,
-    _start_and_wait_for_workflow,
-)
-from src.models.task import TaskRequest
-from src.models.worker import Confidence, WorkerResult, WorkerStatus
-from src.models.worker import TestResult as WorkerTestResult
+from src.activities.report_builder import FinalReport
+from src.activities.reviewer import ReviewDecision, ReviewVerdict
+from src.activities.workspace_manager import HostWorkspace
+from src.eval.smoke_workflow import _start_and_wait_for_workflow
+from src.llm.client import LLMUsage
+from src.models.plan import Plan
+from src.models.task import TaskContract, TaskType
 
 
-async def test_start_and_wait_for_workflow_uses_temporal_client(monkeypatch: MonkeyPatch) -> None:
+def _final_report() -> FinalReport:
+    return FinalReport(
+        status='accept',
+        patch='diff --git a/app.py b/app.py',
+        contract=TaskContract(task_type=TaskType.FEATURE, goal='Add subtract'),
+        plan=Plan(
+            summary='Add subtract',
+            steps=[],
+            integration_tests=[],
+            rollback_strategy='git checkout',
+            definition_of_done=['diff reviewed'],
+        ),
+        worker_results=[],
+        final_verdict=ReviewVerdict(
+            verdict=ReviewDecision.ACCEPT,
+            minimality_assessment='minimal',
+            recommended_next_action='accept',
+        ),
+        workspace_info=HostWorkspace(
+            run_id='smoke',
+            base_sha='basesha',
+            base_branch='main',
+            current_branch='main',
+            repo_path='C:/repo',
+        ),
+        llm_usage=LLMUsage(),
+    )
+
+
+async def test_start_and_wait_for_workflow_passes_origin_and_parses_report(
+    monkeypatch: MonkeyPatch,
+) -> None:
     repository_path = Path('C:/repo')
+    final_report = _final_report()
 
     class FakeHandle:
         workflow_id = 'wf-smoke'
 
         async def result(self, timeout: int) -> dict[str, object]:
             assert timeout == 1
-            return {
-                'status': 'accept',
-                'worker_results': [
-                    {
-                        'status': 'success',
-                        'patch_id': 'smoke',
-                        'diff_summary': 'Added smoke subtract function and test.',
-                        'tests_run': ['pytest -q'],
-                        'test_results': [
-                            {
-                                'command': 'pytest -q',
-                                'exit_code': 0,
-                                'stdout_summary': '1 passed',
-                                'stderr_summary': '',
-                                'passed': True,
-                            }
-                        ],
-                        'discovered_issues': [],
-                        'confidence': 'high',
-                        'replan_suggestion': None,
-                    }
-                ],
-            }
+            return final_report.model_dump(mode='json')
 
     class FakeClient:
         def __init__(self, base_url: str) -> None:
@@ -54,7 +62,8 @@ async def test_start_and_wait_for_workflow_uses_temporal_client(monkeypatch: Mon
             assert workflow_name == 'main_workflow'
             request = workflow_input['request']
             assert isinstance(request, dict)
-            assert request['repo_path'] == str(repository_path)
+            assert request['origin']['kind'] == 'host'
+            assert request['origin']['repo_path'] == str(repository_path)
             return FakeHandle()
 
     monkeypatch.setattr('src.eval.smoke_workflow.Client', FakeClient, raising=False)
@@ -66,49 +75,40 @@ async def test_start_and_wait_for_workflow_uses_temporal_client(monkeypatch: Mon
     )
 
     assert result.workflow_id == 'wf-smoke'
-    assert result.status == 'completed'
-    assert result.changed_diff is True
-    assert result.test_result_passed is True
+    assert result.status == 'success'
+    assert result.report is not None
+    assert result.report.patch == 'diff --git a/app.py b/app.py'
 
 
-def test_smoke_workflow_request_serializes_temporal_payload() -> None:
-    request = SmokeWorkflowRequest(
-        workflow_name='main_workflow',
-        workflow_input=SmokeWorkflowInput(
-            request=TaskRequest(raw_request='Smoke test', repo_path='C:/repo', run_id='smoke')
-        ),
+@pytest.mark.parametrize(
+    ('raised_error', 'expected_status'),
+    [(TimeoutError(), 'timeout')],
+)
+async def test_start_and_wait_for_workflow_reports_timeout(
+    monkeypatch: MonkeyPatch,
+    raised_error: Exception,
+    expected_status: str,
+) -> None:
+    class FakeHandle:
+        workflow_id = 'wf-smoke'
+
+        async def result(self, timeout: int) -> dict[str, object]:
+            raise raised_error
+
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            pass
+
+        async def start(self, workflow_name: str, **workflow_input: object) -> FakeHandle:
+            return FakeHandle()
+
+    monkeypatch.setattr('src.eval.smoke_workflow.Client', FakeClient, raising=False)
+
+    result = await _start_and_wait_for_workflow(
+        temporal_api_url='http://temporal.local',
+        repository_path=Path('C:/repo'),
+        timeout_seconds=1,
     )
 
-    assert request.model_dump(mode='json')['workflow_input']['request']['run_id'] == 'smoke'
-
-
-def test_smoke_result_requires_changed_diff_and_passing_test_result() -> None:
-    result = _smoke_result_from_workflow_result(
-        SmokeWorkflowFinalResult(
-            worker_results=[
-                WorkerResult(
-                    status=WorkerStatus.SUCCESS,
-                    patch_id='smoke',
-                    diff_summary='Added smoke subtract function and test.',
-                    tests_run=['pytest -q'],
-                    test_results=[
-                        WorkerTestResult(
-                            command='pytest -q',
-                            exit_code=0,
-                            stdout_summary='1 passed',
-                            stderr_summary='',
-                            passed=True,
-                        )
-                    ],
-                    discovered_issues=[],
-                    confidence=Confidence.HIGH,
-                    replan_suggestion=None,
-                )
-            ],
-        ),
-        workflow_id='wf-smoke',
-    )
-
-    assert result.status == 'completed'
-    assert result.changed_diff is True
-    assert result.test_result_passed is True
+    assert result.status == expected_status
+    assert result.report is None

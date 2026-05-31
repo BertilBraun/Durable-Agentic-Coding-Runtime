@@ -8,7 +8,12 @@ from temporal_light import activity
 from tree_sitter import Language as TreeSitterLanguage
 from tree_sitter import Node, Parser
 
-from src.activities.workspace_manager import WorkspaceInfo
+from src.activities.workspace_manager import (
+    DockerWorkspace,
+    HostWorkspace,
+    Workspace,
+    extract_docker_repo_snapshot,
+)
 from src.models.repo import FileEntry, Language, RepoIndex, Symbol, SymbolKind
 
 SKIPPED_DIRECTORY_NAMES = frozenset(
@@ -27,8 +32,16 @@ SKIPPED_DIRECTORY_NAMES = frozenset(
 
 
 @activity(retries=1, timeout=120)
-async def build_repo_index(workspace_info: WorkspaceInfo) -> RepoIndex:
-    workspace_path = Path(workspace_info.worktree_path)
+async def build_repo_index(workspace: Workspace) -> RepoIndex:
+    match workspace:
+        case HostWorkspace(repo_path=repo_path):
+            return _index_directory(Path(repo_path))
+        case DockerWorkspace():
+            with extract_docker_repo_snapshot(workspace) as snapshot_path:
+                return _index_directory(snapshot_path)
+
+
+def _index_directory(workspace_path: Path) -> RepoIndex:
     file_entries: list[FileEntry] = []
     symbols: list[Symbol] = []
 

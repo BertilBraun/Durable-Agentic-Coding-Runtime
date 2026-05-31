@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
+from src.models.frozen_base_model import FrozenBaseModel
 from src.runtime_enums import StrEnum
 
 
@@ -11,7 +12,7 @@ class Language(StrEnum):
     JAVASCRIPT = 'javascript'
     JSX = 'jsx'
     TSX = 'tsx'
-    # Anything outside the parseable set above (Markdown, config files, etc.) — tracked but not symbol-indexed.
+    # Outside the parseable set above (Markdown, config, etc.): tracked but not symbol-indexed.
     UNKNOWN = 'unknown'
 
 
@@ -21,17 +22,13 @@ class SymbolKind(StrEnum):
     METHOD = 'method'
 
 
-class FileEntry(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class FileEntry(FrozenBaseModel):
     path: str
     language: Language
     size_bytes: int
 
 
-class Symbol(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class Symbol(FrozenBaseModel):
     name: str
     kind: SymbolKind
     file_path: str
@@ -40,8 +37,6 @@ class Symbol(BaseModel):
     language: Language
 
 
-class RepoIndex(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class RepoIndex(FrozenBaseModel):
     file_tree: list[FileEntry] = Field(default_factory=list)
     symbols: list[Symbol] = Field(default_factory=list)

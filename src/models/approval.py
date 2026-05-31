@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import model_validator
 
+from src.models.frozen_base_model import FrozenBaseModel
 from src.runtime_enums import StrEnum
 
 
@@ -10,9 +11,7 @@ class ApprovalDecision(StrEnum):
     REVISE = 'revise'
 
 
-class HumanApprovalSignal(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class HumanApprovalSignal(FrozenBaseModel):
     decision: ApprovalDecision
     feedback: str | None = None
 

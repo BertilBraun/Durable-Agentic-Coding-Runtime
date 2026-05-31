@@ -5,17 +5,15 @@ from typing import Generic, Literal, Protocol, TypeVar
 from openai import AsyncOpenAI
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ParsedChatCompletion
-from pydantic import BaseModel, ConfigDict
 from temporal_light import activity
 
 from src.config import CONFIG, ModelRole
+from src.models.frozen_base_model import BaseModel, FrozenBaseModel
 
 StructuredOutput = TypeVar('StructuredOutput', bound=BaseModel)
 
 
-class Message(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class Message(FrozenBaseModel):
     role: Literal['system', 'user', 'assistant']
     content: str
     # Mark long stable prefixes (system prompts, repo-index blobs) cacheable=True so
@@ -24,9 +22,7 @@ class Message(BaseModel):
     cacheable: bool = False
 
 
-class LLMUsage(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class LLMUsage(FrozenBaseModel):
     call_count: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
@@ -43,9 +39,7 @@ class LLMUsage(BaseModel):
         )
 
 
-class LLMResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class LLMResult(FrozenBaseModel):
     content: str
     model: str
     context_limit_tokens: int

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import Field, TypeAdapter
 
+from models.frozen_base_model import FrozenBaseModel
 from src.runtime_enums import StrEnum
 
 
@@ -23,8 +24,8 @@ class ToolName(StrEnum):
     GATHER_CONTEXT = 'gather_context'
 
 
-class ToolBase(BaseModel):
-    model_config = ConfigDict(frozen=True, extra='forbid')
+class ToolBase(FrozenBaseModel):
+    pass
 
 
 class ReadFileRange(ToolBase):

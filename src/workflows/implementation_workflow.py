@@ -10,7 +10,7 @@ from src.activities.implementation import (
     run_implementation_turn,
 )
 from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict, review_patch
-from src.activities.workspace_manager import WorkspaceInfo
+from src.activities.workspace_manager import Workspace, WorkspaceAdapter
 from src.llm.client import LLMUsage
 from src.models.plan import PlanStep
 from src.models.repo import RepoIndex
@@ -26,7 +26,7 @@ async def implementation_workflow(
     repo_index: dict[str, object],
 ) -> dict[str, object]:
     plan_step = PlanStep.model_validate(step)
-    workspace_info = WorkspaceInfo.model_validate(workspace)
+    workspace_info = WorkspaceAdapter.validate_python(workspace)
     task_contract = TaskContract.model_validate(contract)
     repository_index = RepoIndex.model_validate(repo_index)
     usage = LLMUsage()
@@ -71,7 +71,7 @@ def _packaged_result(worker_result: WorkerResult, usage: LLMUsage) -> dict[str, 
 
 async def _review_successful_step(
     plan_step: PlanStep,
-    workspace_info: WorkspaceInfo,
+    workspace_info: Workspace,
     task_contract: TaskContract,
     worker_result: WorkerResult,
 ) -> tuple[WorkerResult, LLMUsage]:

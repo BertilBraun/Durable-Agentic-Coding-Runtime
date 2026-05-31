@@ -51,7 +51,7 @@ def test_settings_is_frozen() -> None:
     settings = load_settings()
 
     try:
-        settings.workspace_root = 'changed'
+        settings.artifacts_root = 'changed'
     except Exception:
         return
 

@@ -11,10 +11,12 @@ from src.activities.repo_indexer import build_repo_index
 from src.activities.report_builder import FinalReport
 from src.activities.reviewer import ReviewRequest, review_patch
 from src.activities.workspace_manager import (
-    WorkspaceInfo,
-    create_workspace,
-    destroy_workspace,
+    Workspace,
+    begin_candidate,
+    finalize_winner,
     make_run_id,
+    setup_environment,
+    teardown_environment,
 )
 from src.llm.client import LLMUsage
 from src.models.plan import Plan, PlanStep
@@ -31,10 +33,8 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
 
     contract, contract_usage = await build_contract(task_request)
     usage += contract_usage
-    workspace_info = await create_workspace(
-        run_id, task_request.repo_path, task_request.docker_image
-    )
-    repo_index = await build_repo_index(workspace_info)
+    workspace = await setup_environment(task_request.origin, run_id)
+    repo_index = await build_repo_index(workspace)
 
     plan, plan_usage = await build_plan(
         PlanRequest(
@@ -57,15 +57,16 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
         )
         usage += approval_usage
 
+    candidate_workspace = await begin_candidate(workspace, 0)
     plan, worker_results, run_usage = await _run_plan_steps(
         plan=plan,
         contract=contract,
         repo_index=repo_index,
-        workspace_info=workspace_info,
+        workspace_info=candidate_workspace,
     )
     usage += run_usage
 
-    diff = await get_full_diff(workspace_info)
+    diff = await get_full_diff(candidate_workspace)
     aggregated_test_results = [
         test_result
         for worker_result in worker_results
@@ -78,7 +79,7 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
             diff=diff,
             test_results=aggregated_test_results,
             worker_results=worker_results,
-            workspace_info=workspace_info,
+            workspace_info=candidate_workspace,
         ),
     )
     usage += review_usage
@@ -89,10 +90,11 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
         plan=plan,
         worker_results=worker_results,
         final_verdict=final_verdict,
-        workspace_info=workspace_info,
+        workspace_info=candidate_workspace,
         llm_usage=usage,
     )
-    await destroy_workspace(workspace_info)
+    await finalize_winner(candidate_workspace, candidate_workspace.current_branch)
+    await teardown_environment(candidate_workspace)
     return final_report.model_dump(mode='json')
 
 
@@ -100,7 +102,7 @@ async def _run_plan_steps(
     plan: Plan,
     contract: TaskContract,
     repo_index: RepoIndex,
-    workspace_info: WorkspaceInfo,
+    workspace_info: Workspace,
 ) -> tuple[Plan, list[WorkerResult], LLMUsage]:
     worker_results: list[WorkerResult] = []
     pending_plan_steps = list(plan.steps)
@@ -136,7 +138,7 @@ async def _run_plan_steps(
 
 async def _run_implementation_child(
     plan_step: PlanStep,
-    workspace_info: WorkspaceInfo,
+    workspace_info: Workspace,
     contract: TaskContract,
     repo_index: RepoIndex,
 ) -> tuple[WorkerResult, LLMUsage]:

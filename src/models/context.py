@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
+from src.models.frozen_base_model import FrozenBaseModel
 from src.runtime_enums import StrEnum
 
 
@@ -13,17 +14,13 @@ class ArtifactKind(StrEnum):
     REPO_INDEX = 'repo_index'
 
 
-class ArtifactReference(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class ArtifactReference(FrozenBaseModel):
     path: str
     summary: str
     kind: ArtifactKind
 
 
-class ContextPack(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class ContextPack(FrozenBaseModel):
     task_summary: str
     relevant_snippets: list[str] = Field(default_factory=list)
     recent_observations: list[str] = Field(default_factory=list)

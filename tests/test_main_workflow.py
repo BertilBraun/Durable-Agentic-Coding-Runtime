@@ -2,11 +2,11 @@ import pytest
 from src.activities.complexity_assessor import ComplexityVerdict
 from src.activities.planner import PlanRequest
 from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict
-from src.activities.workspace_manager import WorkspaceInfo
+from src.activities.workspace_manager import HostWorkspace, ToolResult, Workspace
 from src.llm.client import LLMUsage
 from src.models.plan import Plan, PlanStep, Risk
 from src.models.repo import RepoIndex
-from src.models.task import TaskContract, TaskRequest, TaskType
+from src.models.task import Origin, TaskContract, TaskRequest, TaskType
 from src.models.worker import Confidence, WorkerResult, WorkerStatus
 from src.workflows.main_workflow import main_workflow
 from temporal_light.exceptions import WorkflowSuspended
@@ -14,6 +14,20 @@ from temporal_light.exceptions import WorkflowSuspended
 
 def _unit_usage() -> LLMUsage:
     return LLMUsage(call_count=1, total_input_tokens=10, total_cost_usd=0.01)
+
+
+def _workspace() -> HostWorkspace:
+    return HostWorkspace(
+        run_id='run-1',
+        base_sha='basesha',
+        base_branch='main',
+        current_branch='main',
+        repo_path='workspace',
+    )
+
+
+def _ok_result() -> ToolResult:
+    return ToolResult(stdout='', stderr='', exit_code=0, truncated=False)
 
 
 @pytest.mark.asyncio
@@ -67,12 +81,7 @@ async def test_run_plan_steps_adds_child_workflow_usage(
             open_questions=[],
         ),
         repo_index=RepoIndex(),
-        workspace_info=WorkspaceInfo(
-            run_id='run-1',
-            volume_name='volume',
-            worktree_path='workspace',
-            branch_name='branch',
-        ),
+        workspace_info=_workspace(),
     )
 
     assert len(worker_results) == 1
@@ -116,12 +125,7 @@ async def test_main_workflow_replans_after_needs_replan(
             'llm_usage': _unit_usage().model_dump(mode='json'),
         },
     ]
-    workspace_info = WorkspaceInfo(
-        run_id='run-1',
-        volume_name='volume',
-        worktree_path='workspace',
-        branch_name='branch',
-    )
+    workspace = _workspace()
     contract = TaskContract(
         task_type=TaskType.BUGFIX,
         goal='Fix generated output',
@@ -136,13 +140,14 @@ async def test_main_workflow_replans_after_needs_replan(
     async def fake_build_contract(task_request: TaskRequest) -> tuple[TaskContract, LLMUsage]:
         return contract, _unit_usage()
 
-    async def fake_create_workspace(
-        run_id: str, repo_path: str, docker_image: str | None = None
-    ) -> WorkspaceInfo:
-        return workspace_info
+    async def fake_setup_environment(origin: Origin, run_id: str) -> Workspace:
+        return workspace
 
-    async def fake_build_repo_index(workspace: WorkspaceInfo) -> RepoIndex:
+    async def fake_build_repo_index(workspace: Workspace) -> RepoIndex:
         return RepoIndex()
+
+    async def fake_begin_candidate(workspace: Workspace, candidate_index: int) -> Workspace:
+        return workspace
 
     async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
         plan_requests.append(request)
@@ -172,7 +177,7 @@ async def test_main_workflow_replans_after_needs_replan(
     async def fake_wait_for_child(child_id: str) -> dict[str, object]:
         return child_payloads.pop(0)
 
-    async def fake_get_full_diff(workspace: WorkspaceInfo) -> str:
+    async def fake_get_full_diff(workspace: Workspace) -> str:
         return 'diff --git a/generated.py b/generated.py'
 
     async def fake_review_patch(request: ReviewRequest) -> tuple[ReviewVerdict, LLMUsage]:
@@ -190,22 +195,33 @@ async def test_main_workflow_replans_after_needs_replan(
             _unit_usage(),
         )
 
-    async def fake_destroy_workspace(workspace: WorkspaceInfo) -> None:
-        return None
+    async def fake_finalize_winner(workspace: Workspace, winner_branch: str) -> ToolResult:
+        return _ok_result()
+
+    async def fake_teardown_environment(workspace: Workspace) -> ToolResult:
+        return _ok_result()
 
     monkeypatch.setattr('src.workflows.main_workflow.build_contract', fake_build_contract)
-    monkeypatch.setattr('src.workflows.main_workflow.create_workspace', fake_create_workspace)
+    monkeypatch.setattr('src.workflows.main_workflow.setup_environment', fake_setup_environment)
     monkeypatch.setattr('src.workflows.main_workflow.build_repo_index', fake_build_repo_index)
+    monkeypatch.setattr('src.workflows.main_workflow.begin_candidate', fake_begin_candidate)
     monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
     monkeypatch.setattr('src.workflows.main_workflow.assess_complexity', fake_assess_complexity)
     monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
     monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
     monkeypatch.setattr('src.workflows.main_workflow.get_full_diff', fake_get_full_diff)
     monkeypatch.setattr('src.workflows.main_workflow.review_patch', fake_review_patch)
-    monkeypatch.setattr('src.workflows.main_workflow.destroy_workspace', fake_destroy_workspace)
+    monkeypatch.setattr('src.workflows.main_workflow.finalize_winner', fake_finalize_winner)
+    monkeypatch.setattr(
+        'src.workflows.main_workflow.teardown_environment', fake_teardown_environment
+    )
 
     report = await main_workflow(
-        {'raw_request': 'fix generated output', 'repo_path': 'C:/repo', 'run_id': 'run-1'}
+        {
+            'raw_request': 'fix generated output',
+            'origin': {'kind': 'host', 'repo_path': 'C:/repo'},
+            'run_id': 'run-1',
+        }
     )
 
     assert spawned_step_ids == ['old-step', 'new-step']
@@ -220,17 +236,12 @@ async def test_main_workflow_replans_after_needs_replan(
 
 
 @pytest.mark.asyncio
-async def test_main_workflow_does_not_destroy_workspace_while_suspended_on_child(
+async def test_main_workflow_does_not_teardown_while_suspended_on_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    destroyed_workspaces: list[WorkspaceInfo] = []
+    torn_down_workspaces: list[Workspace] = []
     spawned_step_ids: list[str] = []
-    workspace_info = WorkspaceInfo(
-        run_id='run-1',
-        volume_name='volume',
-        worktree_path='workspace',
-        branch_name='branch',
-    )
+    workspace = _workspace()
     contract = TaskContract(
         task_type=TaskType.BUGFIX,
         goal='Fix generated output',
@@ -245,13 +256,14 @@ async def test_main_workflow_does_not_destroy_workspace_while_suspended_on_child
     async def fake_build_contract(task_request: TaskRequest) -> tuple[TaskContract, LLMUsage]:
         return contract, _unit_usage()
 
-    async def fake_create_workspace(
-        run_id: str, repo_path: str, docker_image: str | None = None
-    ) -> WorkspaceInfo:
-        return workspace_info
+    async def fake_setup_environment(origin: Origin, run_id: str) -> Workspace:
+        return workspace
 
-    async def fake_build_repo_index(workspace: WorkspaceInfo) -> RepoIndex:
+    async def fake_build_repo_index(workspace: Workspace) -> RepoIndex:
         return RepoIndex()
+
+    async def fake_begin_candidate(workspace: Workspace, candidate_index: int) -> Workspace:
+        return workspace
 
     async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
         return _plan_with_step('step-1'), _unit_usage()
@@ -278,25 +290,33 @@ async def test_main_workflow_does_not_destroy_workspace_while_suspended_on_child
     async def fake_wait_for_child(child_id: str) -> dict[str, object]:
         raise WorkflowSuspended('Workflow waiting for child.')
 
-    async def fake_destroy_workspace(workspace: WorkspaceInfo) -> None:
-        destroyed_workspaces.append(workspace)
+    async def fake_teardown_environment(workspace: Workspace) -> ToolResult:
+        torn_down_workspaces.append(workspace)
+        return _ok_result()
 
     monkeypatch.setattr('src.workflows.main_workflow.build_contract', fake_build_contract)
-    monkeypatch.setattr('src.workflows.main_workflow.create_workspace', fake_create_workspace)
+    monkeypatch.setattr('src.workflows.main_workflow.setup_environment', fake_setup_environment)
     monkeypatch.setattr('src.workflows.main_workflow.build_repo_index', fake_build_repo_index)
+    monkeypatch.setattr('src.workflows.main_workflow.begin_candidate', fake_begin_candidate)
     monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
     monkeypatch.setattr('src.workflows.main_workflow.assess_complexity', fake_assess_complexity)
     monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
     monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
-    monkeypatch.setattr('src.workflows.main_workflow.destroy_workspace', fake_destroy_workspace)
+    monkeypatch.setattr(
+        'src.workflows.main_workflow.teardown_environment', fake_teardown_environment
+    )
 
     with pytest.raises(WorkflowSuspended, match=r'Workflow waiting for child\.'):
         await main_workflow(
-            {'raw_request': 'fix generated output', 'repo_path': 'C:/repo', 'run_id': 'run-1'}
+            {
+                'raw_request': 'fix generated output',
+                'origin': {'kind': 'host', 'repo_path': 'C:/repo'},
+                'run_id': 'run-1',
+            }
         )
 
     assert spawned_step_ids == ['step-1']
-    assert destroyed_workspaces == []
+    assert torn_down_workspaces == []
 
 
 def _plan_with_step(step_id: str) -> Plan:

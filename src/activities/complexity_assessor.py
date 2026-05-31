@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
-
 from src.config import CONFIG, ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
+from src.models.frozen_base_model import FrozenBaseModel
 from src.models.task import TaskContract
 
 COMPLEXITY_ASSESSOR_SYSTEM_PROMPT = (
@@ -18,9 +17,7 @@ COMPLEXITY_ASSESSOR_SYSTEM_PROMPT = (
 )
 
 
-class ComplexityVerdict(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class ComplexityVerdict(FrozenBaseModel):
     reasoning: str
     requires_human_approval: bool
 

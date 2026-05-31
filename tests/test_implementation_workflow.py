@@ -333,8 +333,10 @@ def _task_contract() -> TaskContract:
 
 def _workspace() -> dict[str, str]:
     return {
+        'kind': 'host',
         'run_id': 'run-1',
-        'volume_name': 'volume',
-        'worktree_path': 'workspace',
-        'branch_name': 'branch',
+        'base_sha': 'basesha',
+        'base_branch': 'main',
+        'current_branch': 'main',
+        'repo_path': 'workspace',
     }

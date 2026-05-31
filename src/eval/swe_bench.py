@@ -9,16 +9,15 @@ from pathlib import Path
 
 import docker
 import docker.models.containers
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 from temporal_light import Client, WorkflowFailedError
 
 from src.config import ModelRole
 from src.llm.client import Message, generate
+from src.models.frozen_base_model import FrozenBaseModel
 
 
-class SweBenchInstance(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class SweBenchInstance(FrozenBaseModel):
     instance_id: str
     repo: str
     problem_statement: str
@@ -29,16 +28,12 @@ class SweBenchInstance(BaseModel):
     docker_image: str | None = None
 
 
-class WorkflowUsageSummary(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class WorkflowUsageSummary(FrozenBaseModel):
     total_cost_usd: float
     call_count: int
 
 
-class EvaluationTaskResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class EvaluationTaskResult(FrozenBaseModel):
     instance_id: str
     status: str
     resolved: bool
@@ -49,23 +44,17 @@ class EvaluationTaskResult(BaseModel):
     patch: str | None = None
 
 
-class LlmCallsPerTask(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class LlmCallsPerTask(FrozenBaseModel):
     resolved: float
     failed: float
 
 
-class SkipReasonSummary(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class SkipReasonSummary(FrozenBaseModel):
     reason: str
     count: int
 
 
-class EvaluationReport(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class EvaluationReport(FrozenBaseModel):
     task_results: list[EvaluationTaskResult]
     baseline_results: list[EvaluationTaskResult]
     resolved: int
@@ -80,27 +69,21 @@ class EvaluationReport(BaseModel):
     delta: float
 
 
-class PatchApplicationResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class PatchApplicationResult(FrozenBaseModel):
     applied: bool
     exit_code: int
     stdout: str
     stderr: str
 
 
-class OracleCommandResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class OracleCommandResult(FrozenBaseModel):
     command: str
     exit_code: int
     stdout: str
     stderr: str
 
 
-class OracleResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class OracleResult(FrozenBaseModel):
     resolved: bool
     reason: str | None
     command_results: list[OracleCommandResult] = Field(default_factory=list)
@@ -356,8 +339,11 @@ async def _run_framework_task(
         'main_workflow',
         request={
             'raw_request': instance.problem_statement,
-            'repo_path': instance.repo,
-            'docker_image': instance.docker_image,
+            'origin': {
+                'kind': 'docker',
+                'docker_image': instance.docker_image,
+                'container_repo_path': SWE_BENCH_WORKDIR,
+            },
             'run_id': instance.instance_id,
         },
     )

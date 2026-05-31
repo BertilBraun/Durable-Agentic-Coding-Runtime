@@ -2,21 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
 from temporal_light import activity, wait_for_signal
 
 from src.activities.planner import PlanRequest, build_plan
 from src.config import CONFIG
 from src.llm.client import LLMUsage
 from src.models.approval import ApprovalDecision, HumanApprovalSignal
+from src.models.frozen_base_model import FrozenBaseModel
 from src.models.plan import Plan
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
 
 
-class HumanPlanPresentationRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class HumanPlanPresentationRequest(FrozenBaseModel):
     run_id: str
     contract: TaskContract
     plan: Plan

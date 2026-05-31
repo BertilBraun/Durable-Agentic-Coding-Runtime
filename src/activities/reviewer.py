@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-from src.activities.workspace_manager import WorkspaceInfo
+from src.activities.workspace_manager import Workspace
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
+from src.models.frozen_base_model import FrozenBaseModel
 from src.models.plan import PlanStep
 from src.models.task import TaskContract
 from src.models.worker import TestResult, WorkerResult
@@ -27,9 +28,7 @@ class ReviewDecision(StrEnum):
     NEEDS_HUMAN = 'needs_human'
 
 
-class ReviewVerdict(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class ReviewVerdict(FrozenBaseModel):
     evidence: list[str] = Field(default_factory=list)
     blocking_issues: list[str] = Field(default_factory=list)
     non_blocking_issues: list[str] = Field(default_factory=list)
@@ -40,15 +39,13 @@ class ReviewVerdict(BaseModel):
     verdict: ReviewDecision
 
 
-class ReviewRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class ReviewRequest(FrozenBaseModel):
     contract: TaskContract
     plan_step: PlanStep | None = None
     diff: str
     test_results: list[TestResult] = Field(default_factory=list)
     worker_results: list[WorkerResult] = Field(default_factory=list)
-    workspace_info: WorkspaceInfo
+    workspace_info: Workspace
 
 
 async def review_patch(request: ReviewRequest) -> tuple[ReviewVerdict, LLMUsage]:

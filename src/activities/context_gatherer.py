@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
-    WorkspaceInfo,
+    Workspace,
     run_tool,
 )
 from src.config import CONFIG, ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.context import ContextPack
+from src.models.frozen_base_model import FrozenBaseModel
 from src.models.repo import RepoIndex
 from src.tools.definitions import ContextGathererToolCall
 
@@ -24,17 +25,13 @@ CONTEXT_GATHERER_SYSTEM_PROMPT = (
 )
 
 
-class ContextGatherRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    workspace_info: WorkspaceInfo
+class ContextGatherRequest(FrozenBaseModel):
+    workspace_info: Workspace
     repo_index: RepoIndex
     gatherer_prompt: str
 
 
-class ContextGathererTurn(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class ContextGathererTurn(FrozenBaseModel):
     done: bool
     context_pack: ContextPack | None = None
     tool_calls: list[ContextGathererToolCall] = Field(default_factory=list)
@@ -87,7 +84,7 @@ async def gather_context(request: ContextGatherRequest) -> tuple[ContextPack, LL
                 break
             tool_result = await run_tool(
                 ToolExecutionRequest(
-                    workspace_info=request.workspace_info,
+                    workspace=request.workspace_info,
                     tool=tool,
                     repo_index=request.repo_index,
                 )

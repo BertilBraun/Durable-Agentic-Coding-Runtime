@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
-
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
+from src.models.frozen_base_model import FrozenBaseModel
 from src.models.plan import Plan
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
@@ -32,9 +31,7 @@ PLANNER_SYSTEM_PROMPT = (
 )
 
 
-class PlanRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class PlanRequest(FrozenBaseModel):
     contract: TaskContract
     repo_index: RepoIndex
     worker_results: list[WorkerResult]

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated, Literal
 
+from pydantic import Field
+
+from src.models.frozen_base_model import FrozenBaseModel
 from src.runtime_enums import StrEnum
 
 
@@ -15,18 +18,27 @@ class TaskType(StrEnum):
     UNKNOWN = 'unknown'
 
 
-class TaskRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    raw_request: str
+class HostOrigin(FrozenBaseModel):
+    kind: Literal['host'] = 'host'
     repo_path: str
+
+
+class DockerOrigin(FrozenBaseModel):
+    kind: Literal['docker'] = 'docker'
+    docker_image: str
+    container_repo_path: str = '/testbed'
+
+
+Origin = Annotated[HostOrigin | DockerOrigin, Field(discriminator='kind')]
+
+
+class TaskRequest(FrozenBaseModel):
+    raw_request: str
     run_id: str | None = None
-    docker_image: str | None = None
+    origin: Origin
 
 
-class TaskContract(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class TaskContract(FrozenBaseModel):
     task_type: TaskType
     goal: str
     acceptance_criteria: list[str] = Field(default_factory=list)

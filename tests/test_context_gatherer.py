@@ -8,7 +8,7 @@ from src.activities.context_gatherer import (
     ContextGatherRequest,
     gather_context,
 )
-from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceInfo
+from src.activities.workspace_manager import HostWorkspace, ToolExecutionRequest, ToolResult
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, StructuredCompletion
 from src.models.repo import RepoIndex
@@ -254,11 +254,12 @@ async def test_context_gatherer_exits_deterministically_above_hard_budget(
 
 def _context_gather_request() -> ContextGatherRequest:
     return ContextGatherRequest(
-        workspace_info=WorkspaceInfo(
+        workspace_info=HostWorkspace(
             run_id='run-1',
-            volume_name='volume',
-            worktree_path='workspace',
-            branch_name='branch',
+            base_sha='basesha',
+            base_branch='main',
+            current_branch='main',
+            repo_path='workspace',
         ),
         repo_index=RepoIndex(),
         gatherer_prompt='Find relevant code',

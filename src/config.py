@@ -5,8 +5,8 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict
 
+from src.models.frozen_base_model import FrozenBaseModel
 from src.runtime_enums import StrEnum
 
 MODELS_CSV_PATH = Path(__file__).parent / 'llm' / 'models.csv'
@@ -24,9 +24,7 @@ class ModelRole(StrEnum):
     SUMMARIZER = 'summarizer'
 
 
-class ModelEntry(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class ModelEntry(FrozenBaseModel):
     id: str
     context_limit_tokens: int
     input_price_usd_per_mtok: float
@@ -34,16 +32,13 @@ class ModelEntry(BaseModel):
     cache_read_price_usd_per_mtok: float
 
 
-class Settings(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class Settings(FrozenBaseModel):
     llm_api_key: str | None
     llm_base_url: str | None
 
-    workspace_root: str
-    workspace_image: str
     artifacts_root: str
     human_approval_enabled: bool
+    cleanup_candidate_branches: bool
 
     implementation_max_tool_rounds: int
     context_gatherer_max_tool_calls: int
@@ -76,10 +71,11 @@ def load_settings() -> Settings:
     return Settings(
         llm_api_key=os.getenv('LLM_API_KEY'),
         llm_base_url=os.getenv('LLM_BASE_URL'),
-        workspace_root=os.getenv('WORKSPACE_ROOT', '.agentic-workspaces'),
-        workspace_image=os.getenv('WORKSPACE_IMAGE', 'durable-agentic-workspace:latest'),
         artifacts_root=os.getenv('ARTIFACTS_ROOT', '.agentic-artifacts'),
         human_approval_enabled=_parse_bool(os.getenv('HUMAN_APPROVAL_ENABLED'), default=True),
+        cleanup_candidate_branches=_parse_bool(
+            os.getenv('CLEANUP_CANDIDATE_BRANCHES'), default=False
+        ),
         implementation_max_tool_rounds=int(os.getenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '12')),
         context_gatherer_max_tool_calls=int(os.getenv('CONTEXT_GATHERER_MAX_TOOL_CALLS', '10')),
         context_utilization_stop_threshold=float(

@@ -1222,19 +1222,36 @@ agentic-coding/docker-compose.yml
 └── temporal-worker
 ```
 
-#### Workspace Containers: Per-Step
+#### One Persistent Environment Per Run
 
-Each tool execution step runs inside a **fresh Docker container** spawned by the `WorkspaceManager` activity via the Docker Python SDK. The container is created from the workspace image, receives the current repo state via a volume, executes the command, and is destroyed after the step.
+A run sets up **one persistent environment** (the `setup_environment` activity over `Origin.setup`) and works **in place** — no per-tool-call containers and no copy of the repo. There are two execution modes behind one polymorphic `Workspace.run_command` seam:
 
-Per-step containers prevent state leakage between tool calls and reduce the surface area for subtle environment bugs. The repo state is persisted via git commits between steps — the container is stateless, the git working tree is the state.
+- **HOST**: commands run as subprocesses directly in the user's existing local repo. No clone, no container. This is the quick dev mode.
+- **DOCKER**: commands run via `docker exec` in **one long-lived container** started from an image that already contains the repo (e.g. SWE-bench's `/testbed`). This is the correct eval mode; it can recreate the container per candidate for a clean system slate.
+
+Because the environment persists, installed dependencies and prior edits survive between tool calls.
+
+At setup the runtime asserts a clean working tree, records `base_sha` (HEAD) and the base branch name (may be detached → `None`). Everything is computed relative to `base_sha`.
+
+#### Candidate Lifecycle (Sequential)
+
+Candidates run **one after another**, never in parallel. For each candidate `k`: branch `agentic/{run_id}/cand-{k}` off `base_sha`, run the plan (the agent commits its work on the branch), evaluate, then reset (`git reset --hard {base_sha}` + `git clean -fd`; never `-x` in HOST mode). DOCKER may instead recreate the container between candidates.
+
+#### Finalize / Hand-Back
+
+Once the winner is chosen: return to the base branch (or `base_sha` if detached) and apply the winner's changes as **uncommitted** working-tree edits — the user ends on the base branch with the change present but not committed. Candidate branch cleanup is guarded by `CLEANUP_CANDIDATE_BRANCHES` (default: keep branches as an audit trail).
+
+#### The Deliverable Is Always a Diff Against `base_sha`
+
+`get_full_diff` / `diff_against_base` returns `git diff {base_sha}`. This unifies both modes: in HOST the uncommitted edits on the base branch are the result the user reviews; in DOCKER the harness reads the same diff and scores it.
 
 #### Workspace Image
 
-Base image includes: `git`, `python 3.12`, `node 20`, `tree-sitter`, `ruff`, `pytest`, `npm`. No IDE tooling.
+The DOCKER mode uses the per-instance image directly (e.g. SWE-bench's official image with the repo at `/testbed`). A general workspace image includes: `git`, `python 3.12`, `node 20`, `tree-sitter`, `ruff`, `pytest`, `npm`. No IDE tooling.
 
-#### Isolation
+#### Isolation Limitation
 
-Each workflow run gets an isolated git worktree. Each candidate in a parallel search gets its own branch off that worktree. Network egress from workspace containers is configurable per project.
+Global system state bleeds between sequential candidates on HOST and cannot be isolated (if candidate 1 runs `pip install foo`, candidate 2 inherits it). This is accepted: HOST is the quick dev mode; DOCKER is the correct eval mode and can recreate its container per candidate for a clean system slate. HOST mode assumes a POSIX shell + unix tools (`sh`, `sed`, `base64`, `rg`, `git`); native-Windows host support is out of scope.
 
 ---
 
@@ -1518,8 +1535,8 @@ Real-LLM validation:
 
 Lower-priority gaps:
 
-- `destroy_workspace` runs only on normal completion; failure cleanup has no recovery path.
-- Workspace uses a cloned copy, not a true git worktree from the source repository.
+- `teardown_environment` runs only on normal completion; failure cleanup (DOCKER container removal) has no recovery path.
+- Repo indexing in DOCKER mode extracts a throwaway snapshot from the container (`get_archive`) rather than indexing in-container; FindReferences falls back to in-container `rg` for DOCKER.
 
 ### 22.3a Completed This Checkpoint
 
@@ -1602,7 +1619,7 @@ The follow-up work after the checkpoint completed these items:
 2. Wired the SWE-bench main evaluation loop to apply framework and baseline patches in official containers and score them with the oracle.
 3. Exposed workflow `llm_usage` totals in `FinalReport` and registered the usage reset/collection activities.
 4. Added `src.cli.human_approval` for sending approve/revise signals to waiting workflows.
-5. Reviewed workspace behavior: the current implementation creates an isolated host-side clone per run and mounts that clone into each tool container, which matches the desired diff/revert workflow. A switch to `git worktree` is optional rather than blocking.
+5. Reviewed workspace behavior. **Superseded by the §21.3 redesign:** the per-run host clone + per-tool-call containers were replaced by one persistent environment per run (HOST subprocess or one long-lived DOCKER container), working in place against `base_sha`. See §21.3.
 
 ### 22.5 Next Implementation Plan
 
@@ -1624,7 +1641,7 @@ Completed this pass (tool-correctness and rough-edge fixes):
 Deferred — need a proper replan before implementation:
 
 1. **Context packer.** Split retrieval (typed, grounded code snippets from the cheap model) from packing (a deterministic assembler with a bounded observation window and artifact references). Redefine `ContextPack` to drop ungrounded fields. To be designed, not a drop-in change.
-2. **Parallel candidate search.** Requires deciding where candidates run, how data flows in/out, and per-candidate environment/branch isolation (each candidate needs its own worktree). Not a small addition.
+2. **Sequential → multi-candidate search.** The candidate lifecycle (§21.3) already runs candidates sequentially, one branch off `base_sha` each, with reset between them. Extending to N>1 sequential candidates is a drop-in loop; true parallelism would require separate environments per candidate and is out of scope.
 3. **Correctness mechanisms** (reproduction-before-repair as a structured step, generated regression tests, rollback checkpoints) — future milestone-2 work beyond the current planner-prompt nudge.
 
 Still open from before:
