@@ -30,10 +30,8 @@ async def test_implementation_workflow_reviews_successful_step(
         return (
             ContextPack(
                 task_summary='Implement behavior',
-                relevant_snippets=[],
-                recent_observations=[],
-                failed_attempt_summaries=[],
-                available_tools=[],
+                snippets=[],
+                artifact_references=[],
                 budget_remaining=1,
             ),
             _unit_usage(),
@@ -101,10 +99,8 @@ async def test_implementation_workflow_fails_successful_step_rejected_by_review(
         return (
             ContextPack(
                 task_summary='Implement behavior',
-                relevant_snippets=[],
-                recent_observations=[],
-                failed_attempt_summaries=[],
-                available_tools=[],
+                snippets=[],
+                artifact_references=[],
                 budget_remaining=1,
             ),
             _zero_usage(),
@@ -172,10 +168,8 @@ async def test_implementation_workflow_returns_blocked_result_immediately(
         return (
             ContextPack(
                 task_summary='Implement behavior',
-                relevant_snippets=[],
-                recent_observations=[],
-                failed_attempt_summaries=[],
-                available_tools=[],
+                snippets=[],
+                artifact_references=[],
                 budget_remaining=1,
             ),
             _zero_usage(),
@@ -230,10 +224,8 @@ async def test_implementation_workflow_returns_failed_result_without_review(
         return (
             ContextPack(
                 task_summary='Implement behavior',
-                relevant_snippets=[],
-                recent_observations=[],
-                failed_attempt_summaries=[],
-                available_tools=[],
+                snippets=[],
+                artifact_references=[],
                 budget_remaining=1,
             ),
             _zero_usage(),

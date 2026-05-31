@@ -10,6 +10,7 @@ from src.activities.repo_indexer import build_repo_index
 from src.activities.workspace_manager import (
     begin_candidate,
     finalize_winner,
+    pack_context,
     run_tool,
     setup_environment,
     teardown_environment,
@@ -31,6 +32,7 @@ def main() -> None:
             generate_completion,
             generate_structured_completion,
             get_full_diff,
+            pack_context,
             present_plan_to_human,
             run_tool,
             setup_environment,

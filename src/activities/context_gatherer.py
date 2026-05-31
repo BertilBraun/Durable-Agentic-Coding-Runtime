@@ -3,13 +3,15 @@ from __future__ import annotations
 from pydantic import Field
 
 from src.activities.workspace_manager import (
+    ContextPackRequest,
     ToolExecutionRequest,
     Workspace,
+    pack_context,
     run_tool,
 )
 from src.config import CONFIG, ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
-from src.models.context import ContextPack
+from src.models.context import ContextPack, ContextSnippet
 from src.models.frozen_base_model import FrozenBaseModel
 from src.models.repo import RepoIndex
 from src.tools.definitions import ContextGathererToolCall
@@ -19,11 +21,13 @@ CONTEXT_GATHERER_SYSTEM_PROMPT = (
     'inspection only (listing files, reading file ranges, searching text) and '
     'find_definition, find_callers, and find_callees for symbol cross-references; '
     'never mutate the workspace. Write run_shell commands for the environment '
-    'described in the user payload. Gather compact evidence for the requested '
-    'step: relevant code, tests, risks, and open questions. Avoid repeating '
-    'observations. Return done=true with ContextPack when enough context exists, '
-    'or continue with another allowed tool call when a specific gap remains. Do '
-    'not invent files, behavior, or test results.'
+    'described in the user payload. Explore the codebase as needed, then curate the '
+    'few file ranges that actually answer the requested step. Return done=true with '
+    'a short task_summary and a list of ContextSnippet references (file_path, '
+    'start_line, end_line, and a one-line reason explaining why the range is '
+    'relevant). Never copy code into reason and never paraphrase file contents; the '
+    'packer reads the real lines. Continue with another allowed tool call when a '
+    'specific gap remains. Do not invent files, behavior, or test results.'
 )
 
 
@@ -35,7 +39,8 @@ class ContextGatherRequest(FrozenBaseModel):
 
 class ContextGathererTurn(FrozenBaseModel):
     done: bool
-    context_pack: ContextPack | None = None
+    task_summary: str | None = None
+    snippets: list[ContextSnippet] = Field(default_factory=list)
     tool_calls: list[ContextGathererToolCall] = Field(default_factory=list)
 
 
@@ -80,8 +85,8 @@ async def gather_context(request: ContextGatherRequest) -> tuple[ContextPack, LL
         if latest_utilization > stop_threshold:
             budget_exceeded = True
             break
-        if turn.done and turn.context_pack is not None:
-            return turn.context_pack, usage
+        if turn.done:
+            return await _pack_curated_turn(request, turn), usage
 
         turn_observations: list[str] = []
         for tool in turn.tool_calls:
@@ -101,38 +106,47 @@ async def gather_context(request: ContextGatherRequest) -> tuple[ContextPack, LL
         messages.append(Message(role='assistant', content=turn.model_dump_json()))
         messages.append(Message(role='user', content='\n'.join(turn_observations)))
 
-    # Above the hard ceiling another LLM call would itself overflow, so assemble the pack
-    # deterministically from observations instead of asking the model to summarize.
+    # Above the hard ceiling another LLM call would itself overflow, so emit a pack
+    # that spills the collected observations to an artifact instead of curating snippets.
     if budget_exceeded and latest_utilization >= hard_stop_threshold:
-        return _deterministic_context_pack(request, all_observations), usage
+        pack = await pack_context(
+            ContextPackRequest(
+                workspace=request.workspace_info,
+                task_summary=request.gatherer_prompt,
+                snippets=[],
+                overflow_text='\n'.join(all_observations),
+            )
+        )
+        return pack, usage
 
-    context_pack, finalize_usage = await _summarize_observations_into_context_pack(
-        messages, budget_exceeded
-    )
-    return context_pack, usage + finalize_usage
+    finalize_turn, finalize_usage = await _finalize_emit_snippets(messages, budget_exceeded)
+    pack = await _pack_curated_turn(request, finalize_turn)
+    return pack, usage + finalize_usage
 
 
-def _deterministic_context_pack(
+async def _pack_curated_turn(
     request: ContextGatherRequest,
-    observations: list[str],
+    turn: ContextGathererTurn,
 ) -> ContextPack:
-    return ContextPack(
-        task_summary=request.gatherer_prompt,
-        relevant_snippets=observations,
-        recent_observations=observations[-3:],
-        failed_attempt_summaries=[],
-        available_tools=[],
-        budget_remaining=0,
+    if turn.task_summary is None:
+        raise ValueError('Context gatherer marked done without a task_summary.')
+    return await pack_context(
+        ContextPackRequest(
+            workspace=request.workspace_info,
+            task_summary=turn.task_summary,
+            snippets=turn.snippets,
+        )
     )
 
 
-async def _summarize_observations_into_context_pack(
+async def _finalize_emit_snippets(
     messages: list[Message],
     budget_exceeded: bool,
-) -> tuple[ContextPack, LLMUsage]:
+) -> tuple[ContextGathererTurn, LLMUsage]:
     finalize_instruction = (
-        'Stop gathering more evidence. Set done=true and return a ContextPack '
-        'summarizing the observations so far. Do not propose more tool calls.'
+        'Stop gathering more evidence. Set done=true and return a short task_summary '
+        'plus the curated ContextSnippet references (file_path, line range, reason). '
+        'Do not propose more tool calls and do not copy code into the reason.'
     )
     if budget_exceeded:
         finalize_instruction = f'The context budget is exhausted. {finalize_instruction}'
@@ -143,6 +157,6 @@ async def _summarize_observations_into_context_pack(
         output_type=ContextGathererTurn,
     )
     turn = completion.output
-    if turn.context_pack is None:
-        raise ValueError('Context gatherer failed to produce a ContextPack on finalization.')
-    return turn.context_pack, completion.usage
+    if turn.task_summary is None:
+        raise ValueError('Context gatherer failed to produce a task_summary on finalization.')
+    return turn, completion.usage

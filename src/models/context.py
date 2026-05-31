@@ -12,6 +12,7 @@ class ArtifactKind(StrEnum):
     LOG = 'log'
     SCREENSHOT = 'screenshot'
     REPO_INDEX = 'repo_index'
+    CONTEXT_OVERFLOW = 'context_overflow'
 
 
 class ArtifactReference(FrozenBaseModel):
@@ -20,10 +21,23 @@ class ArtifactReference(FrozenBaseModel):
     kind: ArtifactKind
 
 
+class ContextSnippet(FrozenBaseModel):
+    file_path: str
+    start_line: int
+    end_line: int
+    reason: str
+
+
+class PackedSnippet(FrozenBaseModel):
+    file_path: str
+    start_line: int
+    end_line: int
+    reason: str
+    content: str
+
+
 class ContextPack(FrozenBaseModel):
     task_summary: str
-    relevant_snippets: list[str] = Field(default_factory=list)
-    recent_observations: list[str] = Field(default_factory=list)
-    failed_attempt_summaries: list[str] = Field(default_factory=list)
-    available_tools: list[str] = Field(default_factory=list)
+    snippets: list[PackedSnippet] = Field(default_factory=list)
+    artifact_references: list[ArtifactReference] = Field(default_factory=list)
     budget_remaining: int

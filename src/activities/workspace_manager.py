@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 import uuid
@@ -11,7 +12,13 @@ from pydantic import Field, TypeAdapter
 from temporal_light import activity
 
 from src.config import CONFIG
-from src.models.context import ArtifactKind, ArtifactReference
+from src.models.context import (
+    ArtifactKind,
+    ArtifactReference,
+    ContextPack,
+    ContextSnippet,
+    PackedSnippet,
+)
 from src.models.frozen_base_model import FrozenBaseModel
 from src.models.repo import Language, Reference, ReferenceKind, RepoIndex, Symbol
 from src.models.task import DockerOrigin, HostOrigin, Origin
@@ -306,6 +313,79 @@ async def run_tool(request: ToolExecutionRequest) -> ToolResult:
         exit_code=command_result.exit_code,
         truncated=bool(artifacts),
         artifacts=artifacts,
+    )
+
+
+class ContextPackRequest(FrozenBaseModel):
+    workspace: Workspace
+    task_summary: str
+    snippets: list[ContextSnippet] = Field(default_factory=list)
+    overflow_text: str | None = None
+
+
+@activity(retries=0, timeout=120)
+async def pack_context(request: ContextPackRequest) -> ContextPack:
+    budget = CONFIG.context_pack_max_characters
+    packed_snippets: list[PackedSnippet] = []
+    artifacts: list[ArtifactReference] = []
+    used_characters = 0
+    for snippet in request.snippets:
+        content = _read_snippet_lines(request.workspace, snippet)
+        if used_characters + len(content) <= budget:
+            packed_snippets.append(
+                PackedSnippet(
+                    file_path=snippet.file_path,
+                    start_line=snippet.start_line,
+                    end_line=snippet.end_line,
+                    reason=snippet.reason,
+                    content=content,
+                )
+            )
+            used_characters += len(content)
+        else:
+            artifacts.append(
+                _write_context_overflow_artifact(
+                    run_id=request.workspace.run_id,
+                    summary=(
+                        f'{snippet.file_path}:{snippet.start_line}-{snippet.end_line} '
+                        'exceeded the context pack budget'
+                    ),
+                    content=content,
+                )
+            )
+    if request.overflow_text:
+        artifacts.append(
+            _write_context_overflow_artifact(
+                run_id=request.workspace.run_id,
+                summary='context gatherer observations (budget exhausted before curation)',
+                content=request.overflow_text,
+            )
+        )
+    return ContextPack(
+        task_summary=request.task_summary,
+        snippets=packed_snippets,
+        artifact_references=artifacts,
+        budget_remaining=max(0, budget - used_characters),
+    )
+
+
+def _read_snippet_lines(workspace: Workspace, snippet: ContextSnippet) -> str:
+    start_line = max(1, snippet.start_line)
+    end_line = max(start_line, snippet.end_line)
+    quoted_path = shlex.quote(snippet.file_path)
+    result = workspace.run_command(['sh', '-lc', f'sed -n {start_line},{end_line}p {quoted_path}'])
+    return result.stdout
+
+
+def _write_context_overflow_artifact(run_id: str, summary: str, content: str) -> ArtifactReference:
+    artifact_filename = f'context-{uuid.uuid4()}.log'
+    artifact_path = Path(_artifacts_root()) / run_id / artifact_filename
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(content, encoding='utf-8')
+    return ArtifactReference(
+        path=artifact_path.as_posix(),
+        summary=summary,
+        kind=ArtifactKind.CONTEXT_OVERFLOW,
     )
 
 

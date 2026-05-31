@@ -14,7 +14,7 @@ from src.activities.implementation import (
 from src.activities.workspace_manager import HostWorkspace, ToolExecutionRequest, ToolResult
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, StructuredCompletion
-from src.models.context import ContextPack
+from src.models.context import ContextPack, PackedSnippet
 from src.models.plan import PlanStep, Risk
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract, TaskType
@@ -163,10 +163,16 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
         return (
             ContextPack(
                 task_summary='Auth context',
-                relevant_snippets=['src/auth.py: token handler'],
-                recent_observations=['found caller'],
-                failed_attempt_summaries=[],
-                available_tools=['run_shell'],
+                snippets=[
+                    PackedSnippet(
+                        file_path='src/auth.py',
+                        start_line=10,
+                        end_line=20,
+                        reason='token handler',
+                        content='def handle_token(): ...',
+                    )
+                ],
+                artifact_references=[],
                 budget_remaining=4,
             ),
             LLMUsage(),
@@ -184,7 +190,8 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
     assert worker_result.status == WorkerStatus.BLOCKED
     assert captured_gather_prompts == ['Find auth callers']
     assert 'Auth context' in captured_messages[1][-1].content
-    assert 'src/auth.py: token handler' in captured_messages[1][-1].content
+    assert 'src/auth.py' in captured_messages[1][-1].content
+    assert 'token handler' in captured_messages[1][-1].content
 
 
 def test_implementation_tool_call_uses_tool_name_enum() -> None:
@@ -580,10 +587,8 @@ def _implementation_request() -> ImplementationTurnRequest:
         ),
         context_pack=ContextPack(
             task_summary='Inspect file',
-            relevant_snippets=[],
-            recent_observations=[],
-            failed_attempt_summaries=[],
-            available_tools=[],
+            snippets=[],
+            artifact_references=[],
             budget_remaining=3,
         ),
         task_contract=TaskContract(

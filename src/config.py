@@ -49,6 +49,8 @@ class Settings(FrozenBaseModel):
     tool_output_compact_head_characters: int
     tool_output_compact_tail_characters: int
 
+    context_pack_max_characters: int
+
     models_by_id: dict[str, ModelEntry]
     model_by_role: dict[ModelRole, str]
 
@@ -91,6 +93,7 @@ def load_settings() -> Settings:
         tool_output_compact_tail_characters=int(
             os.getenv('TOOL_OUTPUT_COMPACT_TAIL_CHARACTERS', '4000')
         ),
+        context_pack_max_characters=int(os.getenv('CONTEXT_PACK_MAX_CHARACTERS', '16000')),
         models_by_id=models_by_id,
         model_by_role=model_by_role,
     )

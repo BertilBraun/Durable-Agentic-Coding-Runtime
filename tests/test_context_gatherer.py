@@ -8,9 +8,15 @@ from src.activities.context_gatherer import (
     ContextGatherRequest,
     gather_context,
 )
-from src.activities.workspace_manager import HostWorkspace, ToolExecutionRequest, ToolResult
+from src.activities.workspace_manager import (
+    ContextPackRequest,
+    HostWorkspace,
+    ToolExecutionRequest,
+    ToolResult,
+)
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, StructuredCompletion
+from src.models.context import ContextPack, PackedSnippet
 from src.models.repo import RepoIndex
 from src.tools.definitions import ContextGathererToolCallAdapter
 
@@ -75,6 +81,32 @@ def _patch_generate_structured(
     monkeypatch.setattr(context_gatherer_module, 'generate_structured', fake_generate_structured)
 
 
+def _patch_pack_context(
+    monkeypatch: pytest.MonkeyPatch,
+    captured: list[ContextPackRequest] | None = None,
+) -> None:
+    async def fake_pack_context(request: ContextPackRequest) -> ContextPack:
+        if captured is not None:
+            captured.append(request)
+        return ContextPack(
+            task_summary=request.task_summary,
+            snippets=[
+                PackedSnippet(
+                    file_path=snippet.file_path,
+                    start_line=snippet.start_line,
+                    end_line=snippet.end_line,
+                    reason=snippet.reason,
+                    content=f'lines for {snippet.file_path}',
+                )
+                for snippet in request.snippets
+            ],
+            artifact_references=[],
+            budget_remaining=0,
+        )
+
+    monkeypatch.setattr(context_gatherer_module, 'pack_context', fake_pack_context)
+
+
 @pytest.mark.asyncio
 async def test_context_gatherer_sends_only_current_turn_observations(
     monkeypatch: pytest.MonkeyPatch,
@@ -111,14 +143,8 @@ async def test_context_gatherer_sends_only_current_turn_observations(
             turn = output_type.model_validate(
                 {
                     'done': True,
-                    'context_pack': {
-                        'task_summary': 'done',
-                        'relevant_snippets': [],
-                        'recent_observations': [],
-                        'failed_attempt_summaries': [],
-                        'available_tools': [],
-                        'budget_remaining': 1,
-                    },
+                    'task_summary': 'done',
+                    'snippets': [],
                 }
             )
         return _structured_completion(turn, context_utilization=0.0)
@@ -128,6 +154,7 @@ async def test_context_gatherer_sends_only_current_turn_observations(
 
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(context_gatherer_module, 'run_tool', fake_run_tool)
+    _patch_pack_context(monkeypatch)
 
     await gather_context(_context_gather_request())
 
@@ -139,10 +166,11 @@ async def test_context_gatherer_sends_only_current_turn_observations(
 
 
 @pytest.mark.asyncio
-async def test_context_gatherer_summarizes_when_context_budget_is_high(
+async def test_context_gatherer_emits_snippets_when_context_budget_is_high(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_finalize_message: list[str] = []
+    captured_pack_requests: list[ContextPackRequest] = []
     call_count = 0
 
     async def handler(
@@ -168,14 +196,15 @@ async def test_context_gatherer_summarizes_when_context_budget_is_high(
         turn = output_type.model_validate(
             {
                 'done': True,
-                'context_pack': {
-                    'task_summary': 'LLM-summarized auth context',
-                    'relevant_snippets': ['summary line 1'],
-                    'recent_observations': [],
-                    'failed_attempt_summaries': [],
-                    'available_tools': ['run_shell'],
-                    'budget_remaining': 0,
-                },
+                'task_summary': 'Auth token handling',
+                'snippets': [
+                    {
+                        'file_path': 'src/auth.py',
+                        'start_line': 10,
+                        'end_line': 20,
+                        'reason': 'token handler',
+                    }
+                ],
             }
         )
         return _structured_completion(turn, context_utilization=0.0)
@@ -185,13 +214,14 @@ async def test_context_gatherer_summarizes_when_context_budget_is_high(
 
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(context_gatherer_module, 'run_tool', fake_run_tool)
+    _patch_pack_context(monkeypatch, captured_pack_requests)
 
     context_pack, _ = await gather_context(_context_gather_request())
 
-    assert context_pack.task_summary == 'LLM-summarized auth context'
-    assert context_pack.relevant_snippets == ['summary line 1']
+    assert context_pack.task_summary == 'Auth token handling'
+    assert [snippet.file_path for snippet in captured_pack_requests[0].snippets] == ['src/auth.py']
+    assert context_pack.snippets[0].reason == 'token handler'
     assert 'context budget is exhausted' in captured_finalize_message[0]
-    assert context_pack.budget_remaining == 0
 
 
 @pytest.mark.asyncio
@@ -233,18 +263,21 @@ async def test_context_gatherer_exits_deterministically_above_hard_budget(
         )
         return _structured_completion(turn, context_utilization=0.97)
 
+    captured_pack_requests: list[ContextPackRequest] = []
+
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         return ToolResult(stdout='handler reference line', stderr='', exit_code=0, truncated=False)
 
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(context_gatherer_module, 'run_tool', fake_run_tool)
+    _patch_pack_context(monkeypatch, captured_pack_requests)
 
     context_pack, _ = await gather_context(_context_gather_request())
 
     assert call_count == 2
     assert context_pack.task_summary == 'Find relevant code'
-    assert context_pack.relevant_snippets == ['handler reference line']
-    assert context_pack.budget_remaining == 0
+    assert captured_pack_requests[0].snippets == []
+    assert 'handler reference line' in captured_pack_requests[0].overflow_text
 
 
 def _context_gather_request() -> ContextGatherRequest:
