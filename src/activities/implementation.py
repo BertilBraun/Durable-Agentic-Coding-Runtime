@@ -26,23 +26,27 @@ from src.models.repo import RepoIndex
 from src.models.task import TaskContract
 from src.models.worker import Confidence, TestResult, WorkerResult, WorkerStatus
 from src.tools.definitions import (
+    ApplyPatch,
     GatherContext,
-    GitDiff,
     ImplementationToolCall,
     RunTests,
+    WriteFile,
 )
 
 IMPLEMENTATION_SYSTEM_PROMPT = (
     'You are the implementation worker. Inspect before editing when context '
     'is insufficient, then use the smallest patch that satisfies the current '
-    'plan step. Keep changes inside allowed files unless blocked, and explain '
+    'plan step. Edit with write_file or apply_patch and run tests with '
+    'run_tests; use run_shell for any other command (status, diff, search, '
+    'reading files), writing it for the environment described in the user '
+    'payload. Keep changes inside allowed files unless blocked, and explain '
     'why any extra file is needed. Use mutating tools only for the current '
     'step. Run relevant tests after edits; inspect failures before editing '
     'again. Return done=true with WorkerResult only for complete, blocked, '
-    'failed, or needs_replan outcomes. Report success only with observed '
-    'git_diff or test evidence. Do not fabricate progress, files, or test '
-    'results. The environment is persistent across tool calls, so installed '
-    'dependencies and prior edits remain available.'
+    'failed, or needs_replan outcomes. Report success only with an applied '
+    'edit or observed test evidence. Do not fabricate progress, files, or '
+    'test results. The environment is persistent across tool calls, so '
+    'installed dependencies and prior edits remain available.'
 )
 
 
@@ -161,8 +165,8 @@ async def run_implementation_turn(
                                     sequence=len(test_results) + 1,
                                 )
                             )
-                        case GitDiff():
-                            saw_diff = saw_diff or bool(tool_result.stdout.strip())
+                        case WriteFile() | ApplyPatch():
+                            saw_diff = saw_diff or tool_result.exit_code == 0
                         case _:
                             pass
         messages.append(Message(role='assistant', content=agent_turn.model_dump_json()))
@@ -177,6 +181,7 @@ def _llm_user_payload(request: ImplementationTurnRequest) -> dict[str, object]:
         'context_pack': request.context_pack.model_dump(mode='json'),
         'task_contract': request.task_contract.model_dump(mode='json'),
         'workspace_info': request.workspace_info.model_dump(mode='json'),
+        'environment': request.workspace_info.describe_environment(),
         'available_tools': list(IMPLEMENTATION_AVAILABLE_TOOLS),
     }
 

@@ -9,8 +9,21 @@ from src.activities.workspace_manager import (
 )
 from src.config import CONFIG
 from src.models.context import ArtifactKind
-from src.models.repo import FileEntry, Language, RepoIndex, Symbol, SymbolKind
-from src.tools.definitions import FindReferences, FindSymbol, GitStatus, RunTests, ToolName
+from src.models.repo import (
+    Language,
+    Reference,
+    ReferenceKind,
+    RepoIndex,
+    Symbol,
+    SymbolKind,
+)
+from src.tools.definitions import (
+    FindCallers,
+    FindDefinition,
+    RunShell,
+    RunTests,
+    ToolName,
+)
 
 
 def _host_workspace(run_id: str = 'run-1', repo_path: str = 'workspace') -> HostWorkspace:
@@ -21,6 +34,34 @@ def _host_workspace(run_id: str = 'run-1', repo_path: str = 'workspace') -> Host
         current_branch='agentic/run-1/cand-0',
         repo_path=repo_path,
     )
+
+
+@pytest.mark.asyncio
+async def test_run_shell_dispatches_through_shell_invocation_with_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        captured['command'] = command
+        captured['timeout'] = timeout
+        return CommandResult(stdout='listing\n', stderr='', exit_code=0)
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
+
+    result = await run_tool(
+        ToolExecutionRequest(
+            workspace=_host_workspace(),
+            tool=RunShell(command='ls -la', timeout_seconds=23),
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert result.tool_name == ToolName.RUN_SHELL
+    assert captured['command'] == _host_workspace().shell_invocation('ls -la')
+    assert captured['timeout'] == 23
 
 
 @pytest.mark.asyncio
@@ -120,7 +161,7 @@ async def test_run_tool_writes_large_stderr_to_artifact(
     result = await run_tool(
         ToolExecutionRequest(
             workspace=_host_workspace(run_id='run-large'),
-            tool=GitStatus(path='.'),
+            tool=RunShell(command='git status', timeout_seconds=10),
         ),
     )
 
@@ -132,7 +173,7 @@ async def test_run_tool_writes_large_stderr_to_artifact(
     assert artifact_reference.kind == ArtifactKind.LOG
     artifact_path = Path(artifact_reference.path)
     assert artifact_path.parent.name == 'run-large'
-    assert artifact_path.name.startswith('git_status-')
+    assert artifact_path.name.startswith('run_shell-')
     assert artifact_path.name.endswith('-stderr.log')
     assert artifact_path.read_text(encoding='utf-8') == 'e' * 20_001
 
@@ -176,18 +217,18 @@ async def test_run_tool_large_output_artifacts_do_not_collide_within_run(
 def test_tool_execution_request_preserves_tool_type_after_json_round_trip() -> None:
     request = ToolExecutionRequest(
         workspace=_host_workspace(),
-        tool=GitStatus(path='.'),
+        tool=RunShell(command='git status', timeout_seconds=10),
     )
 
     restored_request = ToolExecutionRequest.model_validate(request.model_dump(mode='json'))
 
-    assert restored_request.tool == GitStatus(path='.')
+    assert restored_request.tool == RunShell(command='git status', timeout_seconds=10)
 
 
 def test_tool_execution_request_preserves_workspace_subclass_after_round_trip() -> None:
     request = ToolExecutionRequest(
         workspace=_host_workspace(),
-        tool=GitStatus(path='.'),
+        tool=RunShell(command='git status', timeout_seconds=10),
     )
 
     restored_request = ToolExecutionRequest.model_validate(request.model_dump(mode='json'))
@@ -197,7 +238,7 @@ def test_tool_execution_request_preserves_workspace_subclass_after_round_trip() 
 
 
 @pytest.mark.asyncio
-async def test_run_tool_finds_python_symbol_from_repo_index() -> None:
+async def test_run_tool_finds_definition_from_repo_index() -> None:
     repository_index = RepoIndex(
         symbols=[
             Symbol(
@@ -214,56 +255,43 @@ async def test_run_tool_finds_python_symbol_from_repo_index() -> None:
     result = await run_tool(
         ToolExecutionRequest(
             workspace=_host_workspace(),
-            tool=FindSymbol(name='Parser', language='python'),
+            tool=FindDefinition(name='Parser', language='python'),
             repo_index=repository_index,
         )
     )
 
     assert result.exit_code == 0
+    assert result.tool_name == ToolName.FIND_DEFINITION
     assert 'src/parser.py:3-8 class Parser' in result.stdout
 
 
 @pytest.mark.asyncio
-async def test_run_tool_finds_tsx_references_from_indexed_files(tmp_path: Path) -> None:
-    component_path = tmp_path / 'src' / 'component.tsx'
-    component_path.parent.mkdir()
-    component_path.write_text(
-        'export function Widget() {\n'
-        '  return null;\n'
-        '}\n'
-        '\n'
-        'export function App() {\n'
-        '  return <Widget />;\n'
-        '}\n',
-        encoding='utf-8',
-    )
+async def test_run_tool_finds_callers_from_repo_index_excluding_mentions() -> None:
     repository_index = RepoIndex(
-        file_tree=[
-            FileEntry(
-                path='src/component.tsx',
-                language=Language.TSX,
-                size_bytes=component_path.stat().st_size,
-            )
-        ],
-        symbols=[
-            Symbol(
-                name='Widget',
-                kind=SymbolKind.FUNCTION,
-                file_path='src/component.tsx',
-                start_line=1,
-                end_line=3,
-                language=Language.TSX,
-            )
-        ],
+        references=[
+            Reference(
+                symbol_name='build_parser',
+                file_path='src/app.py',
+                line=12,
+                kind=ReferenceKind.CALL,
+            ),
+            Reference(
+                symbol_name='build_parser',
+                file_path='src/notes.py',
+                line=4,
+                kind=ReferenceKind.MENTION,
+            ),
+        ]
     )
 
     result = await run_tool(
         ToolExecutionRequest(
-            workspace=_host_workspace(repo_path=str(tmp_path)),
-            tool=FindReferences(symbol_name='Widget', file_path='src/component.tsx'),
+            workspace=_host_workspace(),
+            tool=FindCallers(symbol_name='build_parser'),
             repo_index=repository_index,
         )
     )
 
     assert result.exit_code == 0
-    assert 'src/component.tsx:6:  return <Widget />;' in result.stdout
+    assert result.tool_name == ToolName.FIND_CALLERS
+    assert result.stdout == 'src/app.py:12: build_parser'

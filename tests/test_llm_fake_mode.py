@@ -56,7 +56,6 @@ async def test_test_local_fake_openai_implementation_first_turn_emits_patch_and_
     assert [tool_call.tool_name for tool_call in turn.tool_calls] == [
         ToolName.APPLY_PATCH,
         ToolName.RUN_TESTS,
-        ToolName.GIT_DIFF,
     ]
 
 

@@ -52,7 +52,7 @@ async def build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
                 content=(
                     f'Revision guidance: {revision_guidance}\n\n'
                     f'Contract:\n{request.contract.model_dump_json()}\n\n'
-                    f'Repo index:\n{request.repo_index.model_dump_json()}\n\n'
+                    f'Repository tree:\n{request.repo_index.directory_tree_text()}\n\n'
                     f'Worker results so far:\n{worker_results_json}'
                 ),
             ),

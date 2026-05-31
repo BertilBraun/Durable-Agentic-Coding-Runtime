@@ -15,13 +15,15 @@ from src.models.repo import RepoIndex
 from src.tools.definitions import ContextGathererToolCall
 
 CONTEXT_GATHERER_SYSTEM_PROMPT = (
-    'You are the read-only context gatherer. Use only read_file_range, '
-    'search_text, find_symbol, and find_references; never request mutating '
-    'tools. Gather compact evidence for the requested step: relevant code, '
-    'tests, risks, and open questions. Avoid repeating observations. Return '
-    'done=true with ContextPack when enough context exists, or continue with '
-    'another allowed tool call when a specific gap remains. Do not invent '
-    'files, behavior, or test results.'
+    'You are the read-only context gatherer. Use run_shell for read-only '
+    'inspection only (listing files, reading file ranges, searching text) and '
+    'find_definition, find_callers, and find_callees for symbol cross-references; '
+    'never mutate the workspace. Write run_shell commands for the environment '
+    'described in the user payload. Gather compact evidence for the requested '
+    'step: relevant code, tests, risks, and open questions. Avoid repeating '
+    'observations. Return done=true with ContextPack when enough context exists, '
+    'or continue with another allowed tool call when a specific gap remains. Do '
+    'not invent files, behavior, or test results.'
 )
 
 
@@ -46,7 +48,10 @@ async def gather_context(request: ContextGatherRequest) -> tuple[ContextPack, LL
         ),
         Message(
             role='user',
-            content=f'Repository index: {request.repo_index.model_dump_json()}',
+            content=(
+                f'Environment: {request.workspace_info.describe_environment()}\n\n'
+                f'Repository tree:\n{request.repo_index.directory_tree_text()}'
+            ),
             cacheable=True,
         ),
         Message(

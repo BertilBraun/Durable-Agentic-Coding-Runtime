@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import re
 import subprocess
-import tarfile
-import tempfile
+import sys
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Literal, NamedTuple, TypeVar
 
@@ -17,10 +13,36 @@ from temporal_light import activity
 from src.config import CONFIG
 from src.models.context import ArtifactKind, ArtifactReference
 from src.models.frozen_base_model import FrozenBaseModel
-from src.models.repo import Language, RepoIndex, Symbol
+from src.models.repo import Language, Reference, ReferenceKind, RepoIndex, Symbol
 from src.models.task import DockerOrigin, HostOrigin, Origin
-from src.tools.definitions import FindReferences, FindSymbol, RunTests, Tool, ToolName
+from src.tools.definitions import (
+    FindCallees,
+    FindCallers,
+    FindDefinition,
+    RunShell,
+    RunTests,
+    Tool,
+    ToolName,
+)
 from src.tools.handlers import command_for_tool
+
+POSIX_ENVIRONMENT_DESCRIPTION = (
+    'OS: Linux/Unix. Shell: POSIX `sh` (commands run as `sh -lc <command>`). '
+    'Run from the repository root. Chain statements with `;`, `&&`, `||`, or newlines; '
+    'multi-line commands work directly. Quote arguments with single quotes and escape a '
+    "literal single quote as '\\''. Use forward-slash paths and redirect to /dev/null."
+)
+WINDOWS_ENVIRONMENT_DESCRIPTION = (
+    'OS: Windows. Shell: Windows PowerShell (commands run as '
+    '`powershell -NoProfile -Command <command>`). Run from the repository root. Separate '
+    'statements with `;` or newlines and use a backtick (`) for line continuation. Quote '
+    "arguments with single quotes and escape a literal single quote by doubling it (''). "
+    'Cmdlets use Verb-Noun names (Get-Content, Select-String); redirect to $null, not /dev/null.'
+)
+
+
+def _host_is_windows() -> bool:
+    return sys.platform.startswith('win')
 
 
 class CommandResult(NamedTuple):
@@ -46,6 +68,12 @@ class _Workspace(FrozenBaseModel):
         raise NotImplementedError
 
     def teardown(self) -> None:
+        raise NotImplementedError
+
+    def shell_invocation(self, command: str) -> list[str]:
+        raise NotImplementedError
+
+    def describe_environment(self) -> str:
         raise NotImplementedError
 
     def _run_checked(self, command: list[str]) -> str:
@@ -113,6 +141,16 @@ class HostWorkspace(_Workspace):
     def teardown(self) -> None:
         return
 
+    def shell_invocation(self, command: str) -> list[str]:
+        if _host_is_windows():
+            return ['powershell', '-NoProfile', '-Command', command]
+        return ['sh', '-lc', command]
+
+    def describe_environment(self) -> str:
+        if _host_is_windows():
+            return WINDOWS_ENVIRONMENT_DESCRIPTION
+        return POSIX_ENVIRONMENT_DESCRIPTION
+
 
 class DockerWorkspace(_Workspace):
     kind: Literal['docker'] = 'docker'
@@ -138,6 +176,12 @@ class DockerWorkspace(_Workspace):
         container = _docker_client().containers.get(self.container_id)
         container.stop(timeout=10)
         container.remove(force=True)
+
+    def shell_invocation(self, command: str) -> list[str]:
+        return ['sh', '-lc', command]
+
+    def describe_environment(self) -> str:
+        return POSIX_ENVIRONMENT_DESCRIPTION
 
 
 Workspace = Annotated[HostWorkspace | DockerWorkspace, Field(discriminator='kind')]
@@ -237,7 +281,7 @@ async def run_tool(request: ToolExecutionRequest) -> ToolResult:
     if indexed_result is not None:
         return indexed_result
     command_result = request.workspace.run_command(
-        command_for_tool(request.tool),
+        command_for_tool(request.tool, request.workspace),
         timeout=_tool_timeout_seconds(request.tool),
     )
     stdout_reference = _write_large_output_artifact(
@@ -289,23 +333,17 @@ def _indexed_tool_result(request: ToolExecutionRequest) -> ToolResult | None:
     if request.repo_index is None:
         return None
     match request.tool:
-        case FindSymbol(name=name, language=language):
-            return _find_indexed_symbol(request.repo_index, name, language)
-        case FindReferences(symbol_name=symbol_name):
-            match request.workspace:
-                case HostWorkspace(repo_path=repo_path):
-                    return _find_indexed_references(
-                        workspace_path=Path(repo_path),
-                        repository_index=request.repo_index,
-                        symbol_name=symbol_name,
-                    )
-                case _:
-                    return None
+        case FindDefinition(name=name, language=language):
+            return _find_indexed_definition(request.repo_index, name, language)
+        case FindCallers(symbol_name=symbol_name):
+            return _find_indexed_callers(request.repo_index, symbol_name)
+        case FindCallees(file_path=file_path, symbol_name=symbol_name):
+            return _find_indexed_callees(request.repo_index, file_path, symbol_name)
         case _:
             return None
 
 
-def _find_indexed_symbol(repository_index: RepoIndex, name: str, language: str) -> ToolResult:
+def _find_indexed_definition(repository_index: RepoIndex, name: str, language: str) -> ToolResult:
     matching_symbols = [
         symbol
         for symbol in repository_index.symbols
@@ -313,7 +351,7 @@ def _find_indexed_symbol(repository_index: RepoIndex, name: str, language: str) 
     ]
     lines = [_format_symbol(symbol) for symbol in matching_symbols]
     return ToolResult(
-        tool_name=ToolName.FIND_SYMBOL,
+        tool_name=ToolName.FIND_DEFINITION,
         stdout='\n'.join(lines),
         stderr='',
         exit_code=0,
@@ -321,31 +359,43 @@ def _find_indexed_symbol(repository_index: RepoIndex, name: str, language: str) 
     )
 
 
-def _find_indexed_references(
-    workspace_path: Path,
+def _find_indexed_callers(repository_index: RepoIndex, symbol_name: str) -> ToolResult:
+    callers = [
+        reference
+        for reference in repository_index.references
+        if reference.symbol_name == symbol_name and reference.kind == ReferenceKind.CALL
+    ]
+    lines = [_format_reference(reference) for reference in callers]
+    return ToolResult(
+        tool_name=ToolName.FIND_CALLERS,
+        stdout='\n'.join(lines),
+        stderr='',
+        exit_code=0,
+        truncated=False,
+    )
+
+
+def _find_indexed_callees(
     repository_index: RepoIndex,
+    file_path: str,
     symbol_name: str,
 ) -> ToolResult:
-    reference_lines: list[str] = []
-    symbol_pattern = re.compile(rf'\b{re.escape(symbol_name)}\b')
-    indexed_paths = {
-        file_entry.path
-        for file_entry in repository_index.file_tree
-        if file_entry.language != Language.UNKNOWN
-    }
-    for relative_path in sorted(indexed_paths):
-        file_path = workspace_path / relative_path
-        if not file_path.is_file():
-            continue
-        for line_number, line in enumerate(
-            file_path.read_text(encoding='utf-8', errors='replace').splitlines(),
-            start=1,
-        ):
-            if symbol_pattern.search(line):
-                reference_lines.append(f'{relative_path}:{line_number}:{line}')
+    definition_ranges = [
+        (symbol.start_line, symbol.end_line)
+        for symbol in repository_index.symbols
+        if symbol.name == symbol_name and symbol.file_path == file_path
+    ]
+    callees = [
+        reference
+        for reference in repository_index.references
+        if reference.kind == ReferenceKind.CALL
+        and reference.file_path == file_path
+        and any(start <= reference.line <= end for start, end in definition_ranges)
+    ]
+    lines = [_format_reference(reference) for reference in callees]
     return ToolResult(
-        tool_name=ToolName.FIND_REFERENCES,
-        stdout='\n'.join(reference_lines),
+        tool_name=ToolName.FIND_CALLEES,
+        stdout='\n'.join(lines),
         stderr='',
         exit_code=0,
         truncated=False,
@@ -357,9 +407,13 @@ def _format_symbol(symbol: Symbol) -> str:
     return f'{location} {symbol.kind.value} {symbol.name}'
 
 
+def _format_reference(reference: Reference) -> str:
+    return f'{reference.file_path}:{reference.line}: {reference.symbol_name}'
+
+
 def _tool_timeout_seconds(tool: Tool) -> int | None:
     match tool:
-        case RunTests(timeout_seconds=timeout_seconds):
+        case RunTests(timeout_seconds=timeout_seconds) | RunShell(timeout_seconds=timeout_seconds):
             return timeout_seconds
         case _:
             return None
@@ -367,22 +421,6 @@ def _tool_timeout_seconds(tool: Tool) -> int | None:
 
 def make_run_id() -> str:
     return str(uuid.uuid4())
-
-
-@contextmanager
-def extract_docker_repo_snapshot(workspace: DockerWorkspace) -> Iterator[Path]:
-    container = _docker_client().containers.get(workspace.container_id)
-    archive_stream, _ = container.get_archive(workspace.container_repo_path)
-    with tempfile.TemporaryDirectory() as temporary_directory:
-        archive_path = Path(temporary_directory) / 'snapshot.tar'
-        with archive_path.open('wb') as archive_file:
-            for chunk in archive_stream:
-                archive_file.write(chunk)
-        extraction_path = Path(temporary_directory) / 'snapshot'
-        with tarfile.open(archive_path) as archive:
-            archive.extractall(extraction_path)
-        repository_name = Path(workspace.container_repo_path).name
-        yield extraction_path / repository_name
 
 
 def _docker_client() -> docker.DockerClient:

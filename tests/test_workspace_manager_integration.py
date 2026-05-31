@@ -10,7 +10,7 @@ from src.activities.workspace_manager import (
     teardown_environment,
 )
 from src.models.task import HostOrigin
-from src.tools.definitions import ReadFileRange, WriteFile
+from src.tools.definitions import RunShell, WriteFile
 
 pytestmark = pytest.mark.integration
 
@@ -36,7 +36,7 @@ async def test_host_workspace_runs_tools_in_place(tmp_path: Path) -> None:
         read_result = await run_tool(
             ToolExecutionRequest(
                 workspace=candidate_workspace,
-                tool=ReadFileRange(file_path='hello.txt', start_line=1, end_line=1),
+                tool=RunShell(command='cat hello.txt', timeout_seconds=10),
             )
         )
         write_result = await run_tool(

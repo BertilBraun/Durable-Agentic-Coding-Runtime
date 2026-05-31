@@ -149,8 +149,7 @@ def _implementation_tool_turn() -> str:
         '{"done":false,"worker_result":null,"tool_calls":['
         f'{{"tool_name":"apply_patch","patch":{escaped_patch}}},'
         '{"tool_name":"run_tests","command":"pytest -q",'
-        '"timeout_seconds":60,"directory":"."},'
-        '{"tool_name":"git_diff","path":"."}'
+        '"timeout_seconds":60,"directory":"."}'
         ']}'
     )
 

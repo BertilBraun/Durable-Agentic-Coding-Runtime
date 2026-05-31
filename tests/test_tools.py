@@ -1,54 +1,94 @@
 import pytest
+from src.activities import workspace_manager
+from src.activities.workspace_manager import DockerWorkspace, HostWorkspace
 from src.tools.definitions import (
     ApplyPatch,
-    GitCommit,
-    GitDiff,
-    ReadFileRange,
+    FindCallers,
     RunLint,
+    RunShell,
     RunTests,
-    SearchText,
     ToolName,
     WriteFile,
 )
 from src.tools.handlers import command_for_tool
 
 
+def _host_workspace() -> HostWorkspace:
+    return HostWorkspace(
+        run_id='run-1',
+        base_sha='basesha',
+        base_branch='main',
+        current_branch='main',
+        repo_path='workspace',
+    )
+
+
+def _docker_workspace() -> DockerWorkspace:
+    return DockerWorkspace(
+        run_id='run-1',
+        base_sha='basesha',
+        base_branch='main',
+        current_branch='main',
+        container_id='container-1',
+        container_repo_path='/repo',
+    )
+
+
 def test_tool_exposes_stable_tool_name() -> None:
-    read_file_range = ReadFileRange(file_path='src/app.py', start_line=1, end_line=10)
+    run_shell = RunShell(command='ls', timeout_seconds=10)
 
-    assert read_file_range.tool_name == ToolName.READ_FILE_RANGE
+    assert run_shell.tool_name == ToolName.RUN_SHELL
 
 
-def test_git_commit_command_stages_new_files() -> None:
-    command = command_for_tool(GitCommit(message='commit message'))
+def test_docker_workspace_shell_invocation_uses_posix_sh() -> None:
+    command = command_for_tool(
+        RunShell(command='git status', timeout_seconds=5), _docker_workspace()
+    )
 
-    assert command == ['sh', '-lc', "git add -A && git commit -m 'commit message'"]
+    assert command == ['sh', '-lc', 'git status']
+
+
+def test_host_workspace_shell_invocation_selects_shell_for_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(workspace_manager, '_host_is_windows', lambda: False)
+    posix_command = command_for_tool(RunShell(command='ls', timeout_seconds=5), _host_workspace())
+
+    monkeypatch.setattr(workspace_manager, '_host_is_windows', lambda: True)
+    windows_command = command_for_tool(RunShell(command='ls', timeout_seconds=5), _host_workspace())
+
+    assert posix_command == ['sh', '-lc', 'ls']
+    assert windows_command == ['powershell', '-NoProfile', '-Command', 'ls']
 
 
 def test_tool_command_rejects_absolute_file_path() -> None:
     with pytest.raises(ValueError, match='workspace-relative'):
-        command_for_tool(ReadFileRange(file_path='/etc/passwd', start_line=1, end_line=1))
+        command_for_tool(WriteFile(file_path='/etc/passwd', content='x'), _host_workspace())
 
 
 def test_tool_command_rejects_parent_traversal_file_path() -> None:
     with pytest.raises(ValueError, match='workspace-relative'):
-        command_for_tool(WriteFile(file_path='../outside.txt', content='escape'))
+        command_for_tool(WriteFile(file_path='../outside.txt', content='escape'), _host_workspace())
 
 
 def test_tool_command_rejects_parent_traversal_directory() -> None:
     with pytest.raises(ValueError, match='workspace-relative'):
-        command_for_tool(SearchText(pattern='needle', directory='src/../..', file_glob='*.py'))
+        command_for_tool(
+            RunTests(command='pytest', timeout_seconds=60, directory='src/../..'),
+            _host_workspace(),
+        )
 
 
 def test_tool_command_allows_current_directory_path() -> None:
-    command = command_for_tool(RunLint(path='.'))
+    command = command_for_tool(RunLint(path='.'), _host_workspace())
 
     assert command == ['ruff', 'check', '.']
 
 
 def test_run_tests_command_runs_from_requested_directory() -> None:
     command = command_for_tool(
-        RunTests(command='pytest -q', timeout_seconds=60, directory='examples/smoke')
+        RunTests(command='pytest -q', timeout_seconds=60, directory='examples/smoke'),
+        _docker_workspace(),
     )
 
     assert command == ['sh', '-lc', 'cd examples/smoke && pytest -q']
@@ -56,12 +96,16 @@ def test_run_tests_command_runs_from_requested_directory() -> None:
 
 def test_run_tests_command_rejects_parent_traversal_directory() -> None:
     with pytest.raises(ValueError, match='workspace-relative'):
-        command_for_tool(RunTests(command='pytest -q', timeout_seconds=60, directory='../outside'))
+        command_for_tool(
+            RunTests(command='pytest -q', timeout_seconds=60, directory='../outside'),
+            _docker_workspace(),
+        )
 
 
 def test_apply_patch_tool_name() -> None:
     assert ApplyPatch(patch='--- a/file\n+++ b/file').tool_name == ToolName.APPLY_PATCH
 
 
-def test_git_diff_tool_name() -> None:
-    assert GitDiff(path='.').tool_name == ToolName.GIT_DIFF
+def test_index_tool_must_be_served_from_index() -> None:
+    with pytest.raises(AssertionError, match='repo index'):
+        command_for_tool(FindCallers(symbol_name='handle'), _docker_workspace())

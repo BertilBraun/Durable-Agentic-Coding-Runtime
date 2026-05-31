@@ -22,6 +22,11 @@ class SymbolKind(StrEnum):
     METHOD = 'method'
 
 
+class ReferenceKind(StrEnum):
+    CALL = 'call'
+    MENTION = 'mention'
+
+
 class FileEntry(FrozenBaseModel):
     path: str
     language: Language
@@ -37,6 +42,30 @@ class Symbol(FrozenBaseModel):
     language: Language
 
 
+class Reference(FrozenBaseModel):
+    symbol_name: str
+    file_path: str
+    line: int
+    kind: ReferenceKind
+
+
 class RepoIndex(FrozenBaseModel):
     file_tree: list[FileEntry] = Field(default_factory=list)
     symbols: list[Symbol] = Field(default_factory=list)
+    references: list[Reference] = Field(default_factory=list)
+
+    def directory_tree_text(self) -> str:
+        root: dict[str, dict] = {}
+        for path in sorted(entry.path for entry in self.file_tree):
+            cursor = root
+            for part in path.split('/'):
+                cursor = cursor.setdefault(part, {})
+        lines: list[str] = []
+        _append_tree_lines(root, 0, lines)
+        return '\n'.join(lines)
+
+
+def _append_tree_lines(node: dict[str, dict], depth: int, lines: list[str]) -> None:
+    for name in sorted(node):
+        lines.append(f'{"  " * depth}{name}')
+        _append_tree_lines(node[name], depth + 1, lines)

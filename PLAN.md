@@ -50,7 +50,7 @@ Module map (everything under `src/`):
 | Task input (discriminated `Origin`: host/docker) | [models/task.py](src/models/task.py) |
 | Environment: persistent `Workspace` seam + activities | [activities/workspace_manager.py](src/activities/workspace_manager.py) |
 | Tool schema (`Tool` union, `ToolName`) / command building | [tools/definitions.py](src/tools/definitions.py), [tools/handlers.py](src/tools/handlers.py) |
-| Repo index (tree-sitter symbols) | [activities/repo_indexer.py](src/activities/repo_indexer.py), [models/repo.py](src/models/repo.py) |
+| Repo index (tree-sitter symbols + call/mention xref) | [activities/repo_indexer.py](src/activities/repo_indexer.py), [models/repo.py](src/models/repo.py) |
 | Contract / complexity / planner | [activities/contract_builder.py](src/activities/contract_builder.py), [activities/complexity_assessor.py](src/activities/complexity_assessor.py), [activities/planner.py](src/activities/planner.py) |
 | Context gatherer (cheap-model retrieval) | [activities/context_gatherer.py](src/activities/context_gatherer.py), [models/context.py](src/models/context.py) |
 | Implementation worker (bounded tool loop) | [activities/implementation.py](src/activities/implementation.py), [workflows/implementation_workflow.py](src/workflows/implementation_workflow.py) |
@@ -131,19 +131,20 @@ The pipeline is implemented and green under unit/fake-mode tests. Outstanding:
 - **DOCKER failure cleanup.** `teardown_environment` only runs on normal completion; container
   removal has no recovery path on failure (revisit when Temporal-Light supports
   failure/cancellation compensation).
-- **DOCKER repo indexing** extracts a throwaway snapshot from the container rather than indexing
-  in-container; `find_references` falls back to in-container `rg` for DOCKER. (Addressed by the
-  indexer rework below.)
+- **Precise xref.** Call-site capture is tree-sitter heuristic (name-keyed, ignores comments and
+  strings, distinguishes calls from mentions) — not scope-accurate. A precise per-language analyzer
+  (Python `ast`/`symtable`, TS `tsserver`) is deferred.
 
 ## 7. Roadmap
 
 Concrete next changes are specified as standalone prompts in [prompts/](prompts/) (each
 self-contained, picked up in its own chat):
 
-1. **Indexer + shell tool + tool-surface rework** — a general shell tool with an environment
-   descriptor (Windows/PowerShell and POSIX), delete the narrow shell-wrapper tools, and turn the
-   index into a real symbol + cross-reference (find-definition / find-callers) index; stop dumping
-   the index into prompts. — [prompts/01](prompts/01-indexer-shell-tool-rework.md)
+1. ~~**Indexer + shell tool + tool-surface rework**~~ — done: `run_shell` with a per-workspace
+   environment descriptor (Windows/PowerShell and POSIX), narrow shell-wrapper tools deleted, and a
+   real symbol + cross-reference (`find_definition` / `find_callers` / `find_callees`) index built
+   through `run_command`; prompts now carry only the directory tree. —
+   [prompts/01](prompts/01-indexer-shell-tool-rework.md)
 2. **Context packer rework** — typed, grounded context (file + line range + metadata) instead of
    LLM-summarized prose; pull on demand. — [prompts/02](prompts/02-context-packer-rework.md)
 3. **Reproduce → repair → regression loop** — gate bugfix success on a test that fails on base then

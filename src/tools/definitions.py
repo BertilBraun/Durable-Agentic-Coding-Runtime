@@ -9,43 +9,19 @@ from src.runtime_enums import StrEnum
 
 
 class ToolName(StrEnum):
-    READ_FILE_RANGE = 'read_file_range'
-    SEARCH_TEXT = 'search_text'
     WRITE_FILE = 'write_file'
     APPLY_PATCH = 'apply_patch'
-    GIT_DIFF = 'git_diff'
-    GIT_STATUS = 'git_status'
-    GIT_COMMIT = 'git_commit'
     RUN_TESTS = 'run_tests'
     RUN_LINT = 'run_lint'
-    RUN_TYPECHECK = 'run_typecheck'
-    FIND_SYMBOL = 'find_symbol'
-    FIND_REFERENCES = 'find_references'
+    RUN_SHELL = 'run_shell'
+    FIND_DEFINITION = 'find_definition'
+    FIND_CALLERS = 'find_callers'
+    FIND_CALLEES = 'find_callees'
     GATHER_CONTEXT = 'gather_context'
 
 
 class ToolBase(FrozenBaseModel):
     pass
-
-
-class ReadFileRange(ToolBase):
-    tool_name: Literal[ToolName.READ_FILE_RANGE] = Field(
-        default=ToolName.READ_FILE_RANGE,
-        description='Tool name tag.',
-    )
-    file_path: str = Field(description='Workspace-relative file path to read.')
-    start_line: int = Field(description='First 1-based line number to read.')
-    end_line: int = Field(description='Last 1-based line number to read.')
-
-
-class SearchText(ToolBase):
-    tool_name: Literal[ToolName.SEARCH_TEXT] = Field(
-        default=ToolName.SEARCH_TEXT,
-        description='Tool name tag.',
-    )
-    pattern: str = Field(description='Search pattern. Use ripgrep-compatible syntax.')
-    directory: str = Field(description='Workspace-relative directory to search.')
-    file_glob: str = Field(description='File glob filter, for example "*.py".')
 
 
 class WriteFile(ToolBase):
@@ -63,30 +39,6 @@ class ApplyPatch(ToolBase):
         description='Tool name tag.',
     )
     patch: str = Field(description='Unified diff patch to apply from the workspace root.')
-
-
-class GitDiff(ToolBase):
-    tool_name: Literal[ToolName.GIT_DIFF] = Field(
-        default=ToolName.GIT_DIFF,
-        description='Tool name tag.',
-    )
-    path: str = Field(description='Workspace-relative path to diff, or "." for all changes.')
-
-
-class GitStatus(ToolBase):
-    tool_name: Literal[ToolName.GIT_STATUS] = Field(
-        default=ToolName.GIT_STATUS,
-        description='Tool name tag.',
-    )
-    path: str = Field(description='Workspace-relative path to inspect, or "." for all changes.')
-
-
-class GitCommit(ToolBase):
-    tool_name: Literal[ToolName.GIT_COMMIT] = Field(
-        default=ToolName.GIT_COMMIT,
-        description='Tool name tag.',
-    )
-    message: str = Field(description='Commit message.')
 
 
 class RunTests(ToolBase):
@@ -107,30 +59,39 @@ class RunLint(ToolBase):
     path: str = Field(description='Workspace-relative path to lint, or ".".')
 
 
-class RunTypecheck(ToolBase):
-    tool_name: Literal[ToolName.RUN_TYPECHECK] = Field(
-        default=ToolName.RUN_TYPECHECK,
+class RunShell(ToolBase):
+    tool_name: Literal[ToolName.RUN_SHELL] = Field(
+        default=ToolName.RUN_SHELL,
         description='Tool name tag.',
     )
-    path: str = Field(description='Workspace-relative path to typecheck, or ".".')
+    command: str = Field(description='Shell command to run from the repository root.')
+    timeout_seconds: int = Field(description='Maximum seconds to allow the command to run.')
 
 
-class FindSymbol(ToolBase):
-    tool_name: Literal[ToolName.FIND_SYMBOL] = Field(
-        default=ToolName.FIND_SYMBOL,
+class FindDefinition(ToolBase):
+    tool_name: Literal[ToolName.FIND_DEFINITION] = Field(
+        default=ToolName.FIND_DEFINITION,
         description='Tool name tag.',
     )
-    name: str = Field(description='Exact symbol name to look up in the repository index.')
+    name: str = Field(description='Exact symbol name to resolve to its definition site(s).')
     language: str = Field(description='Source language, for example "python" or "javascript".')
 
 
-class FindReferences(ToolBase):
-    tool_name: Literal[ToolName.FIND_REFERENCES] = Field(
-        default=ToolName.FIND_REFERENCES,
+class FindCallers(ToolBase):
+    tool_name: Literal[ToolName.FIND_CALLERS] = Field(
+        default=ToolName.FIND_CALLERS,
         description='Tool name tag.',
     )
-    symbol_name: str = Field(description='Exact symbol name whose references should be found.')
+    symbol_name: str = Field(description='Exact symbol name whose call sites should be found.')
+
+
+class FindCallees(ToolBase):
+    tool_name: Literal[ToolName.FIND_CALLEES] = Field(
+        default=ToolName.FIND_CALLEES,
+        description='Tool name tag.',
+    )
     file_path: str = Field(description='Workspace-relative file path where the symbol is defined.')
+    symbol_name: str = Field(description='Exact symbol name whose callees should be found.')
 
 
 class GatherContext(ToolBase):
@@ -142,24 +103,20 @@ class GatherContext(ToolBase):
 
 
 Tool = (
-    ReadFileRange
-    | SearchText
-    | WriteFile
+    WriteFile
     | ApplyPatch
-    | GitDiff
-    | GitStatus
-    | GitCommit
     | RunTests
     | RunLint
-    | RunTypecheck
-    | FindSymbol
-    | FindReferences
+    | RunShell
+    | FindDefinition
+    | FindCallers
+    | FindCallees
     | GatherContext
 )
 
 ImplementationToolCall: TypeAlias = Tool
 
-ContextGathererToolCall: TypeAlias = ReadFileRange | SearchText | FindSymbol | FindReferences
+ContextGathererToolCall: TypeAlias = RunShell | FindDefinition | FindCallers | FindCallees
 
 ImplementationToolCallAdapter: TypeAdapter[ImplementationToolCall] = TypeAdapter(
     ImplementationToolCall

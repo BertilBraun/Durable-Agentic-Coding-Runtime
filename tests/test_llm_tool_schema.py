@@ -2,25 +2,23 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 from src.tools.definitions import (
     ContextGathererToolCall,
+    FindCallers,
     ImplementationToolCall,
-    ImplementationToolCallAdapter,
-    ReadFileRange,
+    RunShell,
     RunTests,
-    SearchText,
     WriteFile,
 )
 
 
 def test_tool_parameter_schema_includes_descriptions() -> None:
-    schema = SearchText.model_json_schema()
+    schema = RunShell.model_json_schema()
 
-    assert schema['properties']['pattern']['description']
-    assert schema['properties']['directory']['description']
-    assert schema['properties']['file_glob']['description']
+    assert schema['properties']['command']['description']
+    assert schema['properties']['timeout_seconds']['description']
 
 
 def test_implementation_tool_union_uses_openai_compatible_any_of_schema() -> None:
-    schema = ImplementationToolCallAdapter.json_schema()
+    schema = TypeAdapter(ImplementationToolCall).json_schema()
 
     assert 'anyOf' in schema
     assert 'oneOf' not in schema
@@ -31,8 +29,8 @@ def test_implementation_tool_call_rejects_missing_required_parameters() -> None:
     with pytest.raises(ValidationError):
         TypeAdapter(ImplementationToolCall).validate_python(
             {
-                'tool_name': 'read_file_range',
-                'file_path': 'src/app.py',
+                'tool_name': 'run_shell',
+                'command': 'ls',
             }
         )
 
@@ -51,12 +49,11 @@ def test_context_gatherer_cannot_call_mutating_tools_by_construction() -> None:
 def test_implementation_tool_union_parses_runtime_tool_models() -> None:
     assert TypeAdapter(ImplementationToolCall).validate_python(
         {
-            'tool_name': 'read_file_range',
-            'file_path': 'src/app.py',
-            'start_line': 10,
-            'end_line': 20,
+            'tool_name': 'run_shell',
+            'command': 'rg needle src',
+            'timeout_seconds': 15,
         }
-    ) == ReadFileRange(file_path='src/app.py', start_line=10, end_line=20)
+    ) == RunShell(command='rg needle src', timeout_seconds=15)
     assert TypeAdapter(ImplementationToolCall).validate_python(
         {
             'tool_name': 'write_file',
@@ -77,15 +74,9 @@ def test_implementation_tool_union_parses_runtime_tool_models() -> None:
 def test_context_gatherer_tool_union_uses_runtime_tool_models() -> None:
     tool_call = TypeAdapter(ContextGathererToolCall).validate_python(
         {
-            'tool_name': 'search_text',
-            'pattern': 'class Handler',
-            'directory': 'src',
-            'file_glob': '*.py',
+            'tool_name': 'find_callers',
+            'symbol_name': 'handle_request',
         }
     )
 
-    assert tool_call == SearchText(
-        pattern='class Handler',
-        directory='src',
-        file_glob='*.py',
-    )
+    assert tool_call == FindCallers(symbol_name='handle_request')

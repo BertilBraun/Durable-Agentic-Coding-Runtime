@@ -20,10 +20,10 @@ from src.models.repo import RepoIndex
 from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerStatus
 from src.tools.definitions import (
-    GitDiff,
     ImplementationToolCallAdapter,
     RunTests,
     ToolName,
+    WriteFile,
 )
 
 
@@ -76,10 +76,9 @@ async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.Monke
                     'done': False,
                     'tool_calls': [
                         {
-                            'tool_name': 'read_file_range',
-                            'file_path': 'src/app.py',
-                            'start_line': 1,
-                            'end_line': 5,
+                            'tool_name': 'run_shell',
+                            'command': 'sed -n 1,5p src/app.py',
+                            'timeout_seconds': 10,
                         }
                     ],
                 }
@@ -109,7 +108,7 @@ async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.Monke
 
     assert worker_result.status == WorkerStatus.BLOCKED
     assert worker_result.confidence == Confidence.LOW
-    assert tool_names == ['ReadFileRange']
+    assert tool_names == ['RunShell']
     assert repo_indexes == [RepoIndex()]
 
 
@@ -167,7 +166,7 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
                 relevant_snippets=['src/auth.py: token handler'],
                 recent_observations=['found caller'],
                 failed_attempt_summaries=[],
-                available_tools=['read_file_range'],
+                available_tools=['run_shell'],
                 budget_remaining=4,
             ),
             LLMUsage(),
@@ -191,14 +190,13 @@ async def test_implementation_turn_dispatches_gather_context_without_run_tool(
 def test_implementation_tool_call_uses_tool_name_enum() -> None:
     tool_call = ImplementationToolCallAdapter.validate_python(
         {
-            'tool_name': 'read_file_range',
-            'file_path': 'src/app.py',
-            'start_line': 1,
-            'end_line': 5,
+            'tool_name': 'run_shell',
+            'command': 'ls',
+            'timeout_seconds': 10,
         }
     )
 
-    assert tool_call.tool_name == ToolName.READ_FILE_RANGE
+    assert tool_call.tool_name == ToolName.RUN_SHELL
 
 
 def test_implementation_tool_call_rejects_unknown_tool() -> None:
@@ -222,9 +220,8 @@ def test_implementation_tool_call_rejects_missing_required_payload_field() -> No
                 'done': False,
                 'tool_calls': [
                     {
-                        'tool_name': 'read_file_range',
-                        'start_line': 1,
-                        'end_line': 5,
+                        'tool_name': 'run_shell',
+                        'command': 'ls',
                     }
                 ],
             }
@@ -300,8 +297,9 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
                             'directory': '.',
                         },
                         {
-                            'tool_name': 'git_diff',
-                            'path': '.',
+                            'tool_name': 'write_file',
+                            'file_path': 'app.py',
+                            'content': 'updated',
                         },
                     ],
                 }
@@ -328,13 +326,8 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
         match request.tool:
             case RunTests():
                 return ToolResult(stdout='1 passed', stderr='', exit_code=0, truncated=False)
-            case GitDiff():
-                return ToolResult(
-                    stdout='diff --git a/app.py b/app.py',
-                    stderr='',
-                    exit_code=0,
-                    truncated=False,
-                )
+            case WriteFile():
+                return ToolResult(stdout='', stderr='', exit_code=0, truncated=False)
             case _:
                 raise AssertionError(f'Unexpected tool: {request.tool}')
 
@@ -508,10 +501,9 @@ async def test_implementation_turn_blocks_when_context_budget_is_high(
                 'done': False,
                 'tool_calls': [
                     {
-                        'tool_name': 'read_file_range',
-                        'file_path': 'src/app.py',
-                        'start_line': 1,
-                        'end_line': 5,
+                        'tool_name': 'run_shell',
+                        'command': 'sed -n 1,5p src/app.py',
+                        'timeout_seconds': 10,
                     }
                 ],
             }
@@ -529,7 +521,7 @@ async def test_implementation_turn_blocks_when_context_budget_is_high(
     assert worker_result.status == WorkerStatus.BLOCKED
     assert worker_result.confidence == Confidence.LOW
     assert worker_result.replan_suggestion is not None
-    assert 'read_file_range' in worker_result.replan_suggestion
+    assert 'run_shell' in worker_result.replan_suggestion
 
 
 @pytest.mark.asyncio
@@ -569,6 +561,7 @@ async def test_implementation_turn_user_message_excludes_repo_index(
             'context_pack': _implementation_request().context_pack.model_dump(mode='json'),
             'task_contract': _implementation_request().task_contract.model_dump(mode='json'),
             'workspace_info': _implementation_request().workspace_info.model_dump(mode='json'),
+            'environment': _implementation_request().workspace_info.describe_environment(),
             'available_tools': list(IMPLEMENTATION_AVAILABLE_TOOLS),
         }
     ]

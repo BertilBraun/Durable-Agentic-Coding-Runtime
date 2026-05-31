@@ -47,7 +47,7 @@ def test_context_gatherer_rejects_mutating_tool() -> None:
 
 def test_context_gatherer_tool_conversion_asserts_missing_required_payload_field() -> None:
     with pytest.raises(ValidationError):
-        ContextGathererToolCallAdapter.validate_python({'tool_name': 'find_references'})
+        ContextGathererToolCallAdapter.validate_python({'tool_name': 'find_callers'})
 
 
 def _structured_completion(output: BaseModel, context_utilization: float) -> StructuredCompletion:
@@ -95,16 +95,14 @@ async def test_context_gatherer_sends_only_current_turn_observations(
                     'done': False,
                     'tool_calls': [
                         {
-                            'tool_name': 'search_text',
-                            'pattern': f'pattern-{call_count}-a',
-                            'directory': '.',
-                            'file_glob': '*.py',
+                            'tool_name': 'run_shell',
+                            'command': f'rg pattern-{call_count}-a',
+                            'timeout_seconds': 10,
                         },
                         {
-                            'tool_name': 'search_text',
-                            'pattern': f'pattern-{call_count}-b',
-                            'directory': '.',
-                            'file_glob': '*.py',
+                            'tool_name': 'run_shell',
+                            'command': f'rg pattern-{call_count}-b',
+                            'timeout_seconds': 10,
                         },
                     ],
                 }
@@ -158,10 +156,9 @@ async def test_context_gatherer_summarizes_when_context_budget_is_high(
                     'done': False,
                     'tool_calls': [
                         {
-                            'tool_name': 'search_text',
-                            'pattern': 'handler',
-                            'directory': '.',
-                            'file_glob': '*.py',
+                            'tool_name': 'run_shell',
+                            'command': 'rg handler',
+                            'timeout_seconds': 10,
                         }
                     ],
                 }
@@ -176,7 +173,7 @@ async def test_context_gatherer_summarizes_when_context_budget_is_high(
                     'relevant_snippets': ['summary line 1'],
                     'recent_observations': [],
                     'failed_attempt_summaries': [],
-                    'available_tools': ['read_file_range'],
+                    'available_tools': ['run_shell'],
                     'budget_remaining': 0,
                 },
             }
@@ -214,10 +211,9 @@ async def test_context_gatherer_exits_deterministically_above_hard_budget(
                     'done': False,
                     'tool_calls': [
                         {
-                            'tool_name': 'search_text',
-                            'pattern': 'handler',
-                            'directory': '.',
-                            'file_glob': '*.py',
+                            'tool_name': 'run_shell',
+                            'command': 'rg handler',
+                            'timeout_seconds': 10,
                         }
                     ],
                 }
@@ -228,10 +224,9 @@ async def test_context_gatherer_exits_deterministically_above_hard_budget(
                 'done': False,
                 'tool_calls': [
                     {
-                        'tool_name': 'search_text',
-                        'pattern': 'again',
-                        'directory': '.',
-                        'file_glob': '*.py',
+                        'tool_name': 'run_shell',
+                        'command': 'rg again',
+                        'timeout_seconds': 10,
                     }
                 ],
             }
