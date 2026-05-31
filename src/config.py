@@ -19,6 +19,7 @@ class ModelRole(StrEnum):
     PLANNER = 'planner'
     COMPLEXITY_ASSESSOR = 'complexity_assessor'
     CONTEXT_GATHERER = 'context_gatherer'
+    REPRODUCER = 'reproducer'
     IMPLEMENTATION = 'implementation'
     REVIEWER = 'reviewer'
     SUMMARIZER = 'summarizer'
@@ -41,6 +42,8 @@ class Settings(FrozenBaseModel):
     cleanup_candidate_branches: bool
 
     implementation_max_tool_rounds: int
+    reproducer_max_tool_rounds: int
+    max_replan_attempts: int
     context_gatherer_max_tool_calls: int
     context_utilization_stop_threshold: float
     context_utilization_hard_stop_threshold: float
@@ -79,6 +82,8 @@ def load_settings() -> Settings:
             os.getenv('CLEANUP_CANDIDATE_BRANCHES'), default=False
         ),
         implementation_max_tool_rounds=int(os.getenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '12')),
+        reproducer_max_tool_rounds=int(os.getenv('REPRODUCER_MAX_TOOL_ROUNDS', '12')),
+        max_replan_attempts=int(os.getenv('MAX_REPLAN_ATTEMPTS', '3')),
         context_gatherer_max_tool_calls=int(os.getenv('CONTEXT_GATHERER_MAX_TOOL_CALLS', '10')),
         context_utilization_stop_threshold=float(
             os.getenv('CONTEXT_UTILIZATION_STOP_THRESHOLD', '0.80')
@@ -127,6 +132,7 @@ def _load_model_role_bindings(models_by_id: dict[str, ModelEntry]) -> dict[Model
         ModelRole.PLANNER: ('MODEL_PLANNER', 'claude-opus-4-7'),
         ModelRole.COMPLEXITY_ASSESSOR: ('MODEL_COMPLEXITY_ASSESSOR', 'claude-opus-4-7'),
         ModelRole.CONTEXT_GATHERER: ('MODEL_CONTEXT_GATHERER', 'claude-haiku-4-5-20251001'),
+        ModelRole.REPRODUCER: ('MODEL_REPRODUCER', 'claude-sonnet-4-6'),
         ModelRole.IMPLEMENTATION: ('MODEL_IMPLEMENTATION', 'claude-sonnet-4-6'),
         ModelRole.REVIEWER: ('MODEL_REVIEWER', 'claude-sonnet-4-6'),
         ModelRole.SUMMARIZER: ('MODEL_SUMMARIZER', 'claude-haiku-4-5-20251001'),
