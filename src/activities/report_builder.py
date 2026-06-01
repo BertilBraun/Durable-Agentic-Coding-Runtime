@@ -16,9 +16,10 @@ class FinalReport(FrozenBaseModel):
     status: str
     patch: str
     contract: TaskContract
-    plan: Plan
+    plan: Plan | None = None
     worker_results: list[WorkerResult] = Field(default_factory=list)
-    final_verdict: ReviewVerdict
+    final_verdict: ReviewVerdict | None = None
     workspace_info: Workspace
     llm_usage: LLMUsage
     reproduction_evidence: ReproductionEvidence | None = None
+    blocked_reason: str | None = None
