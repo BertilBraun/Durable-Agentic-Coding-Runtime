@@ -5,6 +5,7 @@ from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.frozen_base_model import FrozenBaseModel
 from src.models.plan import Plan
 from src.models.repo import RepoIndex
+from src.models.reproduction import ReproductionContext
 from src.models.task import TaskContract
 from src.models.worker import WorkerResult
 
@@ -24,10 +25,11 @@ PLANNER_SYSTEM_PROMPT = (
     'subtasks such as independent behavior areas, nontrivial functions, '
     'integration surfaces, or risky migrations. Avoid unrelated refactors '
     'and broad cleanup. If evidence is insufficient, plan an inspection step '
-    'instead of inventing implementation details. For bugfix tasks, include '
-    'reproducing the failing behavior with a concrete failing test in the '
-    'same coherent step that fixes the narrow behavior unless the '
-    'reproduction itself is a substantial investigation task.'
+    'instead of inventing implementation details. For bugfix tasks a failing '
+    'regression test usually already exists (its command and observed failure '
+    'are given in the revision guidance); when it does, plan the fix that '
+    'makes that command pass and never weaken, skip, or delete the test, and '
+    'do not plan a separate reproduction step.'
 )
 
 
@@ -36,6 +38,7 @@ class PlanRequest(FrozenBaseModel):
     repo_index: RepoIndex
     worker_results: list[WorkerResult]
     human_feedback: str | None = None
+    reproduction: ReproductionContext | None = None
 
 
 async def build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
@@ -51,6 +54,7 @@ async def build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
                 role='user',
                 content=(
                     f'Revision guidance: {revision_guidance}\n\n'
+                    f'{_reproduction_guidance(request.reproduction)}\n\n'
                     f'Contract:\n{request.contract.model_dump_json()}\n\n'
                     f'Repository tree:\n{request.repo_index.directory_tree_text()}\n\n'
                     f'Worker results so far:\n{worker_results_json}'
@@ -60,3 +64,15 @@ async def build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
         output_type=Plan,
     )
     return completion.output, completion.usage
+
+
+def _reproduction_guidance(reproduction: ReproductionContext | None) -> str:
+    if reproduction is None:
+        return 'No reproduction test exists yet.'
+    return (
+        'A failing regression test already exists and reproduces the bug. It runs with: '
+        f'{reproduction.repro_command}\n'
+        f'Observed failure:\n{reproduction.failure_evidence}\n'
+        'Plan the fix that makes this command pass without weakening, skipping, or deleting '
+        'the test.'
+    )

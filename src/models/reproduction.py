@@ -13,6 +13,11 @@ class ReproductionStatus(StrEnum):
     COULD_NOT_REPRODUCE = 'could_not_reproduce'
 
 
+class ReproductionContext(FrozenBaseModel):
+    repro_command: str
+    failure_evidence: str
+
+
 class ReproductionResult(FrozenBaseModel):
     status: ReproductionStatus
     repro_command: str
