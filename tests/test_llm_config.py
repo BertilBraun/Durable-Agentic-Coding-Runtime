@@ -47,6 +47,31 @@ def test_settings_model_entry_exposes_cost(monkeypatch: MonkeyPatch) -> None:
     assert opus_entry.output_price_usd_per_mtok == 75.0
 
 
+def test_planning_roles_get_a_reasoning_effort(monkeypatch: MonkeyPatch) -> None:
+    for role in (
+        ModelRole.CONTRACT_BUILDER,
+        ModelRole.PLANNER,
+        ModelRole.PLAN_REVIEWER,
+    ):
+        monkeypatch.delenv(f'REASONING_EFFORT_{role.name}', raising=False)
+
+    settings = load_settings()
+
+    assert settings.reasoning_effort_for_role(ModelRole.CONTRACT_BUILDER) is not None
+    assert settings.reasoning_effort_for_role(ModelRole.PLANNER) is not None
+    assert settings.reasoning_effort_for_role(ModelRole.PLAN_REVIEWER) is not None
+
+
+def test_non_planning_roles_have_reasoning_off_by_default(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv('REASONING_EFFORT_REVIEWER', raising=False)
+    monkeypatch.delenv('REASONING_EFFORT_SUMMARIZER', raising=False)
+
+    settings = load_settings()
+
+    assert settings.reasoning_effort_for_role(ModelRole.REVIEWER) is None
+    assert settings.reasoning_effort_for_role(ModelRole.SUMMARIZER) is None
+
+
 def test_settings_is_frozen() -> None:
     settings = load_settings()
 

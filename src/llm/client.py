@@ -107,10 +107,12 @@ class LLMClient:
         messages: list[Message],
         model: str,
         context_limit_tokens: int,
+        reasoning_effort: str = '',
     ) -> LLMResult:
         response = await self.async_openai_client.chat.completions.create(
             model=model,
             messages=_format_messages_for_api(messages, model),
+            **_reasoning_request_kwargs(reasoning_effort),
         )
         return _llm_result_from_response(
             model=model,
@@ -124,11 +126,13 @@ class LLMClient:
         output_type: type[StructuredOutput],
         model: str,
         context_limit_tokens: int,
+        reasoning_effort: str = '',
     ) -> LLMResult:
         response = await self.async_openai_client.beta.chat.completions.parse(
             model=model,
             messages=_format_messages_for_api(messages, model),
             response_format=output_type,
+            **_reasoning_request_kwargs(reasoning_effort),
         )
         return _llm_result_from_response(
             model=model,
@@ -142,11 +146,13 @@ async def generate_completion(
     messages: list[Message],
     model: str,
     context_limit_tokens: int,
+    reasoning_effort: str = '',
 ) -> LLMResult:
     return await LLMClient().complete(
         messages=messages,
         model=model,
         context_limit_tokens=context_limit_tokens,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -156,12 +162,14 @@ async def generate_structured_completion(
     output_type_name: str,
     model: str,
     context_limit_tokens: int,
+    reasoning_effort: str = '',
 ) -> LLMResult:
     return await LLMClient().generate_structured(
         messages=messages,
         output_type=_structured_output_type(output_type_name),
         model=model,
         context_limit_tokens=context_limit_tokens,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -170,6 +178,7 @@ async def generate(role: ModelRole, messages: list[Message]) -> LLMResult:
         messages=messages,
         model=CONFIG.model_for_role(role),
         context_limit_tokens=CONFIG.context_limit_for_role(role),
+        reasoning_effort=_reasoning_effort_wire_value(role),
     )
 
 
@@ -184,6 +193,7 @@ async def generate_structured(
         output_type_name=output_type.__name__,
         model=CONFIG.model_for_role(role),
         context_limit_tokens=CONFIG.context_limit_for_role(role),
+        reasoning_effort=_reasoning_effort_wire_value(role),
     )
     return StructuredCompletion[output_type](
         output=output_type.model_validate_json(result.content),
@@ -192,6 +202,17 @@ async def generate_structured(
         context_limit_tokens=result.context_limit_tokens,
         usage=result.usage,
     )
+
+
+def _reasoning_effort_wire_value(role: ModelRole) -> str:
+    effort = CONFIG.reasoning_effort_for_role(role)
+    return effort.value if effort is not None else ''
+
+
+def _reasoning_request_kwargs(reasoning_effort: str) -> dict[str, object]:
+    if not reasoning_effort:
+        return {}
+    return {'reasoning_effort': reasoning_effort}
 
 
 def _format_messages_for_api(

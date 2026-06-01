@@ -26,6 +26,13 @@ class ModelRole(StrEnum):
     SUMMARIZER = 'summarizer'
 
 
+class ReasoningEffort(StrEnum):
+    LOW = 'low'
+    MEDIUM = 'medium'
+    HIGH = 'high'
+    XHIGH = 'xhigh'
+
+
 class ModelEntry(FrozenBaseModel):
     id: str
     context_limit_tokens: int
@@ -58,9 +65,13 @@ class Settings(FrozenBaseModel):
 
     models_by_id: dict[str, ModelEntry]
     model_by_role: dict[ModelRole, str]
+    reasoning_effort_by_role: dict[ModelRole, ReasoningEffort | None]
 
     def model_for_role(self, role: ModelRole) -> str:
         return self.model_by_role[role]
+
+    def reasoning_effort_for_role(self, role: ModelRole) -> ReasoningEffort | None:
+        return self.reasoning_effort_by_role[role]
 
     def context_limit_for_role(self, role: ModelRole) -> int:
         return self.model_entry(self.model_for_role(role)).context_limit_tokens
@@ -74,6 +85,7 @@ class Settings(FrozenBaseModel):
 def load_settings() -> Settings:
     models_by_id = _load_models_csv(MODELS_CSV_PATH)
     model_by_role = _load_model_role_bindings(models_by_id)
+    reasoning_effort_by_role = _load_reasoning_efforts()
 
     return Settings(
         llm_api_key=os.getenv('LLM_API_KEY'),
@@ -104,6 +116,7 @@ def load_settings() -> Settings:
         context_pack_max_characters=int(os.getenv('CONTEXT_PACK_MAX_CHARACTERS', '16000')),
         models_by_id=models_by_id,
         model_by_role=model_by_role,
+        reasoning_effort_by_role=reasoning_effort_by_role,
     )
 
 
@@ -151,6 +164,29 @@ def _load_model_role_bindings(models_by_id: dict[str, ModelEntry]) -> dict[Model
             )
         resolved[role] = model_id
     return resolved
+
+
+def _load_reasoning_efforts() -> dict[ModelRole, ReasoningEffort | None]:
+    default_effort_by_role: dict[ModelRole, ReasoningEffort] = {
+        ModelRole.CONTRACT_BUILDER: ReasoningEffort.HIGH,
+        ModelRole.PLANNER: ReasoningEffort.HIGH,
+        ModelRole.PLAN_REVIEWER: ReasoningEffort.HIGH,
+    }
+    efforts: dict[ModelRole, ReasoningEffort | None] = {}
+    for role in ModelRole:
+        raw_value = os.getenv(f'REASONING_EFFORT_{role.name}')
+        if raw_value is None:
+            efforts[role] = default_effort_by_role.get(role)
+        else:
+            efforts[role] = _parse_reasoning_effort(raw_value)
+    return efforts
+
+
+def _parse_reasoning_effort(raw_value: str) -> ReasoningEffort | None:
+    normalized = raw_value.strip().lower()
+    if normalized in {'', 'off', 'none'}:
+        return None
+    return ReasoningEffort(normalized)
 
 
 CONFIG = load_settings()

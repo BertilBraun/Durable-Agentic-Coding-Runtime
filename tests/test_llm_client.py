@@ -114,6 +114,40 @@ async def test_structured_generation_returns_llm_result_with_usage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reasoning_effort_attaches_to_structured_request() -> None:
+    async_openai_client = FakeAsyncOpenAI()
+    llm_client = LLMClient(async_openai_client=async_openai_client)
+
+    await llm_client.generate_structured(
+        messages=[Message(role='user', content='Plan this task')],
+        output_type=ComplexityVerdict,
+        model='claude-opus-4-7',
+        context_limit_tokens=200_000,
+        reasoning_effort='high',
+    )
+
+    parse_call = async_openai_client.completions.parse_calls[0]
+    assert parse_call['reasoning_effort'] == 'high'
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_off_omits_the_param() -> None:
+    async_openai_client = FakeAsyncOpenAI()
+    llm_client = LLMClient(async_openai_client=async_openai_client)
+
+    await llm_client.generate_structured(
+        messages=[Message(role='user', content='Review this patch')],
+        output_type=ComplexityVerdict,
+        model='claude-opus-4-7',
+        context_limit_tokens=200_000,
+        reasoning_effort='',
+    )
+
+    parse_call = async_openai_client.completions.parse_calls[0]
+    assert 'reasoning_effort' not in parse_call
+
+
+@pytest.mark.asyncio
 async def test_completion_returns_llm_result_with_usage() -> None:
     llm_client = LLMClient(async_openai_client=FakeAsyncOpenAI())
 
