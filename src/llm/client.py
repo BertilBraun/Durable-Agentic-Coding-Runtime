@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
+import re
+from collections.abc import Awaitable, Callable
 from typing import Generic, Literal, Protocol, TypeVar
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ParsedChatCompletion
 from temporal_light import activity
@@ -12,6 +15,14 @@ from src.config import CONFIG, ModelRole
 from src.models.frozen_base_model import BaseModel, FrozenBaseModel
 
 StructuredOutput = TypeVar('StructuredOutput', bound=BaseModel)
+RequestResult = TypeVar('RequestResult')
+
+# Wait the full delay the API reports plus a small buffer so the quota window has
+# definitely rolled over before the next call.
+_RATE_LIMIT_BUFFER_SECONDS = 1.0
+_MAX_RATE_LIMIT_RETRIES = 3
+_RETRY_AFTER_SECONDS_PATTERN = re.compile(r'retry in ([0-9]+(?:\.[0-9]+)?)s', re.IGNORECASE)
+_RETRY_DELAY_SECONDS_PATTERN = re.compile(r"retryDelay['\"]?\s*:\s*['\"]?([0-9]+(?:\.[0-9]+)?)s")
 
 
 class Message(FrozenBaseModel):
@@ -111,10 +122,13 @@ class LLMClient:
         context_limit_tokens: int,
         reasoning_effort: str = '',
     ) -> LLMResult:
-        response = await self.async_openai_client.chat.completions.create(
-            model=model,
-            messages=_format_messages_for_api(messages, model),
-            **_reasoning_request_kwargs(reasoning_effort),
+        formatted_messages = _format_messages_for_api(messages, model)
+        response = await _with_rate_limit_retry(
+            lambda: self.async_openai_client.chat.completions.create(
+                model=model,
+                messages=formatted_messages,
+                **_reasoning_request_kwargs(reasoning_effort),
+            )
         )
         return _llm_result_from_response(
             model=model,
@@ -130,11 +144,14 @@ class LLMClient:
         context_limit_tokens: int,
         reasoning_effort: str = '',
     ) -> LLMResult:
-        response = await self.async_openai_client.beta.chat.completions.parse(
-            model=model,
-            messages=_format_messages_for_api(messages, model),
-            response_format=output_type,
-            **_reasoning_request_kwargs(reasoning_effort),
+        formatted_messages = _format_messages_for_api(messages, model)
+        response = await _with_rate_limit_retry(
+            lambda: self.async_openai_client.beta.chat.completions.parse(
+                model=model,
+                messages=formatted_messages,
+                response_format=output_type,
+                **_reasoning_request_kwargs(reasoning_effort),
+            )
         )
         return _llm_result_from_response(
             model=model,
@@ -215,6 +232,31 @@ async def generate_structured(
         context_limit_tokens=result.context_limit_tokens,
         usage=result.usage,
     )
+
+
+async def _with_rate_limit_retry(
+    make_request: Callable[[], Awaitable[RequestResult]],
+) -> RequestResult:
+    attempts = 0
+    while True:
+        try:
+            return await make_request()
+        except RateLimitError as error:
+            attempts += 1
+            wait_seconds = _rate_limit_retry_seconds(error)
+            if wait_seconds is None or attempts > _MAX_RATE_LIMIT_RETRIES:
+                raise
+            await asyncio.sleep(wait_seconds + _RATE_LIMIT_BUFFER_SECONDS)
+
+
+def _rate_limit_retry_seconds(error: RateLimitError) -> float | None:
+    message = str(error)
+    match = _RETRY_AFTER_SECONDS_PATTERN.search(message)
+    if match is None:
+        match = _RETRY_DELAY_SECONDS_PATTERN.search(message)
+    if match is None:
+        return None
+    return float(match.group(1))
 
 
 def _reasoning_effort_wire_value(role: ModelRole) -> str:

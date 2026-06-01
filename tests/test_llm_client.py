@@ -1,11 +1,26 @@
 import json
 
+import httpx
 import pytest
+from openai import RateLimitError
 from openai.types.chat import ChatCompletion, ParsedChatCompletion
 from src.activities.complexity_assessor import ComplexityVerdict
 from src.config import ModelRole
-from src.llm.client import LLMClient, LLMResult, LLMUsage, Message, _structured_output_type
+from src.llm.client import (
+    LLMClient,
+    LLMResult,
+    LLMUsage,
+    Message,
+    _rate_limit_retry_seconds,
+    _structured_output_type,
+)
 from src.models.task import TaskContract
+
+
+def _rate_limit_error(message: str) -> RateLimitError:
+    request = httpx.Request('POST', 'https://example.invalid/v1/chat/completions')
+    response = httpx.Response(status_code=429, request=request)
+    return RateLimitError(message, response=response, body=None)
 
 
 def test_structured_output_type_resolves_from_importable_path() -> None:
@@ -237,3 +252,80 @@ async def test_structured_completion_activity_closes_owned_client(
 
     assert created_clients
     assert created_clients[0].closed is True
+
+
+@pytest.mark.parametrize(
+    ('message', 'expected_seconds'),
+    [
+        ('429 quota exceeded. Please retry in 25.387308192s.', 25.387308192),
+        ("RetryInfo {'retryDelay': '25s'}", 25.0),
+        ('429 quota exceeded with no retry hint', None),
+    ],
+)
+def test_rate_limit_retry_seconds_parses_reported_delay(
+    message: str, expected_seconds: float | None
+) -> None:
+    assert _rate_limit_retry_seconds(_rate_limit_error(message)) == expected_seconds
+
+
+class RateLimitedCompletions(FakeCompletions):
+    def __init__(self, rate_limited_calls: int) -> None:
+        super().__init__()
+        self.remaining_rate_limited_calls = rate_limited_calls
+        self.create_attempts = 0
+
+    async def create(self, **keyword_arguments: object) -> ChatCompletion:
+        self.create_attempts += 1
+        if self.remaining_rate_limited_calls > 0:
+            self.remaining_rate_limited_calls -= 1
+            raise _rate_limit_error('429 quota exceeded. Please retry in 7s.')
+        return await super().create(**keyword_arguments)
+
+
+@pytest.mark.asyncio
+async def test_completion_waits_reported_delay_then_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slept_for: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept_for.append(seconds)
+
+    monkeypatch.setattr('src.llm.client.asyncio.sleep', fake_sleep)
+
+    async_openai_client = FakeAsyncOpenAI()
+    async_openai_client.completions = RateLimitedCompletions(rate_limited_calls=1)
+    async_openai_client.chat.completions = async_openai_client.completions
+    llm_client = LLMClient(async_openai_client=async_openai_client)
+
+    result = await llm_client.complete(
+        messages=[Message(role='user', content='Assess this task')],
+        model='completion-model',
+        context_limit_tokens=100,
+    )
+
+    assert slept_for == [8.0]
+    assert async_openai_client.completions.create_attempts == 2
+    assert result.usage.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_completion_gives_up_after_max_rate_limit_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_sleep(seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr('src.llm.client.asyncio.sleep', fake_sleep)
+
+    async_openai_client = FakeAsyncOpenAI()
+    async_openai_client.completions = RateLimitedCompletions(rate_limited_calls=99)
+    async_openai_client.chat.completions = async_openai_client.completions
+    llm_client = LLMClient(async_openai_client=async_openai_client)
+
+    with pytest.raises(RateLimitError):
+        await llm_client.complete(
+            messages=[Message(role='user', content='Assess this task')],
+            model='completion-model',
+            context_limit_tokens=100,
+        )
