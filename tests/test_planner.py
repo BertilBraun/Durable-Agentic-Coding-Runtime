@@ -15,7 +15,6 @@ def _plan() -> Plan:
         summary='Plan',
         steps=[],
         integration_tests=[],
-        rollback_strategy='git checkout',
         definition_of_done=['done'],
     )
 

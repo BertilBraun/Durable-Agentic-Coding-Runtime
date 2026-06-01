@@ -287,15 +287,12 @@ async def _run_plan_steps(
                         worker_results.append(_replan_cap_blocked_result())
                         break
                     replan_attempts += 1
-                    plan, replan_usage = await _replan(
-                        contract=contract,
-                        repo_index=repo_index,
-                        worker_results=worker_results,
-                        revision_feedback=worker_result.replan_suggestion,
-                        reproduction=reproduction,
-                    )
-                    usage += replan_usage
-                    pending_plan_steps = list(plan.steps)
+                    pending_plan_steps = [
+                        _corrective_plan_step(
+                            plan_step=plan_step,
+                            worker_result=worker_result,
+                        )
+                    ]
                 case WorkerStatus.FAILED | WorkerStatus.BLOCKED:
                     break
                 case WorkerStatus.SUCCESS:
@@ -387,6 +384,29 @@ def _gate_failure_feedback(repro_result: ToolResult, suite_result: ToolResult) -
     ).strip()
 
 
+def _corrective_plan_step(plan_step: PlanStep, worker_result: WorkerResult) -> PlanStep:
+    feedback = worker_result.replan_suggestion or '; '.join(worker_result.discovered_issues)
+    tests_run = ', '.join(worker_result.tests_run) if worker_result.tests_run else 'none'
+    issues = '; '.join(worker_result.discovered_issues) or 'none reported'
+    prior_summary = worker_result.diff_summary or 'no prior summary'
+    return plan_step.model_copy(
+        update={
+            'id': f'revise-{plan_step.id}',
+            'goal': (
+                f'Complete this corrective implementation step. Original step goal: '
+                f'{plan_step.goal} Review feedback to address: {feedback} '
+                f'Prior worker summary: {prior_summary}. Prior tests run: {tests_run}. '
+                f'Prior discovered issues: {issues}. Inspect the current workspace state, '
+                f'apply only the missing corrections, and rerun the relevant tests.'
+            ),
+            'expected_result': (
+                f'{plan_step.expected_result} The review feedback is resolved and the '
+                f'current workspace contains the complete corrected change.'
+            ),
+        }
+    )
+
+
 def _replan_cap_blocked_result() -> WorkerResult:
     return WorkerResult(
         status=WorkerStatus.BLOCKED,
@@ -416,6 +436,7 @@ async def _run_reproduction_child(
 ) -> tuple[ReproductionResult, LLMUsage]:
     child_id = await spawn_child(
         'reproduction_workflow',
+        child_id=_child_workflow_id(workspace_info, 'reproduction'),
         workspace=workspace_info.model_dump(mode='json'),
         contract=contract.model_dump(mode='json'),
         repo_index=repo_index.model_dump(mode='json'),
@@ -436,6 +457,12 @@ async def _run_implementation_child(
 ) -> tuple[WorkerResult, LLMUsage]:
     child_id = await spawn_child(
         'implementation_workflow',
+        child_id=_child_workflow_id(
+            workspace_info,
+            'implementation',
+            workspace_info.current_branch,
+            plan_step.id,
+        ),
         step=plan_step.model_dump(mode='json'),
         workspace=workspace_info.model_dump(mode='json'),
         contract=contract.model_dump(mode='json'),
@@ -446,4 +473,17 @@ async def _run_implementation_child(
     return (
         WorkerResult.model_validate(child_result['worker_result']),
         LLMUsage.model_validate(child_result['llm_usage']),
+    )
+
+
+def _child_workflow_id(workspace_info: Workspace, *parts: str) -> str:
+    safe_parts = [_workflow_id_part(workspace_info.run_id)]
+    safe_parts.extend(_workflow_id_part(part) for part in parts)
+    return ':'.join(safe_parts)
+
+
+def _workflow_id_part(value: str) -> str:
+    return ''.join(
+        character if character.isalnum() or character in '._-' else '-'
+        for character in value
     )

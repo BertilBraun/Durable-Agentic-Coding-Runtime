@@ -95,8 +95,14 @@ class LLMClient:
                 api_key=CONFIG.llm_api_key,
                 base_url=CONFIG.llm_base_url,
             )
+            self._owns_async_openai_client = True
         else:
             self.async_openai_client = async_openai_client
+            self._owns_async_openai_client = False
+
+    async def close(self) -> None:
+        if self._owns_async_openai_client:
+            await self.async_openai_client.close()
 
     async def complete(
         self,
@@ -144,12 +150,16 @@ async def generate_completion(
     context_limit_tokens: int,
     reasoning_effort: str = '',
 ) -> LLMResult:
-    return await LLMClient().complete(
-        messages=messages,
-        model=model,
-        context_limit_tokens=context_limit_tokens,
-        reasoning_effort=reasoning_effort,
-    )
+    client = LLMClient()
+    try:
+        return await client.complete(
+            messages=messages,
+            model=model,
+            context_limit_tokens=context_limit_tokens,
+            reasoning_effort=reasoning_effort,
+        )
+    finally:
+        await client.close()
 
 
 @activity(retries=2, timeout=180, backoff_seconds=10)
@@ -161,13 +171,19 @@ async def generate_structured_completion(
     context_limit_tokens: int,
     reasoning_effort: str = '',
 ) -> LLMResult:
-    return await LLMClient().generate_structured(
-        messages=messages,
-        output_type=_structured_output_type(output_type_module, output_type_name),
-        model=model,
-        context_limit_tokens=context_limit_tokens,
-        reasoning_effort=reasoning_effort,
-    )
+    output_type = _structured_output_type(output_type_module, output_type_name)
+    client = LLMClient()
+    try:
+        result = await client.generate_structured(
+            messages=messages,
+            output_type=output_type,
+            model=model,
+            context_limit_tokens=context_limit_tokens,
+            reasoning_effort=reasoning_effort,
+        )
+    finally:
+        await client.close()
+    return result
 
 
 async def generate(role: ModelRole, messages: list[Message]) -> LLMResult:

@@ -3,12 +3,14 @@ from pathlib import Path
 import pytest
 from src.activities.workspace_manager import (
     CommandResult,
+    ContextPackRequest,
     HostWorkspace,
     ToolExecutionRequest,
+    pack_context,
     run_tool,
 )
 from src.config import CONFIG
-from src.models.context import ArtifactKind
+from src.models.context import ArtifactKind, ContextSnippet
 from src.models.repo import (
     Language,
     Reference,
@@ -23,6 +25,7 @@ from src.tools.definitions import (
     RunShell,
     RunTests,
     ToolName,
+    WriteFile,
 )
 
 
@@ -185,6 +188,23 @@ async def test_run_tool_propagates_run_command_errors(
 
 
 @pytest.mark.asyncio
+async def test_run_tool_writes_host_file_without_shell(tmp_path: Path) -> None:
+    repository_path = tmp_path / 'repo'
+    repository_path.mkdir()
+
+    result = await run_tool(
+        ToolExecutionRequest(
+            workspace=_host_workspace(repo_path=str(repository_path)),
+            tool=WriteFile(file_path='test_app.py', content='import unittest\n'),
+        )
+    )
+
+    assert result.exit_code == 0
+    assert result.tool_name == ToolName.WRITE_FILE
+    assert (repository_path / 'test_app.py').read_text(encoding='utf-8') == 'import unittest\n'
+
+
+@pytest.mark.asyncio
 async def test_run_tool_writes_large_stdout_to_artifact(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -309,6 +329,70 @@ def test_tool_execution_request_preserves_workspace_subclass_after_round_trip() 
 
     assert isinstance(restored_request.workspace, HostWorkspace)
     assert restored_request.workspace.repo_path == 'workspace'
+
+
+@pytest.mark.asyncio
+async def test_pack_context_reads_host_workspace_file_without_shell(tmp_path: Path) -> None:
+    repository_path = tmp_path / 'repo'
+    repository_path.mkdir()
+    (repository_path / 'app.py').write_text(
+        'def add(first_number: int, second_number: int) -> int:\n'
+        '    return first_number + second_number\n',
+        encoding='utf-8',
+    )
+
+    context_pack = await pack_context(
+        ContextPackRequest(
+            workspace=_host_workspace(repo_path=str(repository_path)),
+            task_summary='Read add implementation',
+            snippets=[
+                ContextSnippet(
+                    file_path='app.py',
+                    start_line=1,
+                    end_line=2,
+                    reason='Contains add implementation.',
+                )
+            ],
+        )
+    )
+
+    assert context_pack.snippets[0].content == (
+        'def add(first_number: int, second_number: int) -> int:\n'
+        '    return first_number + second_number\n'
+    )
+
+
+@pytest.mark.asyncio
+async def test_pack_context_records_missing_host_snippet_as_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repository_path = tmp_path / 'repo'
+    artifacts_path = tmp_path / 'artifacts'
+    repository_path.mkdir()
+    monkeypatch.setenv('ARTIFACTS_ROOT', str(artifacts_path))
+
+    context_pack = await pack_context(
+        ContextPackRequest(
+            workspace=_host_workspace(run_id='run-missing', repo_path=str(repository_path)),
+            task_summary='Read generated test file',
+            snippets=[
+                ContextSnippet(
+                    file_path='test_app.py',
+                    start_line=1,
+                    end_line=10,
+                    reason='Contains generated subtract tests.',
+                )
+            ],
+        )
+    )
+
+    assert context_pack.snippets == []
+    assert len(context_pack.artifact_references) == 1
+    artifact_reference = context_pack.artifact_references[0]
+    assert artifact_reference.kind == ArtifactKind.CONTEXT_OVERFLOW
+    assert 'missing context snippet' in artifact_reference.summary
+    assert 'test_app.py' in Path(artifact_reference.path).read_text(encoding='utf-8')
 
 
 @pytest.mark.asyncio

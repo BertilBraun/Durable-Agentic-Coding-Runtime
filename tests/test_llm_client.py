@@ -133,6 +133,10 @@ class FakeAsyncOpenAI:
         self.completions = FakeCompletions()
         self.chat = FakeChat(self.completions)
         self.beta = FakeBeta(self.completions)
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 @pytest.mark.asyncio
@@ -206,3 +210,30 @@ async def test_completion_returns_llm_result_with_usage() -> None:
     assert result.usage.total_input_tokens == 10
     assert result.usage.total_output_tokens == 4
     assert result.context_utilization() == 0.1
+
+
+@pytest.mark.asyncio
+async def test_structured_completion_activity_closes_owned_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.llm.client as llm_client_module
+
+    created_clients: list[FakeAsyncOpenAI] = []
+
+    def fake_async_openai(**keyword_arguments: object) -> FakeAsyncOpenAI:
+        client = FakeAsyncOpenAI()
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr(llm_client_module, 'AsyncOpenAI', fake_async_openai)
+
+    await llm_client_module.generate_structured_completion(
+        messages=[Message(role='user', content='Assess this task')],
+        output_type_module='src.activities.complexity_assessor',
+        output_type_name='ComplexityVerdict',
+        model='complexity-model',
+        context_limit_tokens=100,
+    )
+
+    assert created_clients
+    assert created_clients[0].closed is True

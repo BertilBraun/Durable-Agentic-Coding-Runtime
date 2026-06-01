@@ -5,7 +5,10 @@ from pytest import MonkeyPatch
 from src.activities.report_builder import FinalReport
 from src.activities.reviewer import ReviewDecision, ReviewVerdict
 from src.activities.workspace_manager import HostWorkspace
-from src.eval.smoke_workflow import _start_and_wait_for_workflow, _stop_worker_process
+from src.eval.smoke_workflow import (
+    _start_and_wait_for_workflow,
+    _stop_worker_process,
+)
 from src.llm.client import LLMUsage
 from src.models.plan import Plan
 from src.models.task import TaskContract, TaskType
@@ -20,7 +23,6 @@ def _final_report() -> FinalReport:
             summary='Add subtract',
             steps=[],
             integration_tests=[],
-            rollback_strategy='git checkout',
             definition_of_done=['diff reviewed'],
         ),
         worker_results=[],

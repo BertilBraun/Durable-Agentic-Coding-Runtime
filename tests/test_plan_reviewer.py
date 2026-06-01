@@ -31,7 +31,6 @@ def _plan() -> Plan:
             )
         ],
         integration_tests=[],
-        rollback_strategy='git checkout',
         definition_of_done=['diff reviewed'],
     )
 

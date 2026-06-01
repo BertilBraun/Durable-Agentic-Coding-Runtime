@@ -17,12 +17,18 @@ PLANNER_SYSTEM_PROMPT = (
     'You are the planner. Build a minimal Plan from the task contract, '
     'repository index, context, and revision guidance. Use detailed, '
     'reviewable steps with explicit allowed files, expected tests, risk, '
-    'rollback strategy, and definition of done. Each implementation step '
-    'should be sized for roughly 5 to 10 minutes of focused work by a '
+    'and definition of done. Each implementation step runs as an independent '
+    'child workflow with its own context gathering, implementation loop, and '
+    'review. Because each step has that fixed overhead, each step should be '
+    'sized for roughly 15 to 20 minutes of focused work by a '
     'standard developer: substantial enough to produce a coherent patch, '
-    'small enough to review and retry. Do not split one tiny behavior into '
-    'separate test and implementation steps; a simple function plus its '
-    'regression test usually belongs in one step. Split by meaningful '
+    'small enough to review and retry. For small or localized changes, combine '
+    'inspection, test updates, implementation, and verification in one step. '
+    'Do not create inspection-only steps unless inspection is the whole task or '
+    'the repository is too ambiguous to safely name files. '
+    'Do not emit separate create-test, implement, and run-tests steps for one '
+    'tiny behavior; a simple function plus its regression test belongs in one '
+    'step. Split by meaningful '
     'subtasks such as independent behavior areas, nontrivial functions, '
     'integration surfaces, or risky migrations. Avoid unrelated refactors '
     'and broad cleanup. If evidence is insufficient, plan an inspection step '
@@ -73,8 +79,8 @@ def _context_guidance(context: ContextPack | None) -> str:
     if context is None or not context.snippets:
         return 'No gathered code context.'
     rendered_snippets = '\n\n'.join(
-        f'{snippet.file_path}:{snippet.start_line}-{snippet.end_line} ({snippet.reason})\n'
-        f'{snippet.content}'
+        f'{snippet.file_path}:{snippet.start_line}-{snippet.end_line} '
+        f'({snippet.reason})\n{snippet.content}'
         for snippet in context.snippets
     )
     return f'Gathered code context ({context.task_summary}):\n{rendered_snippets}'
@@ -82,7 +88,11 @@ def _context_guidance(context: ContextPack | None) -> str:
 
 def _reproduction_guidance(reproduction: ReproductionContext | None) -> str:
     if reproduction is None:
-        return 'No reproduction test exists yet.'
+        return (
+            'No reproduction test exists yet. If this is revision guidance from a prior '
+            'worker result, plan only the corrective remaining work; do not repeat '
+            'completed steps that already produced an acceptable diff.'
+        )
     return (
         'A failing regression test already exists and reproduces the bug. It runs with: '
         f'{reproduction.repro_command}\n'

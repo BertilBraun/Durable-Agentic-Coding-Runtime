@@ -2,6 +2,7 @@ import pytest
 from src.activities.reviewer import ReviewDecision, ReviewVerdict
 from src.activities.selector import (
     CandidateResult,
+    aggregate_candidate_confidence,
     candidate_count_for_confidence,
     derive_candidate_confidence,
     select_best_candidate,
@@ -13,7 +14,7 @@ from src.models.worker import TestResult as ExecutedTestResult
 
 
 def _plan() -> Plan:
-    return Plan(summary='p', rollback_strategy='git checkout')
+    return Plan(summary='p')
 
 
 def _verdict(decision: ReviewDecision, blocking_issues: list[str] | None = None) -> ReviewVerdict:
@@ -91,6 +92,23 @@ def test_revise_verdict_escalates_to_low_confidence() -> None:
 def test_low_confidence_worker_escalates_even_when_accepted() -> None:
     candidate = _candidate(0, ReviewDecision.ACCEPT, Confidence.LOW)
     assert derive_candidate_confidence(candidate) == Confidence.LOW
+
+
+def test_corrected_replan_attempt_does_not_lower_candidate_confidence() -> None:
+    worker_results = [
+        WorkerResult(
+            diff_summary='first attempt needed revision',
+            confidence=Confidence.LOW,
+            status=WorkerStatus.NEEDS_REPLAN,
+        ),
+        WorkerResult(
+            diff_summary='revision passed',
+            confidence=Confidence.HIGH,
+            status=WorkerStatus.SUCCESS,
+        ),
+    ]
+
+    assert aggregate_candidate_confidence(worker_results) == Confidence.HIGH
 
 
 def test_selector_prefers_accept_over_revise() -> None:

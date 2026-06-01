@@ -18,6 +18,8 @@ PLAN_REVIEWER_SYSTEM_PROMPT = (
     'duplicated steps, and that each step is sized for roughly 5 to 10 minutes '
     'of focused work — flag oversized or undersized steps. Flag risky or '
     'unjustified changes and any change that strays outside the affected areas. '
+    'Reject plans that split one tiny behavior into separate create-test, '
+    'implement, and run-tests steps; those belong in one implementation step. '
     'For bugfix tasks, when a failing regression test already exists, the plan '
     'must make that command pass without weakening, skipping, or deleting it, '
     'and must not plan a separate reproduction step. Return decision=accept when '

@@ -102,7 +102,7 @@ def _fake_structured_content(response_format: type[BaseModel], messages: list[Me
                 '"tests_to_run":["pytest -q"],'
                 '"expected_result":"Patch changes code and tests pass",'
                 '"risk":"low","requires_human_approval":false}],'
-                '"integration_tests":["pytest -q"],"rollback_strategy":"Discard workspace",'
+                '"integration_tests":["pytest -q"],'
                 '"definition_of_done":["Diff is non-empty","Smoke test passes"]}'
             )
         case 'ImplementationAgentTurn':

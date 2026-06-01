@@ -7,7 +7,7 @@ from src.config import CONFIG
 from src.models.frozen_base_model import FrozenBaseModel
 from src.models.plan import Plan
 from src.models.reproduction import ReproductionEvidence
-from src.models.worker import Confidence, TestResult, WorkerResult
+from src.models.worker import Confidence, TestResult, WorkerResult, WorkerStatus
 
 _CONFIDENCE_RANK: dict[Confidence, int] = {
     Confidence.LOW: 0,
@@ -33,8 +33,13 @@ class SelectionRequest(FrozenBaseModel):
 
 
 def aggregate_candidate_confidence(worker_results: list[WorkerResult]) -> Confidence:
+    successful_results = [
+        worker_result
+        for worker_result in worker_results
+        if worker_result.status == WorkerStatus.SUCCESS
+    ]
     return min(
-        (worker_result.confidence for worker_result in worker_results),
+        (worker_result.confidence for worker_result in successful_results or worker_results),
         key=lambda confidence: _CONFIDENCE_RANK[confidence],
         default=Confidence.LOW,
     )

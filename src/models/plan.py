@@ -26,5 +26,4 @@ class Plan(FrozenBaseModel):
     summary: str
     steps: list[PlanStep] = Field(default_factory=list)
     integration_tests: list[str] = Field(default_factory=list)
-    rollback_strategy: str
     definition_of_done: list[str] = Field(default_factory=list)

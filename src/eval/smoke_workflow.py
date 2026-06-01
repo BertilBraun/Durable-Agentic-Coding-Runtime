@@ -31,17 +31,21 @@ async def run_smoke_workflow(
         repository_path = _create_smoke_repository(Path(temporary_directory))
         worker_process = _start_worker(temporal_database_url=temporal_database_url)
         try:
-            return await _start_and_wait_for_workflow(
+            result = await _start_and_wait_for_workflow(
                 temporal_api_url=temporal_api_url,
                 repository_path=repository_path,
                 timeout_seconds=timeout_seconds,
             )
         finally:
             _stop_worker_process(worker_process)
+    return result
 
 
 def _start_worker(temporal_database_url: str) -> subprocess.Popen[str]:
-    environment = {**os.environ, 'TEMPORAL_DATABASE_URL': temporal_database_url}
+    environment = {
+        **os.environ,
+        'TEMPORAL_DATABASE_URL': temporal_database_url,
+    }
     return subprocess.Popen(
         [sys.executable, '-m', 'src.worker'],
         env=environment,

@@ -23,7 +23,9 @@ from src.models.task import Origin, TaskContract, TaskRequest, TaskType
 from src.models.worker import Confidence, WorkerResult, WorkerStatus
 from src.workflows.main_workflow import (
     _review_and_revise_plan,
+    _run_implementation_child,
     _run_plan_steps,
+    _run_reproduction_child,
     main_workflow,
 )
 from temporal_light.exceptions import WorkflowSuspended
@@ -79,7 +81,6 @@ def _plan_with_step(step_id: str, integration_tests: list[str] | None = None) ->
             )
         ],
         integration_tests=integration_tests or [],
-        rollback_strategy='git checkout',
         definition_of_done=['diff reviewed'],
     )
 
@@ -118,6 +119,7 @@ async def test_run_plan_steps_adds_child_workflow_usage(monkeypatch: pytest.Monk
 async def test_run_plan_steps_caps_replan_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
 
     implementation_calls = 0
+    build_plan_calls = 0
 
     async def fake_run_implementation_child(
         plan_step: PlanStep,
@@ -130,6 +132,8 @@ async def test_run_plan_steps_caps_replan_attempts(monkeypatch: pytest.MonkeyPat
         return _worker_result(WorkerStatus.NEEDS_REPLAN, 'try again'), _unit_usage()
 
     async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
+        nonlocal build_plan_calls
+        build_plan_calls += 1
         return _plan_with_step('step'), _unit_usage()
 
     monkeypatch.setattr(
@@ -146,7 +150,63 @@ async def test_run_plan_steps_caps_replan_attempts(monkeypatch: pytest.MonkeyPat
     )
 
     assert implementation_calls == CONFIG.max_replan_attempts + 1
+    assert build_plan_calls == 0
     assert worker_results[-1].status == WorkerStatus.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_run_plan_steps_uses_single_corrective_step_after_review_replan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed_steps: list[PlanStep] = []
+
+    async def fake_run_implementation_child(
+        plan_step: PlanStep,
+        workspace_info: Workspace,
+        contract: TaskContract,
+        repo_index: RepoIndex,
+    ) -> tuple[WorkerResult, LLMUsage]:
+        executed_steps.append(plan_step)
+        if len(executed_steps) == 1:
+            return (
+                _worker_result(WorkerStatus.NEEDS_REPLAN, 'add zero case').model_copy(
+                    update={
+                        'tests_run': ['pytest test_app.py'],
+                        'discovered_issues': ['missing zero coverage'],
+                    }
+                ),
+                _unit_usage(),
+            )
+        return _worker_result(WorkerStatus.SUCCESS), _unit_usage()
+
+    async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
+        raise AssertionError('review feedback should schedule a corrective step, not replan')
+
+    monkeypatch.setattr(
+        'src.workflows.main_workflow._run_implementation_child', fake_run_implementation_child
+    )
+    monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
+
+    _, worker_results, _, _ = await _run_plan_steps(
+        plan=_plan_with_step('implement'),
+        contract=_contract(TaskType.FEATURE),
+        repo_index=RepoIndex(),
+        workspace_info=_workspace(),
+        reproduction=None,
+    )
+
+    assert [step.id for step in executed_steps] == ['implement', 'revise-implement']
+    assert executed_steps[1].target_files == executed_steps[0].target_files
+    assert executed_steps[1].tests_to_run == executed_steps[0].tests_to_run
+    assert 'Original step goal: Update generated output' in executed_steps[1].goal
+    assert 'add zero case' in executed_steps[1].goal
+    assert 'pytest test_app.py' in executed_steps[1].goal
+    assert 'missing zero coverage' in executed_steps[1].goal
+    assert 'current workspace' in executed_steps[1].expected_result
+    assert [result.status for result in worker_results] == [
+        WorkerStatus.NEEDS_REPLAN,
+        WorkerStatus.SUCCESS,
+    ]
 
 
 @pytest.mark.asyncio
@@ -210,7 +270,6 @@ async def test_run_plan_steps_runs_all_steps_even_after_repro_green(
         summary='Fix then clean up',
         steps=[fix_step, cleanup_step],
         integration_tests=[],
-        rollback_strategy='git checkout',
         definition_of_done=['diff reviewed'],
     )
 
@@ -411,6 +470,63 @@ def _reproduction_payload(status: ReproductionStatus) -> dict[str, object]:
         ).model_dump(mode='json'),
         'llm_usage': _unit_usage().model_dump(mode='json'),
     }
+
+
+@pytest.mark.asyncio
+async def test_reproduction_child_uses_semantic_child_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spawned_kwargs: list[dict[str, object]] = []
+
+    async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
+        spawned_kwargs.append({'workflow_name': workflow_name, **kwargs})
+        return str(kwargs['child_id'])
+
+    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
+        return _reproduction_payload(ReproductionStatus.REPRODUCED)
+
+    monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
+    monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
+
+    await _run_reproduction_child(_workspace(), _contract(TaskType.BUGFIX), RepoIndex())
+
+    assert spawned_kwargs[0]['workflow_name'] == 'reproduction_workflow'
+    assert spawned_kwargs[0]['child_id'] == 'run-1:reproduction'
+
+
+@pytest.mark.asyncio
+async def test_implementation_child_uses_semantic_child_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spawned_kwargs: list[dict[str, object]] = []
+    workspace = _workspace().model_copy(
+        update={'current_branch': 'agentic/run-1/cand-0'}
+    )
+
+    async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
+        spawned_kwargs.append({'workflow_name': workflow_name, **kwargs})
+        return str(kwargs['child_id'])
+
+    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
+        return {
+            'worker_result': _worker_result(WorkerStatus.SUCCESS).model_dump(mode='json'),
+            'llm_usage': _unit_usage().model_dump(mode='json'),
+        }
+
+    monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
+    monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
+
+    await _run_implementation_child(
+        plan_step=_plan_with_step('implement/subtract').steps[0],
+        workspace_info=workspace,
+        contract=_contract(TaskType.FEATURE),
+        repo_index=RepoIndex(),
+    )
+
+    assert spawned_kwargs[0]['workflow_name'] == 'implementation_workflow'
+    assert spawned_kwargs[0]['child_id'] == (
+        'run-1:implementation:agentic-run-1-cand-0:implement-subtract'
+    )
 
 
 @pytest.mark.asyncio

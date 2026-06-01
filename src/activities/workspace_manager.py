@@ -30,6 +30,7 @@ from src.tools.definitions import (
     RunTests,
     Tool,
     ToolName,
+    WriteFile,
 )
 from src.tools.handlers import command_for_tool
 
@@ -300,6 +301,9 @@ async def run_tool(request: ToolExecutionRequest) -> ToolResult:
     indexed_result = _indexed_tool_result(request)
     if indexed_result is not None:
         return indexed_result
+    host_result = _host_tool_result(request)
+    if host_result is not None:
+        return host_result
     command_result = request.workspace.run_command(
         command_for_tool(request.tool, request.workspace),
         timeout=_tool_timeout_seconds(request.tool),
@@ -343,7 +347,11 @@ async def pack_context(request: ContextPackRequest) -> ContextPack:
     artifacts: list[ArtifactReference] = []
     used_characters = 0
     for snippet in request.snippets:
-        content = _read_snippet_lines(request.workspace, snippet)
+        try:
+            content = _read_snippet_lines(request.workspace, snippet)
+        except FileNotFoundError:
+            artifacts.append(_missing_snippet_artifact(request.workspace.run_id, snippet))
+            continue
         if used_characters + len(content) <= budget:
             packed_snippets.append(
                 PackedSnippet(
@@ -385,9 +393,51 @@ async def pack_context(request: ContextPackRequest) -> ContextPack:
 def _read_snippet_lines(workspace: Workspace, snippet: ContextSnippet) -> str:
     start_line = max(1, snippet.start_line)
     end_line = max(start_line, snippet.end_line)
+    if isinstance(workspace, HostWorkspace):
+        return _read_host_snippet_lines(workspace, snippet.file_path, start_line, end_line)
     quoted_path = shlex.quote(snippet.file_path)
     result = workspace.run_command(['sh', '-lc', f'sed -n {start_line},{end_line}p {quoted_path}'])
     return result.stdout
+
+
+def _read_host_snippet_lines(
+    workspace: HostWorkspace,
+    file_path: str,
+    start_line: int,
+    end_line: int,
+) -> str:
+    target_path = _host_workspace_file_path(workspace, file_path)
+    lines = target_path.read_text(encoding='utf-8').splitlines(keepends=True)
+    return ''.join(lines[start_line - 1 : end_line])
+
+
+def _host_workspace_file_path(workspace: HostWorkspace, file_path: str) -> Path:
+    repo_root = Path(workspace.repo_path).resolve()
+    target_path = (repo_root / file_path).resolve()
+    try:
+        target_path.relative_to(repo_root)
+    except ValueError as error:
+        raise ValueError(f'Path escapes workspace: {file_path}') from error
+    return target_path
+
+
+def _host_tool_result(request: ToolExecutionRequest) -> ToolResult | None:
+    if not isinstance(request.workspace, HostWorkspace):
+        return None
+    match request.tool:
+        case WriteFile(file_path=file_path, content=content):
+            target_path = _host_workspace_file_path(request.workspace, file_path)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(content, encoding='utf-8')
+            return ToolResult(
+                tool_name=ToolName.WRITE_FILE,
+                stdout='',
+                stderr='',
+                exit_code=0,
+                truncated=False,
+            )
+        case _:
+            return None
 
 
 def _write_context_overflow_artifact(run_id: str, summary: str, content: str) -> ArtifactReference:
@@ -399,6 +449,22 @@ def _write_context_overflow_artifact(run_id: str, summary: str, content: str) ->
         path=artifact_path.as_posix(),
         summary=summary,
         kind=ArtifactKind.CONTEXT_OVERFLOW,
+    )
+
+
+def _missing_snippet_artifact(run_id: str, snippet: ContextSnippet) -> ArtifactReference:
+    return _write_context_overflow_artifact(
+        run_id=run_id,
+        summary=(
+            f'missing context snippet: '
+            f'{snippet.file_path}:{snippet.start_line}-{snippet.end_line}'
+        ),
+        content=(
+            'Context snippet file was requested but was not present in the workspace.\n'
+            f'file_path: {snippet.file_path}\n'
+            f'line_range: {snippet.start_line}-{snippet.end_line}\n'
+            f'reason: {snippet.reason}\n'
+        ),
     )
 
 
