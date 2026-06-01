@@ -45,8 +45,11 @@ IMPLEMENTATION_SYSTEM_PROMPT = (
     'again. Return done=true with WorkerResult only for complete, blocked, '
     'failed, or needs_replan outcomes. Report success only with an applied '
     'edit or observed test evidence. Do not fabricate progress, files, or '
-    'test results. The environment is persistent across tool calls, so '
-    'installed dependencies and prior edits remain available.'
+    'test results. For bugfix work a failing regression test may already '
+    'exist; make it pass by fixing the production code and never weaken, '
+    'skip, delete, or otherwise neuter that test to go green. The environment '
+    'is persistent across tool calls, so installed dependencies and prior '
+    'edits remain available.'
 )
 
 
