@@ -70,6 +70,7 @@ class _Workspace(FrozenBaseModel):
     base_sha: str
     base_branch: str | None = None
     current_branch: str
+    candidate_base_sha: str | None = None
 
     def run_command(self, command: list[str], timeout: int | None = None) -> CommandResult:
         raise NotImplementedError
@@ -91,14 +92,26 @@ class _Workspace(FrozenBaseModel):
             )
         return result.stdout
 
+    @property
+    def _candidate_base(self) -> str:
+        return self.candidate_base_sha or self.base_sha
+
     def begin_candidate(self: Self, candidate_index: int) -> Self:
         branch = _candidate_branch(self.run_id, candidate_index)
-        self._run_checked(['git', 'checkout', '-B', branch, self.base_sha])
+        self._run_checked(['git', 'checkout', '-B', branch, self._candidate_base])
         return self.model_copy(update={'current_branch': branch})
 
     def reset_to_base(self) -> None:
-        self._run_checked(['git', 'reset', '--hard', self.base_sha])
+        self._run_checked(['git', 'reset', '--hard', self._candidate_base])
         self._run_checked(['git', 'clean', '-fd'])
+
+    def snapshot_candidate_base(self: Self) -> Self:
+        self._run_checked(['git', 'add', '-A'])
+        tree = self._run_checked(['git', 'write-tree']).strip()
+        snapshot_sha = self._run_checked(
+            ['git', 'commit-tree', tree, '-p', self.base_sha, '-m', 'agentic candidate base']
+        ).strip()
+        return self.model_copy(update={'candidate_base_sha': snapshot_sha})
 
     def diff_against_base(self) -> str:
         return self.run_command(['git', 'diff', self.base_sha]).stdout
@@ -392,6 +405,17 @@ def _write_context_overflow_artifact(run_id: str, summary: str, content: str) ->
 @activity(retries=0, timeout=120)
 async def begin_candidate(workspace: Workspace, candidate_index: int) -> Workspace:
     return workspace.begin_candidate(candidate_index)
+
+
+@activity(retries=0, timeout=120)
+async def reset_to_base(workspace: Workspace) -> ToolResult:
+    workspace.reset_to_base()
+    return ToolResult(stdout='', stderr='', exit_code=0, truncated=False)
+
+
+@activity(retries=0, timeout=120)
+async def snapshot_candidate_base(workspace: Workspace) -> Workspace:
+    return workspace.snapshot_candidate_base()
 
 
 @activity(retries=0, timeout=120)

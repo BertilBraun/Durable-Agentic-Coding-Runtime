@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from src.activities.reviewer import ReviewVerdict
+from src.activities.selector import CandidateResult
 from src.activities.workspace_manager import Workspace
 from src.llm.client import LLMUsage
 from src.models.frozen_base_model import FrozenBaseModel
@@ -23,3 +24,4 @@ class FinalReport(FrozenBaseModel):
     llm_usage: LLMUsage
     reproduction_evidence: ReproductionEvidence | None = None
     blocked_reason: str | None = None
+    chosen_candidate: CandidateResult | None = None

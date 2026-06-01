@@ -36,6 +36,80 @@ def _host_workspace(run_id: str = 'run-1', repo_path: str = 'workspace') -> Host
     )
 
 
+def test_begin_candidate_branches_off_candidate_base_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        commands.append(command)
+        return CommandResult(stdout='', stderr='', exit_code=0)
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
+    workspace = _host_workspace().model_copy(update={'candidate_base_sha': 'snapsha'})
+
+    workspace.begin_candidate(1)
+
+    assert commands == [['git', 'checkout', '-B', 'agentic/run-1/cand-1', 'snapsha']]
+
+
+def test_begin_candidate_falls_back_to_base_sha_without_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        commands.append(command)
+        return CommandResult(stdout='', stderr='', exit_code=0)
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
+
+    _host_workspace().begin_candidate(0)
+
+    assert commands == [['git', 'checkout', '-B', 'agentic/run-1/cand-0', 'basesha']]
+
+
+def test_snapshot_candidate_base_commits_working_tree_off_base_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outputs = {'git write-tree': 'treesha\n', 'git commit-tree': 'snapsha\n'}
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        for prefix, stdout in outputs.items():
+            if ' '.join(command).startswith(prefix):
+                return CommandResult(stdout=stdout, stderr='', exit_code=0)
+        return CommandResult(stdout='', stderr='', exit_code=0)
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
+
+    snapshot = _host_workspace().snapshot_candidate_base()
+
+    assert snapshot.candidate_base_sha == 'snapsha'
+
+
+def test_reset_to_base_targets_candidate_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        commands.append(command)
+        return CommandResult(stdout='', stderr='', exit_code=0)
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
+    workspace = _host_workspace().model_copy(update={'candidate_base_sha': 'snapsha'})
+
+    workspace.reset_to_base()
+
+    assert commands[0] == ['git', 'reset', '--hard', 'snapsha']
+
+
 @pytest.mark.asyncio
 async def test_run_shell_dispatches_through_shell_invocation_with_timeout(
     monkeypatch: pytest.MonkeyPatch,

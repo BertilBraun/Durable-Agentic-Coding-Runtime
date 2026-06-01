@@ -53,6 +53,8 @@ class Settings(FrozenBaseModel):
     reproducer_max_tool_rounds: int
     max_replan_attempts: int
     max_plan_review_rounds: int
+    candidate_count_medium_confidence: int
+    candidate_count_low_confidence: int
     context_gatherer_max_tool_calls: int
     context_utilization_stop_threshold: float
     context_utilization_hard_stop_threshold: float
@@ -99,6 +101,8 @@ def load_settings() -> Settings:
         reproducer_max_tool_rounds=int(os.getenv('REPRODUCER_MAX_TOOL_ROUNDS', '12')),
         max_replan_attempts=int(os.getenv('MAX_REPLAN_ATTEMPTS', '3')),
         max_plan_review_rounds=int(os.getenv('MAX_PLAN_REVIEW_ROUNDS', '2')),
+        candidate_count_medium_confidence=int(os.getenv('CANDIDATE_COUNT_MEDIUM_CONFIDENCE', '2')),
+        candidate_count_low_confidence=int(os.getenv('CANDIDATE_COUNT_LOW_CONFIDENCE', '4')),
         context_gatherer_max_tool_calls=int(os.getenv('CONTEXT_GATHERER_MAX_TOOL_CALLS', '10')),
         context_utilization_stop_threshold=float(
             os.getenv('CONTEXT_UTILIZATION_STOP_THRESHOLD', '0.80')

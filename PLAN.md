@@ -38,9 +38,12 @@ Pipeline for one task (`main_workflow` in
 
 ```
 TaskRequest(origin) ── build_contract ── setup_environment ── build_repo_index
-   ── build_plan ── assess_complexity ── [optional human approval]
-   ── begin_candidate ── run plan steps (child implementation_workflow per step)
-   ── get_full_diff ── review_patch ── FinalReport ── finalize_winner ── teardown_environment
+   ── [bugfix: reproduce ── snapshot_candidate_base] ── build_plan ── review/replan
+   ── assess_complexity ── [optional human approval]
+   ── run candidate(s) sequentially (begin_candidate ── run plan steps via child
+        implementation_workflow per step ── get_full_diff ── review_patch), escalating
+        the count by the first candidate's confidence and reset_to_base between candidates
+   ── select_candidate ── FinalReport ── finalize_winner ── teardown_environment
 ```
 
 Module map (everything under `src/`):
@@ -70,11 +73,14 @@ polymorphic seam `Workspace.run_command(command, timeout) -> CommandResult`:
   that already contains the repo (e.g. SWE-bench's `/testbed`) — the eval mode.
 
 Setup asserts a clean tree and records `base_sha` (and the base branch, which may be detached).
-Candidates run **sequentially**: each gets a branch `agentic/{run_id}/cand-{k}` off `base_sha`, the
-agent commits its work there, and the result is `git diff base_sha`. Finalize returns to the base
-branch and applies the winner as **uncommitted** edits (the Claude-Code feel); candidate branches
-are kept unless `CLEANUP_CANDIDATE_BRANCHES` is set. `run_command` is the *only* place host and
-docker differ — nothing else branches on workspace kind.
+Candidates run **sequentially**: each gets a branch `agentic/{run_id}/cand-{k}` off the per-run
+**candidate base** (the post-reproduction snapshot from `snapshot_candidate_base`, equal to
+`base_sha` when no reproduction ran), the agent commits its work there, and the result is
+`git diff base_sha` — so a bugfix's regression test ships in the patch and survives `reset_to_base`
+between candidates. Finalize returns to the base branch and applies the winner as **uncommitted**
+edits (the Claude-Code feel); candidate branches are kept unless `CLEANUP_CANDIDATE_BRANCHES` is
+set. `run_command` is the *only* place host and docker differ — nothing else branches on workspace
+kind.
 
 ### Determinism & serialization (Temporal-Light)
 
@@ -131,6 +137,11 @@ The pipeline is implemented and green under unit/fake-mode tests. Outstanding:
 - **DOCKER failure cleanup.** `teardown_environment` only runs on normal completion; container
   removal has no recovery path on failure (revisit when Temporal-Light supports
   failure/cancellation compensation).
+- **Candidate isolation is git-tree only.** `reset_to_base` between sequential candidates does
+  `git reset --hard` + `git clean -fd`, restoring the working tree but not global/system state — a
+  `pip install` or other side effect from one candidate persists into the next, on both HOST and
+  DOCKER. Accepted for now (single environment per run); full isolation would mean recreating the
+  DOCKER container on reset (a `DockerWorkspace` override) and is deferred.
 - **Precise xref.** Call-site capture is tree-sitter heuristic (name-keyed, ignores comments and
   strings, distinguishes calls from mentions) — not scope-accurate. A precise per-language analyzer
   (Python `ast`/`symtable`, TS `tsserver`) is deferred.
@@ -155,9 +166,20 @@ self-contained, picked up in its own chat):
    passes after the fix. — [prompts/03](prompts/03-reproduce-repair-regression-loop.md)
 4. **Planner review → replan loop** — LLM plan review with context-gathering between rounds, plus
    extended thinking for planning roles. — [prompts/04](prompts/04-planner-review-replan.md)
-5. **Adaptive sequential candidates + selector** — escalate candidate count by confidence
-   (high→1, medium→2, low→4), select the best; combiner deferred. —
+5. ~~**Adaptive sequential candidates + selector**~~ — done: a per-run candidate base is snapshotted
+   after reproduction so the regression test survives `reset_to_base`; `main_workflow` runs one deep
+   candidate, then escalates by the first candidate's confidence (high→1, medium→2, low→4) running
+   sequentially with `reset_to_base` between candidates; a deterministic `select_candidate` activity
+   picks the winner (ACCEPT over REVISE, more passing tests, fewer blocking issues, smaller diff) and
+   `llm_usage` is summed across all candidates. —
    [prompts/05](prompts/05-sequential-candidates-combiner.md)
+
+Deferred milestones:
+
+- **Candidate combiner.** An LLM that synthesizes one solution from multiple candidate diffs, instead
+  of selecting a single winner. Materially harder than the selector (overlapping/conflicting diffs,
+  needs its own branch built off `base_sha`) and must be re-validated like a candidate — tests plus
+  the Prompt 03 bugfix gate — before finalize; never finalize an unverified merged diff.
 
 Then: live smoke run → SWE-bench subset → fix what the real runs expose before scaling the benchmark.
 

@@ -367,6 +367,12 @@ def _install_common_workflow_fakes(
     async def fake_begin_candidate(workspace_arg: Workspace, candidate_index: int) -> Workspace:
         return workspace
 
+    async def fake_snapshot_candidate_base(workspace_arg: Workspace) -> Workspace:
+        return workspace
+
+    async def fake_reset_to_base(workspace_arg: Workspace) -> ToolResult:
+        return _ok_result()
+
     async def fake_assess_complexity(
         task_contract: TaskContract,
     ) -> tuple[ComplexityVerdict, LLMUsage]:
@@ -384,6 +390,10 @@ def _install_common_workflow_fakes(
     monkeypatch.setattr('src.workflows.main_workflow.setup_environment', fake_setup_environment)
     monkeypatch.setattr('src.workflows.main_workflow.build_repo_index', fake_build_repo_index)
     monkeypatch.setattr('src.workflows.main_workflow.begin_candidate', fake_begin_candidate)
+    monkeypatch.setattr(
+        'src.workflows.main_workflow.snapshot_candidate_base', fake_snapshot_candidate_base
+    )
+    monkeypatch.setattr('src.workflows.main_workflow.reset_to_base', fake_reset_to_base)
     monkeypatch.setattr('src.workflows.main_workflow.assess_complexity', fake_assess_complexity)
     monkeypatch.setattr('src.workflows.main_workflow.review_plan', fake_review_plan)
     monkeypatch.setattr(
@@ -538,3 +548,124 @@ async def test_main_workflow_does_not_teardown_while_suspended_on_child(
         )
 
     assert torn_down == []
+
+
+def _review_verdict(decision: ReviewDecision) -> ReviewVerdict:
+    return ReviewVerdict(
+        verdict=decision,
+        minimality_assessment='minimal',
+        recommended_next_action='proceed',
+    )
+
+
+class _CandidateRunTracker:
+    def __init__(self) -> None:
+        self.begin_indices: list[int] = []
+        self.reset_count = 0
+        self.finalized_branch: str | None = None
+
+
+def _install_candidate_run_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace: HostWorkspace,
+    worker_confidence: Confidence,
+    verdicts: list[ReviewDecision],
+) -> _CandidateRunTracker:
+    tracker = _CandidateRunTracker()
+    verdict_iter = iter(verdicts)
+
+    async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
+        return _plan_with_step('step-1'), _unit_usage()
+
+    async def fake_begin_candidate(workspace_arg: Workspace, candidate_index: int) -> Workspace:
+        tracker.begin_indices.append(candidate_index)
+        return workspace.model_copy(update={'current_branch': f'cand-{candidate_index}'})
+
+    async def fake_reset_to_base(workspace_arg: Workspace) -> ToolResult:
+        tracker.reset_count += 1
+        return _ok_result()
+
+    async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
+        return 'impl-1'
+
+    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
+        worker_result = _worker_result(WorkerStatus.SUCCESS).model_copy(
+            update={'confidence': worker_confidence}
+        )
+        return {
+            'worker_result': worker_result.model_dump(mode='json'),
+            'llm_usage': _unit_usage().model_dump(mode='json'),
+        }
+
+    async def fake_get_full_diff(workspace_arg: Workspace) -> str:
+        return 'diff --git a/app.py b/app.py'
+
+    async def fake_review_patch(request: ReviewRequest) -> tuple[ReviewVerdict, LLMUsage]:
+        return _review_verdict(next(verdict_iter)), _unit_usage()
+
+    async def fake_finalize_winner(workspace_arg: Workspace, winner_branch: str) -> ToolResult:
+        tracker.finalized_branch = winner_branch
+        return _ok_result()
+
+    monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
+    monkeypatch.setattr('src.workflows.main_workflow.begin_candidate', fake_begin_candidate)
+    monkeypatch.setattr('src.workflows.main_workflow.reset_to_base', fake_reset_to_base)
+    monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
+    monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
+    monkeypatch.setattr('src.workflows.main_workflow.get_full_diff', fake_get_full_diff)
+    monkeypatch.setattr('src.workflows.main_workflow.review_patch', fake_review_patch)
+    monkeypatch.setattr('src.workflows.main_workflow.finalize_winner', fake_finalize_winner)
+    return tracker
+
+
+@pytest.mark.asyncio
+async def test_main_workflow_high_confidence_runs_single_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace()
+    _install_common_workflow_fakes(monkeypatch, _contract(TaskType.FEATURE), workspace)
+    tracker = _install_candidate_run_fakes(
+        monkeypatch,
+        workspace,
+        worker_confidence=Confidence.HIGH,
+        verdicts=[ReviewDecision.ACCEPT],
+    )
+
+    report = await main_workflow(
+        {'raw_request': 'add feature', 'origin': {'kind': 'host', 'repo_path': 'C:/repo'}}
+    )
+
+    assert tracker.begin_indices == [0]
+    assert tracker.reset_count == 0
+    assert tracker.finalized_branch == 'cand-0'
+    assert report['status'] == ReviewDecision.ACCEPT.value
+
+
+@pytest.mark.asyncio
+async def test_main_workflow_low_confidence_escalates_and_finalizes_selected_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace()
+    _install_common_workflow_fakes(monkeypatch, _contract(TaskType.FEATURE), workspace)
+    tracker = _install_candidate_run_fakes(
+        monkeypatch,
+        workspace,
+        worker_confidence=Confidence.HIGH,
+        verdicts=[
+            ReviewDecision.REVISE,
+            ReviewDecision.REVISE,
+            ReviewDecision.ACCEPT,
+            ReviewDecision.REVISE,
+        ],
+    )
+
+    report = await main_workflow(
+        {'raw_request': 'add feature', 'origin': {'kind': 'host', 'repo_path': 'C:/repo'}}
+    )
+
+    expected_count = CONFIG.candidate_count_low_confidence
+    assert tracker.begin_indices == list(range(expected_count))
+    assert tracker.reset_count == expected_count - 1
+    assert tracker.finalized_branch == 'cand-2'
+    assert report['status'] == ReviewDecision.ACCEPT.value
+    assert report['chosen_candidate']['index'] == 2

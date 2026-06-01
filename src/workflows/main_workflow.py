@@ -13,6 +13,14 @@ from src.activities.repo_indexer import build_repo_index
 from src.activities.report_builder import FinalReport
 from src.activities.reproduction import repro_run_tests
 from src.activities.reviewer import ReviewRequest, review_patch
+from src.activities.selector import (
+    CandidateResult,
+    SelectionRequest,
+    aggregate_candidate_confidence,
+    candidate_count_for_confidence,
+    derive_candidate_confidence,
+    select_candidate,
+)
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
     ToolResult,
@@ -20,8 +28,10 @@ from src.activities.workspace_manager import (
     begin_candidate,
     finalize_winner,
     make_run_id,
+    reset_to_base,
     run_tool,
     setup_environment,
+    snapshot_candidate_base,
     teardown_environment,
 )
 from src.config import CONFIG
@@ -49,13 +59,12 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
     usage += contract_usage
     workspace = await setup_environment(task_request.origin, run_id)
     repo_index = await build_repo_index(workspace)
-    candidate_workspace = await begin_candidate(workspace, 0)
 
     reproduction_context: ReproductionContext | None = None
     reproduction_before_exit_code: int | None = None
     if contract.task_type == TaskType.BUGFIX:
         reproduction_result, before_exit_code, reproduction_usage = await _run_reproduction_child(
-            workspace_info=candidate_workspace,
+            workspace_info=workspace,
             contract=contract,
             repo_index=repo_index,
         )
@@ -65,19 +74,20 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
                 status=WorkerStatus.BLOCKED.value,
                 patch='',
                 contract=contract,
-                workspace_info=candidate_workspace,
+                workspace_info=workspace,
                 llm_usage=usage,
                 blocked_reason=(
                     f'could not reproduce the bug: {reproduction_result.failure_evidence}'
                 ),
             )
-            await teardown_environment(candidate_workspace)
+            await teardown_environment(workspace)
             return blocked_report.model_dump(mode='json')
         reproduction_context = ReproductionContext(
             repro_command=reproduction_result.repro_command,
             failure_evidence=reproduction_result.failure_evidence,
         )
         reproduction_before_exit_code = before_exit_code
+        workspace = await snapshot_candidate_base(workspace)
 
     plan, plan_usage = await build_plan(
         PlanRequest(
@@ -93,7 +103,7 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
         plan=plan,
         contract=contract,
         repo_index=repo_index,
-        workspace_info=candidate_workspace,
+        workspace_info=workspace,
         reproduction=reproduction_context,
     )
     usage += review_loop_usage
@@ -109,19 +119,74 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
         )
         usage += approval_usage
 
+    first_candidate, first_usage = await _run_candidate(
+        candidate_index=0,
+        workspace=workspace,
+        plan=plan,
+        contract=contract,
+        repo_index=repo_index,
+        reproduction=reproduction_context,
+        reproduction_before_exit_code=reproduction_before_exit_code,
+    )
+    usage += first_usage
+    candidates = [first_candidate]
+    target_count = candidate_count_for_confidence(derive_candidate_confidence(first_candidate))
+    while len(candidates) < target_count:
+        await reset_to_base(workspace)
+        next_candidate, next_usage = await _run_candidate(
+            candidate_index=len(candidates),
+            workspace=workspace,
+            plan=plan,
+            contract=contract,
+            repo_index=repo_index,
+            reproduction=reproduction_context,
+            reproduction_before_exit_code=reproduction_before_exit_code,
+        )
+        usage += next_usage
+        candidates.append(next_candidate)
+
+    chosen = await select_candidate(SelectionRequest(candidates=candidates))
+    final_report = FinalReport(
+        status=chosen.review_verdict.verdict.value,
+        patch=chosen.diff,
+        contract=contract,
+        plan=chosen.plan,
+        worker_results=chosen.worker_results,
+        final_verdict=chosen.review_verdict,
+        workspace_info=workspace,
+        llm_usage=usage,
+        reproduction_evidence=chosen.reproduction_evidence,
+        chosen_candidate=chosen,
+    )
+    await finalize_winner(workspace, chosen.branch)
+    await teardown_environment(workspace)
+    return final_report.model_dump(mode='json')
+
+
+async def _run_candidate(
+    candidate_index: int,
+    workspace: Workspace,
+    plan: Plan,
+    contract: TaskContract,
+    repo_index: RepoIndex,
+    reproduction: ReproductionContext | None,
+    reproduction_before_exit_code: int | None,
+) -> tuple[CandidateResult, LLMUsage]:
+    usage = LLMUsage()
+    candidate_workspace = await begin_candidate(workspace, candidate_index)
     plan, worker_results, after_exit_code, run_usage = await _run_plan_steps(
         plan=plan,
         contract=contract,
         repo_index=repo_index,
         workspace_info=candidate_workspace,
-        reproduction=reproduction_context,
+        reproduction=reproduction,
     )
     usage += run_usage
 
     reproduction_evidence: ReproductionEvidence | None = None
-    if reproduction_context is not None:
+    if reproduction is not None:
         reproduction_evidence = build_reproduction_evidence(
-            repro_command=reproduction_context.repro_command,
+            repro_command=reproduction.repro_command,
             before_exit_code=reproduction_before_exit_code,
             after_exit_code=after_exit_code,
         )
@@ -143,20 +208,18 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
         ),
     )
     usage += review_usage
-    final_report = FinalReport(
-        status=final_verdict.verdict.value,
-        patch=diff,
-        contract=contract,
+    candidate = CandidateResult(
+        index=candidate_index,
+        branch=candidate_workspace.current_branch,
+        diff=diff,
         plan=plan,
         worker_results=worker_results,
-        final_verdict=final_verdict,
-        workspace_info=candidate_workspace,
-        llm_usage=usage,
+        review_verdict=final_verdict,
+        confidence=aggregate_candidate_confidence(worker_results),
+        test_results=aggregated_test_results,
         reproduction_evidence=reproduction_evidence,
     )
-    await finalize_winner(candidate_workspace, candidate_workspace.current_branch)
-    await teardown_environment(candidate_workspace)
-    return final_report.model_dump(mode='json')
+    return candidate, usage
 
 
 async def _review_and_revise_plan(
