@@ -147,27 +147,58 @@ def _load_models_csv(path: Path) -> dict[str, ModelEntry]:
 
 
 def _load_model_role_bindings(models_by_id: dict[str, ModelEntry]) -> dict[ModelRole, str]:
-    bindings: dict[ModelRole, tuple[str, str]] = {
-        ModelRole.CONTRACT_BUILDER: ('MODEL_CONTRACT_BUILDER', 'claude-opus-4-7'),
-        ModelRole.PLANNER: ('MODEL_PLANNER', 'claude-opus-4-7'),
-        ModelRole.PLAN_REVIEWER: ('MODEL_PLAN_REVIEWER', 'claude-opus-4-7'),
-        ModelRole.COMPLEXITY_ASSESSOR: ('MODEL_COMPLEXITY_ASSESSOR', 'claude-opus-4-7'),
-        ModelRole.CONTEXT_GATHERER: ('MODEL_CONTEXT_GATHERER', 'claude-haiku-4-5-20251001'),
-        ModelRole.REPRODUCER: ('MODEL_REPRODUCER', 'claude-sonnet-4-6'),
-        ModelRole.IMPLEMENTATION: ('MODEL_IMPLEMENTATION', 'claude-sonnet-4-6'),
-        ModelRole.REVIEWER: ('MODEL_REVIEWER', 'claude-sonnet-4-6'),
-        ModelRole.SUMMARIZER: ('MODEL_SUMMARIZER', 'claude-haiku-4-5-20251001'),
+    default_model_by_role: dict[ModelRole, str] = {
+        ModelRole.CONTRACT_BUILDER: 'claude-opus-4-7',
+        ModelRole.PLANNER: 'claude-opus-4-7',
+        ModelRole.PLAN_REVIEWER: 'claude-opus-4-7',
+        ModelRole.COMPLEXITY_ASSESSOR: 'claude-opus-4-7',
+        ModelRole.CONTEXT_GATHERER: 'claude-haiku-4-5-20251001',
+        ModelRole.REPRODUCER: 'claude-sonnet-4-6',
+        ModelRole.IMPLEMENTATION: 'claude-sonnet-4-6',
+        ModelRole.REVIEWER: 'claude-sonnet-4-6',
+        ModelRole.SUMMARIZER: 'claude-haiku-4-5-20251001',
     }
     resolved: dict[ModelRole, str] = {}
-    for role, (env_name, default_model_id) in bindings.items():
+    for role in ModelRole:
+        env_name = f'MODEL_{role.name}'
+        default_model_id = default_model_by_role[role]
         model_id = os.getenv(env_name, default_model_id)
-        if model_id not in models_by_id:
-            raise ValueError(
-                f'Model {model_id!r} for role {role.value!r} is not registered in '
-                f'{MODELS_CSV_PATH}. Add it to the CSV or set {env_name} to a known id.'
-            )
         resolved[role] = model_id
+    _validate_selected_models_are_registered(resolved, models_by_id)
+    _validate_selected_models_use_one_family(resolved)
     return resolved
+
+
+def _validate_selected_models_are_registered(
+    model_by_role: dict[ModelRole, str],
+    models_by_id: dict[str, ModelEntry],
+) -> None:
+    for role, model_id in model_by_role.items():
+        if model_id in models_by_id:
+            continue
+        raise ValueError(
+            f'Model {model_id!r} for role {role.value!r} is not registered in '
+            f'{MODELS_CSV_PATH}. Add it to the CSV or set MODEL_{role.name} to a known id.'
+        )
+
+
+def _validate_selected_models_use_one_family(model_by_role: dict[ModelRole, str]) -> None:
+    roles_by_family: dict[str, list[str]] = {}
+    for role, model_id in model_by_role.items():
+        roles_by_family.setdefault(_model_family(model_id), []).append(role.value)
+    if len(roles_by_family) <= 1:
+        return
+    families = ', '.join(
+        f'{family}: {", ".join(roles)}' for family, roles in sorted(roles_by_family.items())
+    )
+    raise ValueError(
+        'Selected models must use the same model family prefix because only one '
+        f'LLM_BASE_URL is configured. Found {families}.'
+    )
+
+
+def _model_family(model_id: str) -> str:
+    return model_id.split('-', 1)[0]
 
 
 def _load_reasoning_efforts() -> dict[ModelRole, ReasoningEffort | None]:

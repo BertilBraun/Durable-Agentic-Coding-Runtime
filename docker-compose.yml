@@ -8,6 +8,7 @@ services:
       - LLM_BASE_URL=${LLM_BASE_URL:-https://api.anthropic.com/v1}
       - MODEL_CONTRACT_BUILDER=${MODEL_CONTRACT_BUILDER:-claude-opus-4-7}
       - MODEL_PLANNER=${MODEL_PLANNER:-claude-opus-4-7}
+      - MODEL_PLAN_REVIEWER=${MODEL_PLAN_REVIEWER:-claude-opus-4-7}
       - MODEL_COMPLEXITY_ASSESSOR=${MODEL_COMPLEXITY_ASSESSOR:-claude-opus-4-7}
       - MODEL_CONTEXT_GATHERER=${MODEL_CONTEXT_GATHERER:-claude-haiku-4-5-20251001}
       - MODEL_IMPLEMENTATION=${MODEL_IMPLEMENTATION:-claude-sonnet-4-6}

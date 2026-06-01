@@ -2,13 +2,13 @@ from pytest import MonkeyPatch
 from src.config import ModelRole, load_settings
 
 
+def _clear_model_environment(monkeypatch: MonkeyPatch) -> None:
+    for role in ModelRole:
+        monkeypatch.delenv(f'MODEL_{role.name}', raising=False)
+
+
 def test_settings_use_default_models(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.delenv('MODEL_CONTRACT_BUILDER', raising=False)
-    monkeypatch.delenv('MODEL_PLANNER', raising=False)
-    monkeypatch.delenv('MODEL_CONTEXT_GATHERER', raising=False)
-    monkeypatch.delenv('MODEL_IMPLEMENTATION', raising=False)
-    monkeypatch.delenv('MODEL_REVIEWER', raising=False)
-    monkeypatch.delenv('MODEL_SUMMARIZER', raising=False)
+    _clear_model_environment(monkeypatch)
 
     settings = load_settings()
 
@@ -19,6 +19,7 @@ def test_settings_use_default_models(monkeypatch: MonkeyPatch) -> None:
 
 
 def test_settings_use_environment_override(monkeypatch: MonkeyPatch) -> None:
+    _clear_model_environment(monkeypatch)
     monkeypatch.setenv('MODEL_REVIEWER', 'claude-haiku-4-5-20251001')
 
     settings = load_settings()
@@ -26,8 +27,10 @@ def test_settings_use_environment_override(monkeypatch: MonkeyPatch) -> None:
     assert settings.model_for_role(ModelRole.REVIEWER) == 'claude-haiku-4-5-20251001'
 
 
-def test_settings_rejects_unknown_model(monkeypatch: MonkeyPatch) -> None:
+def test_settings_rejects_unknown_model_before_family_check(monkeypatch: MonkeyPatch) -> None:
+    _clear_model_environment(monkeypatch)
     monkeypatch.setenv('MODEL_REVIEWER', 'no-such-model-xyz')
+    monkeypatch.setenv('MODEL_PLANNER', 'gemini-3.1-flash-lite')
 
     try:
         load_settings()
@@ -36,6 +39,21 @@ def test_settings_rejects_unknown_model(monkeypatch: MonkeyPatch) -> None:
         return
 
     raise AssertionError('load_settings should reject unknown model ids')
+
+
+def test_settings_rejects_mixed_model_families(monkeypatch: MonkeyPatch) -> None:
+    _clear_model_environment(monkeypatch)
+    monkeypatch.setenv('MODEL_PLANNER', 'gemini-3.1-flash-lite')
+
+    try:
+        load_settings()
+    except ValueError as error:
+        assert 'same model family' in str(error)
+        assert 'claude' in str(error)
+        assert 'gemini' in str(error)
+        return
+
+    raise AssertionError('load_settings should reject mixed model families')
 
 
 def test_settings_model_entry_exposes_cost(monkeypatch: MonkeyPatch) -> None:
