@@ -1,5 +1,10 @@
 import pytest
 from src.activities.complexity_assessor import ComplexityVerdict
+from src.activities.plan_reviewer import (
+    PlanReviewDecision,
+    PlanReviewRequest,
+    PlanReviewVerdict,
+)
 from src.activities.planner import PlanRequest
 from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict
 from src.activities.workspace_manager import (
@@ -8,13 +13,19 @@ from src.activities.workspace_manager import (
     ToolResult,
     Workspace,
 )
+from src.config import CONFIG
 from src.llm.client import LLMUsage
+from src.models.context import ContextPack
 from src.models.plan import Plan, PlanStep, Risk
 from src.models.repo import RepoIndex
 from src.models.reproduction import ReproductionContext, ReproductionResult, ReproductionStatus
 from src.models.task import Origin, TaskContract, TaskRequest, TaskType
 from src.models.worker import Confidence, WorkerResult, WorkerStatus
-from src.workflows.main_workflow import _run_plan_steps, main_workflow
+from src.workflows.main_workflow import (
+    _review_and_revise_plan,
+    _run_plan_steps,
+    main_workflow,
+)
 from temporal_light.exceptions import WorkflowSuspended
 
 
@@ -105,7 +116,6 @@ async def test_run_plan_steps_adds_child_workflow_usage(monkeypatch: pytest.Monk
 
 @pytest.mark.asyncio
 async def test_run_plan_steps_caps_replan_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.config import CONFIG
 
     implementation_calls = 0
 
@@ -256,6 +266,90 @@ async def test_run_plan_steps_replans_when_repro_still_failing(
     assert worker_results[-1].status == WorkerStatus.BLOCKED
 
 
+def _context_pack() -> ContextPack:
+    return ContextPack(task_summary='gathered', snippets=[], budget_remaining=0)
+
+
+@pytest.mark.asyncio
+async def test_review_loop_revises_then_accepts_and_uses_revised_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decisions = iter([PlanReviewDecision.REVISE, PlanReviewDecision.ACCEPT])
+    build_plan_requests: list[PlanRequest] = []
+    gather_calls: list[str] = []
+
+    async def fake_review_plan(
+        request: PlanReviewRequest,
+    ) -> tuple[PlanReviewVerdict, LLMUsage]:
+        decision = next(decisions)
+        feedback = '' if decision == PlanReviewDecision.ACCEPT else 'inspect the auth callers'
+        return PlanReviewVerdict(decision=decision, feedback=feedback), _unit_usage()
+
+    async def fake_gather_context(request: object) -> tuple[ContextPack, LLMUsage]:
+        gather_calls.append('gathered')
+        return _context_pack(), _unit_usage()
+
+    async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
+        build_plan_requests.append(request)
+        return _plan_with_step('revised'), _unit_usage()
+
+    monkeypatch.setattr('src.workflows.main_workflow.review_plan', fake_review_plan)
+    monkeypatch.setattr('src.workflows.main_workflow.gather_context', fake_gather_context)
+    monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
+
+    plan, usage = await _review_and_revise_plan(
+        plan=_plan_with_step('initial'),
+        contract=_contract(TaskType.FEATURE),
+        repo_index=RepoIndex(),
+        workspace_info=_workspace(),
+        reproduction=None,
+    )
+
+    assert len(build_plan_requests) == 1
+    assert build_plan_requests[0].context is not None
+    assert build_plan_requests[0].revision_feedback == 'inspect the auth callers'
+    assert len(gather_calls) == 1
+    assert plan.steps[0].id == 'revised'
+    assert usage.call_count == 4
+
+
+@pytest.mark.asyncio
+async def test_review_loop_stops_at_cap_and_keeps_latest_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_plan_count = 0
+
+    async def fake_review_plan(
+        request: PlanReviewRequest,
+    ) -> tuple[PlanReviewVerdict, LLMUsage]:
+        return PlanReviewVerdict(
+            decision=PlanReviewDecision.REVISE, feedback='again'
+        ), _unit_usage()
+
+    async def fake_gather_context(request: object) -> tuple[ContextPack, LLMUsage]:
+        return _context_pack(), _unit_usage()
+
+    async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
+        nonlocal build_plan_count
+        build_plan_count += 1
+        return _plan_with_step(f'revised-{build_plan_count}'), _unit_usage()
+
+    monkeypatch.setattr('src.workflows.main_workflow.review_plan', fake_review_plan)
+    monkeypatch.setattr('src.workflows.main_workflow.gather_context', fake_gather_context)
+    monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
+
+    plan, _ = await _review_and_revise_plan(
+        plan=_plan_with_step('initial'),
+        contract=_contract(TaskType.FEATURE),
+        repo_index=RepoIndex(),
+        workspace_info=_workspace(),
+        reproduction=None,
+    )
+
+    assert build_plan_count == CONFIG.max_plan_review_rounds
+    assert plan.steps[0].id == f'revised-{CONFIG.max_plan_review_rounds}'
+
+
 def _install_common_workflow_fakes(
     monkeypatch: pytest.MonkeyPatch,
     contract: TaskContract,
@@ -278,6 +372,11 @@ def _install_common_workflow_fakes(
     ) -> tuple[ComplexityVerdict, LLMUsage]:
         return ComplexityVerdict(requires_human_approval=False, reasoning='narrow'), _unit_usage()
 
+    async def fake_review_plan(
+        request: PlanReviewRequest,
+    ) -> tuple[PlanReviewVerdict, LLMUsage]:
+        return PlanReviewVerdict(decision=PlanReviewDecision.ACCEPT, feedback=''), _unit_usage()
+
     async def fake_teardown_environment(workspace_arg: Workspace) -> ToolResult:
         return _ok_result()
 
@@ -286,6 +385,7 @@ def _install_common_workflow_fakes(
     monkeypatch.setattr('src.workflows.main_workflow.build_repo_index', fake_build_repo_index)
     monkeypatch.setattr('src.workflows.main_workflow.begin_candidate', fake_begin_candidate)
     monkeypatch.setattr('src.workflows.main_workflow.assess_complexity', fake_assess_complexity)
+    monkeypatch.setattr('src.workflows.main_workflow.review_plan', fake_review_plan)
     monkeypatch.setattr(
         'src.workflows.main_workflow.teardown_environment', fake_teardown_environment
     )

@@ -3,9 +3,11 @@ from __future__ import annotations
 from temporal_light import spawn_child, wait_for_child, workflow
 
 from src.activities.complexity_assessor import assess_complexity
+from src.activities.context_gatherer import ContextGatherRequest, gather_context
 from src.activities.contract_builder import build_contract
 from src.activities.human_approval import approve_plan_or_replan
 from src.activities.implementation import get_full_diff
+from src.activities.plan_reviewer import PlanReviewDecision, PlanReviewRequest, review_plan
 from src.activities.planner import PlanRequest, build_plan
 from src.activities.repo_indexer import build_repo_index
 from src.activities.report_builder import FinalReport
@@ -87,6 +89,14 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
         ),
     )
     usage += plan_usage
+    plan, review_loop_usage = await _review_and_revise_plan(
+        plan=plan,
+        contract=contract,
+        repo_index=repo_index,
+        workspace_info=candidate_workspace,
+        reproduction=reproduction_context,
+    )
+    usage += review_loop_usage
     complexity_verdict, complexity_usage = await assess_complexity(contract)
     usage += complexity_usage
 
@@ -147,6 +157,48 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
     await finalize_winner(candidate_workspace, candidate_workspace.current_branch)
     await teardown_environment(candidate_workspace)
     return final_report.model_dump(mode='json')
+
+
+async def _review_and_revise_plan(
+    plan: Plan,
+    contract: TaskContract,
+    repo_index: RepoIndex,
+    workspace_info: Workspace,
+    reproduction: ReproductionContext | None,
+) -> tuple[Plan, LLMUsage]:
+    usage = LLMUsage()
+    for _ in range(CONFIG.max_plan_review_rounds):
+        verdict, review_usage = await review_plan(
+            PlanReviewRequest(
+                contract=contract,
+                plan=plan,
+                repo_index=repo_index,
+                reproduction=reproduction,
+            ),
+        )
+        usage += review_usage
+        if verdict.decision == PlanReviewDecision.ACCEPT:
+            break
+        context_pack, gather_usage = await gather_context(
+            ContextGatherRequest(
+                workspace_info=workspace_info,
+                repo_index=repo_index,
+                gatherer_prompt=verdict.feedback,
+            ),
+        )
+        usage += gather_usage
+        plan, replan_usage = await build_plan(
+            PlanRequest(
+                contract=contract,
+                repo_index=repo_index,
+                worker_results=[],
+                revision_feedback=verdict.feedback,
+                reproduction=reproduction,
+                context=context_pack,
+            ),
+        )
+        usage += replan_usage
+    return plan, usage
 
 
 async def _run_plan_steps(
