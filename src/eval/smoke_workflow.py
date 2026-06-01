@@ -11,8 +11,8 @@ from pathlib import Path
 
 from temporal_light import Client, WorkflowFailedError
 
-from activities.report_builder import FinalReport
-from models.frozen_base_model import FrozenBaseModel
+from src.activities.report_builder import FinalReport
+from src.models.frozen_base_model import FrozenBaseModel
 from src.models.task import HostOrigin, TaskRequest
 
 

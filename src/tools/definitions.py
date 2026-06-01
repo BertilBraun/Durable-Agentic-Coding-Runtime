@@ -4,7 +4,7 @@ from typing import Literal, TypeAlias
 
 from pydantic import Field, TypeAdapter
 
-from models.frozen_base_model import FrozenBaseModel
+from src.models.frozen_base_model import FrozenBaseModel
 from src.runtime_enums import StrEnum
 
 

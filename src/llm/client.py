@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from typing import Generic, Literal, Protocol, TypeVar
 
 from openai import AsyncOpenAI
@@ -75,21 +76,16 @@ class AsyncOpenAIClient(Protocol):
     beta: BetaNamespace
 
 
-_structured_output_registry: dict[str, type[BaseModel]] = {}
-
-
-def register_structured_output(output_type: type[BaseModel]) -> type[BaseModel]:
-    _structured_output_registry[output_type.__name__] = output_type
-    return output_type
-
-
-def _structured_output_type(name: str) -> type[BaseModel]:
-    if name not in _structured_output_registry:
+def _structured_output_type(module_name: str, qualified_name: str) -> type[BaseModel]:
+    module = importlib.import_module(module_name)
+    output_type: object = module
+    for attribute_name in qualified_name.split('.'):
+        output_type = getattr(output_type, attribute_name)
+    if not isinstance(output_type, type) or not issubclass(output_type, BaseModel):
         raise ValueError(
-            f'Structured output type {name!r} is not registered. '
-            f'Apply @register_structured_output to its class definition.'
+            f'Structured output type {module_name}.{qualified_name} is not a Pydantic model.'
         )
-    return _structured_output_registry[name]
+    return output_type
 
 
 class LLMClient:
@@ -159,6 +155,7 @@ async def generate_completion(
 @activity(retries=2, timeout=180, backoff_seconds=10)
 async def generate_structured_completion(
     messages: list[Message],
+    output_type_module: str,
     output_type_name: str,
     model: str,
     context_limit_tokens: int,
@@ -166,7 +163,7 @@ async def generate_structured_completion(
 ) -> LLMResult:
     return await LLMClient().generate_structured(
         messages=messages,
-        output_type=_structured_output_type(output_type_name),
+        output_type=_structured_output_type(output_type_module, output_type_name),
         model=model,
         context_limit_tokens=context_limit_tokens,
         reasoning_effort=reasoning_effort,
@@ -187,9 +184,9 @@ async def generate_structured(
     messages: list[Message],
     output_type: type[StructuredOutput],
 ) -> StructuredCompletion[StructuredOutput]:
-    register_structured_output(output_type)
     result = await generate_structured_completion(
         messages=messages,
+        output_type_module=output_type.__module__,
         output_type_name=output_type.__name__,
         model=CONFIG.model_for_role(role),
         context_limit_tokens=CONFIG.context_limit_for_role(role),
