@@ -18,6 +18,19 @@ Sequential, not parallel: two candidates cannot share one in-place HOST repo or 
 container, and the redesign deliberately kept a single environment per run. Each candidate runs to
 completion, then we reset to base before the next.
 
+**Candidate base = post-reproduction snapshot, not raw `base_sha`.** The plan (and, for bugfix
+tasks, the reproduction) is per-run: setup → reproduce → plan → review happen once, then we branch a
+candidate from the resulting repository state. This matters because the reproduction phase *writes a
+regression test into the working tree* (`reproduce_bug` adds it with `write_file` / `apply_patch` —
+see [reproduction.py](../src/activities/reproduction.py)), and `reset_to_base()`'s `git clean -fd`
+would wipe that test before candidate 1. So after reproduction, commit the working tree to a per-run
+**candidate base** ref `C`; `begin_candidate(k)` branches off `C` and `reset_to_base(...)` resets to
+`C` between candidates (for non-bugfix runs nothing was written, so `C == base_sha` and behavior is
+identical to today). `reproduction_context` is immutable metadata — pass it into each candidate as a
+value. Keep `diff_against_base()` / `finalize_to_base()` measuring against the original `base_sha`,
+**not** `C`: the candidate patch deliberately includes the regression test, which is a valid
+regression test worth shipping alongside the fix.
+
 ---
 
 ## 2. What to build
@@ -56,6 +69,12 @@ Where a candidate run is: `begin_candidate(k)` → `_run_plan_steps(...)` → `g
 
 - Add a `reset_to_base(workspace)` activity wrapping `workspace.reset_to_base()` (mirrors
   `begin_candidate` / `finalize_winner`); register it in [worker.py](../src/worker.py).
+- Capture the **candidate base** once, after reproduction and before the candidate loop: commit the
+  post-reproduction working tree to a per-run ref and key `begin_candidate(k)` / `reset_to_base(...)`
+  to that ref instead of raw `base_sha` (a small `Workspace` seam tweak — e.g. a
+  `snapshot_candidate_base(workspace)` activity that returns the ref, or a base-ref argument threaded
+  through). With no reproduction the snapshot equals `base_sha`. `diff_against_base` /
+  `finalize_to_base` stay against the original `base_sha` so the regression test ships in the patch.
 - Add confidence→count config to [config.py](../src/config.py), e.g.
   `CANDIDATE_COUNT_MEDIUM_CONFIDENCE` (default `2`) and `CANDIDATE_COUNT_LOW_CONFIDENCE` (default
   `4`); high is always `1`. A global hard cap (the low value) bounds the loop.
@@ -100,9 +119,10 @@ a combiner, finalize the combined branch instead.
 
 ## 3. Tasks
 
-1. Add `reset_to_base` activity + register it; add the confidence→count config; add
-   `CandidateResult`; add the pure `candidate_count_for_confidence(...)`. Test the mapping directly
-   (parametrize high→1, medium→2, low→4).
+1. Add `reset_to_base` activity + register it; add the candidate-base snapshot after reproduction
+   (key `begin_candidate` / `reset_to_base` to it, `== base_sha` when no repro ran); add the
+   confidence→count config; add `CandidateResult`; add the pure `candidate_count_for_confidence(...)`.
+   Test the mapping directly (parametrize high→1, medium→2, low→4).
 2. Convert the single-candidate section of `main_workflow` into the adaptive escalation loop, with
    `reset_to_base` between candidates. Test (fakes injected): a high-confidence first candidate runs
    exactly one candidate and reproduces current behavior; a low-confidence first candidate escalates
@@ -122,6 +142,11 @@ a combiner, finalize the combined branch instead.
   DOCKER, a clean slate means recreating the container between candidates (a `reset_to_base`
   override on `DockerWorkspace`, or recreate-on-reset). Decide and document; don't pretend HOST
   candidates are isolated.
+- **Reset to the post-reproduction candidate base, not raw `base_sha`.** The reproducer writes a
+  regression test into the working tree; a `reset_to_base` keyed to `base_sha` runs `git clean -fd`
+  and deletes that test for every candidate after the first. Capture the candidate base once after
+  reproduction (§2.1) and branch/reset relative to it. Keep `diff_against_base` against the original
+  `base_sha` so the test ships in the patch.
 - **Never finalize an unvalidated combined diff.** A merged solution must pass the same gates a
   candidate does.
 - **Determinism + usage.** The loop is bounded and deterministic; sum `LLMUsage` across every
