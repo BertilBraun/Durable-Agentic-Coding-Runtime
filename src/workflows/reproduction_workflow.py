@@ -18,7 +18,7 @@ async def reproduction_workflow(
     task_contract = TaskContract.model_validate(contract)
     repository_index = RepoIndex.model_validate(repo_index)
 
-    reproduction_result, before_exit_code, usage = await reproduce_bug(
+    reproduction_result, usage = await reproduce_bug(
         ReproductionTurnRequest(
             task_contract=task_contract,
             workspace_info=workspace_info,
@@ -27,6 +27,5 @@ async def reproduction_workflow(
     )
     return {
         'reproduction_result': reproduction_result.model_dump(mode='json'),
-        'before_exit_code': before_exit_code,
         'llm_usage': usage.model_dump(mode='json'),
     }

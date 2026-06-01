@@ -61,9 +61,8 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
     repo_index = await build_repo_index(workspace)
 
     reproduction_context: ReproductionContext | None = None
-    reproduction_before_exit_code: int | None = None
     if contract.task_type == TaskType.BUGFIX:
-        reproduction_result, before_exit_code, reproduction_usage = await _run_reproduction_child(
+        reproduction_result, reproduction_usage = await _run_reproduction_child(
             workspace_info=workspace,
             contract=contract,
             repo_index=repo_index,
@@ -86,7 +85,6 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
             repro_command=reproduction_result.repro_command,
             failure_evidence=reproduction_result.failure_evidence,
         )
-        reproduction_before_exit_code = before_exit_code
         workspace = await snapshot_candidate_base(workspace)
 
     plan, plan_usage = await build_plan(
@@ -126,7 +124,6 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
         contract=contract,
         repo_index=repo_index,
         reproduction=reproduction_context,
-        reproduction_before_exit_code=reproduction_before_exit_code,
     )
     usage += first_usage
     candidates = [first_candidate]
@@ -140,7 +137,6 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
             contract=contract,
             repo_index=repo_index,
             reproduction=reproduction_context,
-            reproduction_before_exit_code=reproduction_before_exit_code,
         )
         usage += next_usage
         candidates.append(next_candidate)
@@ -170,11 +166,10 @@ async def _run_candidate(
     contract: TaskContract,
     repo_index: RepoIndex,
     reproduction: ReproductionContext | None,
-    reproduction_before_exit_code: int | None,
 ) -> tuple[CandidateResult, LLMUsage]:
     usage = LLMUsage()
     candidate_workspace = await begin_candidate(workspace, candidate_index)
-    plan, worker_results, after_exit_code, run_usage = await _run_plan_steps(
+    plan, worker_results, reproduction_passed_after, run_usage = await _run_plan_steps(
         plan=plan,
         contract=contract,
         repo_index=repo_index,
@@ -187,8 +182,7 @@ async def _run_candidate(
     if reproduction is not None:
         reproduction_evidence = build_reproduction_evidence(
             repro_command=reproduction.repro_command,
-            before_exit_code=reproduction_before_exit_code,
-            after_exit_code=after_exit_code,
+            passed_after=bool(reproduction_passed_after),
         )
 
     diff = await get_full_diff(candidate_workspace)
@@ -270,12 +264,12 @@ async def _run_plan_steps(
     repo_index: RepoIndex,
     workspace_info: Workspace,
     reproduction: ReproductionContext | None,
-) -> tuple[Plan, list[WorkerResult], int | None, LLMUsage]:
+) -> tuple[Plan, list[WorkerResult], bool | None, LLMUsage]:
     worker_results: list[WorkerResult] = []
     pending_plan_steps = list(plan.steps)
     usage = LLMUsage()
     replan_attempts = 0
-    after_exit_code: int | None = None
+    reproduction_passed_after: bool | None = None
     while True:
         if pending_plan_steps:
             plan_step = pending_plan_steps.pop(0)
@@ -309,14 +303,14 @@ async def _run_plan_steps(
                         gate_result = await _run_repro_command(
                             workspace_info, repo_index, reproduction.repro_command
                         )
-                        after_exit_code = gate_result.exit_code
+                        reproduction_passed_after = gate_result.exit_code == 0
             continue
         if reproduction is None:
             break
         repro_result = await _run_repro_command(
             workspace_info, repo_index, reproduction.repro_command
         )
-        after_exit_code = repro_result.exit_code
+        reproduction_passed_after = repro_result.exit_code == 0
         suite_result = await _run_suite(workspace_info, repo_index, plan.integration_tests)
         if repro_result.exit_code == 0 and suite_result.exit_code == 0:
             break
@@ -333,7 +327,7 @@ async def _run_plan_steps(
         )
         usage += replan_usage
         pending_plan_steps = list(plan.steps)
-    return plan, worker_results, after_exit_code, usage
+    return plan, worker_results, reproduction_passed_after, usage
 
 
 async def _replan(
@@ -419,7 +413,7 @@ async def _run_reproduction_child(
     workspace_info: Workspace,
     contract: TaskContract,
     repo_index: RepoIndex,
-) -> tuple[ReproductionResult, int, LLMUsage]:
+) -> tuple[ReproductionResult, LLMUsage]:
     child_id = await spawn_child(
         'reproduction_workflow',
         workspace=workspace_info.model_dump(mode='json'),
@@ -430,7 +424,6 @@ async def _run_reproduction_child(
     assert isinstance(child_result, dict), 'reproduction_workflow returns a dict payload'
     return (
         ReproductionResult.model_validate(child_result['reproduction_result']),
-        int(child_result['before_exit_code']),
         LLMUsage.model_validate(child_result['llm_usage']),
     )
 

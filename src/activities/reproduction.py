@@ -68,7 +68,7 @@ def repro_run_tests(repro_command: str) -> RunTests:
 
 async def reproduce_bug(
     request: ReproductionTurnRequest,
-) -> tuple[ReproductionResult, int, LLMUsage]:
+) -> tuple[ReproductionResult, LLMUsage]:
     messages = [
         Message(role='system', content=REPRODUCTION_SYSTEM_PROMPT, cacheable=True),
         Message(role='user', content=json.dumps(_reproduction_user_payload(request))),
@@ -87,15 +87,14 @@ async def reproduce_bug(
         if agent_turn.done:
             if agent_turn.reproduction_result is None:
                 raise ValueError('reproduction_result is required when reproduction turn is done')
-            verified_result, before_exit_code = await _verify_reproduction(
+            verified_result = await _verify_reproduction(
                 request=request,
                 reproduction_result=agent_turn.reproduction_result,
             )
-            return verified_result, before_exit_code, usage
+            return verified_result, usage
         if completion.context_utilization() > stop_threshold:
             return (
                 _could_not_reproduce('context budget exceeded before reproduction'),
-                0,
                 usage,
             )
         observations: list[str] = []
@@ -126,15 +125,15 @@ async def reproduce_bug(
         messages.append(Message(role='assistant', content=agent_turn.model_dump_json()))
         messages.append(Message(role='user', content='\n\n'.join(observations)))
 
-    return _could_not_reproduce('maximum reproduction tool rounds reached'), 0, usage
+    return _could_not_reproduce('maximum reproduction tool rounds reached'), usage
 
 
 async def _verify_reproduction(
     request: ReproductionTurnRequest,
     reproduction_result: ReproductionResult,
-) -> tuple[ReproductionResult, int]:
+) -> ReproductionResult:
     if reproduction_result.status == ReproductionStatus.COULD_NOT_REPRODUCE:
-        return reproduction_result, 0
+        return reproduction_result
     tool_result = await run_tool(
         ToolExecutionRequest(
             workspace=request.workspace_info,
@@ -143,17 +142,11 @@ async def _verify_reproduction(
         )
     )
     if tool_result.exit_code == 0:
-        return (
-            _could_not_reproduce(
-                'repro command passed on the unfixed tree; not a genuine reproduction'
-            ),
-            tool_result.exit_code,
+        return _could_not_reproduce(
+            'repro command passed on the unfixed tree; not a genuine reproduction'
         )
-    return (
-        reproduction_result.model_copy(
-            update={'failure_evidence': _observed_failure_text(tool_result)}
-        ),
-        tool_result.exit_code,
+    return reproduction_result.model_copy(
+        update={'failure_evidence': _observed_failure_text(tool_result)}
     )
 
 

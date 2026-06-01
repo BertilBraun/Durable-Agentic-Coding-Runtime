@@ -100,7 +100,7 @@ async def test_run_plan_steps_adds_child_workflow_usage(monkeypatch: pytest.Monk
         'src.workflows.main_workflow._run_implementation_child', fake_run_implementation_child
     )
 
-    _, worker_results, after_exit_code, usage = await _run_plan_steps(
+    _, worker_results, reproduction_passed_after, usage = await _run_plan_steps(
         plan=_plan_with_step('step-1'),
         contract=_contract(TaskType.FEATURE),
         repo_index=RepoIndex(),
@@ -109,7 +109,7 @@ async def test_run_plan_steps_adds_child_workflow_usage(monkeypatch: pytest.Monk
     )
 
     assert len(worker_results) == 1
-    assert after_exit_code is None
+    assert reproduction_passed_after is None
     assert usage.call_count == 3
     assert usage.total_cost_usd == 0.05
 
@@ -169,7 +169,7 @@ async def test_run_plan_steps_final_gate_passes_when_repro_and_suite_green(
     )
     monkeypatch.setattr('src.workflows.main_workflow.run_tool', fake_run_tool)
 
-    _, worker_results, after_exit_code, _ = await _run_plan_steps(
+    _, worker_results, reproduction_passed_after, _ = await _run_plan_steps(
         plan=_plan_with_step('step-1'),
         contract=_contract(TaskType.BUGFIX),
         repo_index=RepoIndex(),
@@ -177,7 +177,7 @@ async def test_run_plan_steps_final_gate_passes_when_repro_and_suite_green(
         reproduction=ReproductionContext(repro_command='pytest x', failure_evidence='boom'),
     )
 
-    assert after_exit_code == 0
+    assert reproduction_passed_after is True
     assert [result.status for result in worker_results] == [WorkerStatus.SUCCESS]
 
 
@@ -214,7 +214,7 @@ async def test_run_plan_steps_runs_all_steps_even_after_repro_green(
         definition_of_done=['diff reviewed'],
     )
 
-    _, _, after_exit_code, _ = await _run_plan_steps(
+    _, _, reproduction_passed_after, _ = await _run_plan_steps(
         plan=plan,
         contract=_contract(TaskType.BUGFIX),
         repo_index=RepoIndex(),
@@ -223,7 +223,7 @@ async def test_run_plan_steps_runs_all_steps_even_after_repro_green(
     )
 
     assert executed_steps == ['fix', 'cleanup']
-    assert after_exit_code == 0
+    assert reproduction_passed_after is True
 
 
 @pytest.mark.asyncio
@@ -253,7 +253,7 @@ async def test_run_plan_steps_replans_when_repro_still_failing(
     monkeypatch.setattr('src.workflows.main_workflow.run_tool', fake_run_tool)
     monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
 
-    _, worker_results, after_exit_code, _ = await _run_plan_steps(
+    _, worker_results, reproduction_passed_after, _ = await _run_plan_steps(
         plan=_plan_with_step('step-1'),
         contract=_contract(TaskType.BUGFIX),
         repo_index=RepoIndex(),
@@ -261,7 +261,7 @@ async def test_run_plan_steps_replans_when_repro_still_failing(
         reproduction=ReproductionContext(repro_command='pytest x', failure_evidence='boom'),
     )
 
-    assert after_exit_code == 1
+    assert reproduction_passed_after is False
     assert any('regression test still failing' in (feedback or '') for feedback in feedbacks)
     assert worker_results[-1].status == WorkerStatus.BLOCKED
 
@@ -401,7 +401,7 @@ def _install_common_workflow_fakes(
     )
 
 
-def _reproduction_payload(status: ReproductionStatus, before_exit_code: int) -> dict[str, object]:
+def _reproduction_payload(status: ReproductionStatus) -> dict[str, object]:
     return {
         'reproduction_result': ReproductionResult(
             status=status,
@@ -409,7 +409,6 @@ def _reproduction_payload(status: ReproductionStatus, before_exit_code: int) -> 
             test_files=['tests/test_bug.py'],
             failure_evidence='boom',
         ).model_dump(mode='json'),
-        'before_exit_code': before_exit_code,
         'llm_usage': _unit_usage().model_dump(mode='json'),
     }
 
@@ -428,7 +427,7 @@ async def test_main_workflow_blocks_when_bug_cannot_be_reproduced(
         return 'repro-1'
 
     async def fake_wait_for_child(child_id: str) -> dict[str, object]:
-        return _reproduction_payload(ReproductionStatus.COULD_NOT_REPRODUCE, 0)
+        return _reproduction_payload(ReproductionStatus.COULD_NOT_REPRODUCE)
 
     async def fake_finalize_winner(workspace_arg: Workspace, winner_branch: str) -> ToolResult:
         nonlocal finalized
@@ -464,7 +463,7 @@ async def test_main_workflow_threads_reproduction_evidence_into_report(
 
     async def fake_wait_for_child(child_id: str) -> dict[str, object]:
         if child_id == 'repro-1':
-            return _reproduction_payload(ReproductionStatus.REPRODUCED, 1)
+            return _reproduction_payload(ReproductionStatus.REPRODUCED)
         return {
             'worker_result': _worker_result(WorkerStatus.SUCCESS).model_dump(mode='json'),
             'llm_usage': _unit_usage().model_dump(mode='json'),
@@ -507,10 +506,7 @@ async def test_main_workflow_threads_reproduction_evidence_into_report(
 
     assert report['status'] == ReviewDecision.ACCEPT.value
     evidence = report['reproduction_evidence']
-    assert evidence['failed_before'] is True
     assert evidence['passed_after'] is True
-    assert evidence['before_exit_code'] == 1
-    assert evidence['after_exit_code'] == 0
     assert plan_requests[0].reproduction is not None
 
 

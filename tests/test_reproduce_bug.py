@@ -88,10 +88,9 @@ async def test_reproduce_bug_trusts_reproduced_when_command_actually_fails(
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(reproduction_module, 'run_tool', fake_run_tool)
 
-    result, before_exit_code, _ = await reproduce_bug(_request())
+    result, _ = await reproduce_bug(_request())
 
     assert result.status == ReproductionStatus.REPRODUCED
-    assert before_exit_code == 1
     assert 'assert 4 == 5' in result.failure_evidence
 
 
@@ -110,10 +109,9 @@ async def test_reproduce_bug_rejects_claim_when_command_passes_on_unfixed_tree(
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(reproduction_module, 'run_tool', fake_run_tool)
 
-    result, before_exit_code, _ = await reproduce_bug(_request())
+    result, _ = await reproduce_bug(_request())
 
     assert result.status == ReproductionStatus.COULD_NOT_REPRODUCE
-    assert before_exit_code == 0
 
 
 @pytest.mark.asyncio
@@ -135,8 +133,7 @@ async def test_reproduce_bug_does_not_run_command_for_could_not_reproduce(
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(reproduction_module, 'run_tool', fake_run_tool)
 
-    result, before_exit_code, _ = await reproduce_bug(_request())
+    result, _ = await reproduce_bug(_request())
 
     assert result.status == ReproductionStatus.COULD_NOT_REPRODUCE
     assert run_tool_calls == 0
-    assert before_exit_code == 0
