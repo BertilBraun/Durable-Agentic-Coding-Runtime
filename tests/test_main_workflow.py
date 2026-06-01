@@ -172,6 +172,51 @@ async def test_run_plan_steps_final_gate_passes_when_repro_and_suite_green(
 
 
 @pytest.mark.asyncio
+async def test_run_plan_steps_runs_all_steps_even_after_repro_green(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed_steps: list[str] = []
+
+    async def fake_run_implementation_child(
+        plan_step: PlanStep,
+        workspace_info: Workspace,
+        contract: TaskContract,
+        repo_index: RepoIndex,
+    ) -> tuple[WorkerResult, LLMUsage]:
+        executed_steps.append(plan_step.id)
+        return _worker_result(WorkerStatus.SUCCESS), _unit_usage()
+
+    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+        return _ok_result()
+
+    monkeypatch.setattr(
+        'src.workflows.main_workflow._run_implementation_child', fake_run_implementation_child
+    )
+    monkeypatch.setattr('src.workflows.main_workflow.run_tool', fake_run_tool)
+
+    fix_step = _plan_with_step('fix').steps[0]
+    cleanup_step = _plan_with_step('cleanup').steps[0]
+    plan = Plan(
+        summary='Fix then clean up',
+        steps=[fix_step, cleanup_step],
+        integration_tests=[],
+        rollback_strategy='git checkout',
+        definition_of_done=['diff reviewed'],
+    )
+
+    _, _, after_exit_code, _ = await _run_plan_steps(
+        plan=plan,
+        contract=_contract(TaskType.BUGFIX),
+        repo_index=RepoIndex(),
+        workspace_info=_workspace(),
+        reproduction=ReproductionContext(repro_command='pytest x', failure_evidence='boom'),
+    )
+
+    assert executed_steps == ['fix', 'cleanup']
+    assert after_exit_code == 0
+
+
+@pytest.mark.asyncio
 async def test_run_plan_steps_replans_when_repro_still_failing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

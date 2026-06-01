@@ -195,8 +195,6 @@ async def _run_plan_steps(
                             workspace_info, repo_index, reproduction.repro_command
                         )
                         after_exit_code = gate_result.exit_code
-                        if gate_result.exit_code == 0:
-                            pending_plan_steps = []
             continue
         if reproduction is None:
             break
