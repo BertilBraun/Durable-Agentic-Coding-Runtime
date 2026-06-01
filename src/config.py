@@ -17,6 +17,7 @@ load_dotenv()
 class ModelRole(StrEnum):
     CONTRACT_BUILDER = 'contract_builder'
     PLANNER = 'planner'
+    PLAN_REVIEWER = 'plan_reviewer'
     COMPLEXITY_ASSESSOR = 'complexity_assessor'
     CONTEXT_GATHERER = 'context_gatherer'
     REPRODUCER = 'reproducer'
@@ -130,6 +131,7 @@ def _load_model_role_bindings(models_by_id: dict[str, ModelEntry]) -> dict[Model
     bindings: dict[ModelRole, tuple[str, str]] = {
         ModelRole.CONTRACT_BUILDER: ('MODEL_CONTRACT_BUILDER', 'claude-opus-4-7'),
         ModelRole.PLANNER: ('MODEL_PLANNER', 'claude-opus-4-7'),
+        ModelRole.PLAN_REVIEWER: ('MODEL_PLAN_REVIEWER', 'claude-opus-4-7'),
         ModelRole.COMPLEXITY_ASSESSOR: ('MODEL_COMPLEXITY_ASSESSOR', 'claude-opus-4-7'),
         ModelRole.CONTEXT_GATHERER: ('MODEL_CONTEXT_GATHERER', 'claude-haiku-4-5-20251001'),
         ModelRole.REPRODUCER: ('MODEL_REPRODUCER', 'claude-sonnet-4-6'),
