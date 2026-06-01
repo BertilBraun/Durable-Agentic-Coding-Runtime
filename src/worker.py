@@ -16,6 +16,7 @@ from src.activities.workspace_manager import (
     run_tool,
     setup_environment,
     snapshot_candidate_base,
+    snapshot_candidate_result,
     teardown_environment,
 )
 from src.llm.client import generate_completion, generate_structured_completion
@@ -43,6 +44,7 @@ def main() -> None:
             select_candidate,
             setup_environment,
             snapshot_candidate_base,
+            snapshot_candidate_result,
             teardown_environment,
         ],
     )

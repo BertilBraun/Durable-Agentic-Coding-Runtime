@@ -20,7 +20,7 @@ from src.models.context import (
     PackedSnippet,
 )
 from src.models.frozen_base_model import FrozenBaseModel
-from src.models.repo import Language, Reference, ReferenceKind, RepoIndex, Symbol
+from src.models.repo import RepoIndex
 from src.models.task import DockerOrigin, HostOrigin, Origin
 from src.tools.definitions import (
     FindCallees,
@@ -68,6 +68,7 @@ Self = TypeVar('Self', bound='_Workspace')
 
 class _Workspace(FrozenBaseModel):
     run_id: str
+    execution_id: str = ''
     base_sha: str
     base_branch: str | None = None
     current_branch: str
@@ -114,10 +115,29 @@ class _Workspace(FrozenBaseModel):
         ).strip()
         return self.model_copy(update={'candidate_base_sha': snapshot_sha})
 
+    def snapshot_candidate_result(self: Self) -> Self:
+        self._run_checked(['git', 'add', '-A'])
+        tree = self._run_checked(['git', 'write-tree']).strip()
+        result_sha = self._run_checked(
+            [
+                'git',
+                'commit-tree',
+                tree,
+                '-p',
+                self._candidate_base,
+                '-m',
+                'agentic candidate result',
+            ]
+        ).strip()
+        self._run_checked(['git', 'reset', '--hard', result_sha])
+        return self
+
     def diff_against_base(self) -> str:
         return self.run_command(['git', 'diff', self.base_sha]).stdout
 
     def finalize_to_base(self, winner_branch: str, cleanup_branches: bool) -> None:
+        self._run_checked(['git', 'reset', '--hard'])
+        self._run_checked(['git', 'clean', '-fd'])
         if self.base_branch is not None:
             self._run_checked(['git', 'checkout', self.base_branch])
         else:
@@ -199,7 +219,7 @@ class DockerWorkspace(_Workspace):
         container.remove(force=True)
 
     def shell_invocation(self, command: str) -> list[str]:
-        return ['sh', '-lc', command]
+        return ['sh', '-lc', f'export PATH=/opt/miniconda3/envs/testbed/bin:$PATH && {command}']
 
     def describe_environment(self) -> str:
         return POSIX_ENVIRONMENT_DESCRIPTION
@@ -240,6 +260,7 @@ async def setup_environment(origin: Origin, run_id: str) -> Workspace:
 def _setup_host_workspace(repo_path: str, run_id: str) -> HostWorkspace:
     workspace = HostWorkspace(
         run_id=run_id,
+        execution_id=make_run_id(),
         base_sha='',
         base_branch=None,
         current_branch='',
@@ -280,6 +301,7 @@ def _setup_docker_workspace(
     )
     workspace = DockerWorkspace(
         run_id=run_id,
+        execution_id=make_run_id(),
         base_sha='',
         base_branch=None,
         current_branch='',
@@ -491,6 +513,11 @@ async def snapshot_candidate_base(workspace: Workspace) -> Workspace:
 
 
 @activity(retries=0, timeout=120)
+async def snapshot_candidate_result(workspace: Workspace) -> Workspace:
+    return workspace.snapshot_candidate_result()
+
+
+@activity(retries=0, timeout=120)
 async def finalize_winner(workspace: Workspace, winner_branch: str) -> ToolResult:
     workspace.finalize_to_base(
         winner_branch=winner_branch,
@@ -510,81 +537,90 @@ def _indexed_tool_result(request: ToolExecutionRequest) -> ToolResult | None:
         return None
     match request.tool:
         case FindDefinition(name=name, language=language):
-            return _find_indexed_definition(request.repo_index, name, language)
+            return _find_definition_with_search(request.workspace, name, language)
         case FindCallers(symbol_name=symbol_name):
-            return _find_indexed_callers(request.repo_index, symbol_name)
+            return _find_callers_with_search(request.workspace, symbol_name)
         case FindCallees(file_path=file_path, symbol_name=symbol_name):
-            return _find_indexed_callees(request.repo_index, file_path, symbol_name)
+            return _find_callees_with_search(request.workspace, file_path, symbol_name)
         case _:
             return None
 
 
-def _find_indexed_definition(repository_index: RepoIndex, name: str, language: str) -> ToolResult:
-    matching_symbols = [
-        symbol
-        for symbol in repository_index.symbols
-        if symbol.name == name and (not language or symbol.language == Language(language))
-    ]
-    lines = [_format_symbol(symbol) for symbol in matching_symbols]
-    return ToolResult(
+def _find_definition_with_search(workspace: Workspace, name: str, language: str) -> ToolResult:
+    if language and language != 'python':
+        return ToolResult(
+            tool_name=ToolName.FIND_DEFINITION,
+            stdout='',
+            stderr=f'find_definition currently supports python only, got: {language}',
+            exit_code=1,
+            truncated=False,
+        )
+    pattern = rf'^[[:space:]]*(def|class)[[:space:]]+{_regex_word(name)}([^[:alnum:]_]|$)'
+    return _run_search_tool(
+        workspace=workspace,
         tool_name=ToolName.FIND_DEFINITION,
-        stdout='\n'.join(lines),
-        stderr='',
-        exit_code=0,
-        truncated=False,
+        command=_python_search_command(workspace, pattern),
     )
 
 
-def _find_indexed_callers(repository_index: RepoIndex, symbol_name: str) -> ToolResult:
-    callers = [
-        reference
-        for reference in repository_index.references
-        if reference.symbol_name == symbol_name and reference.kind == ReferenceKind.CALL
-    ]
-    lines = [_format_reference(reference) for reference in callers]
-    return ToolResult(
+def _find_callers_with_search(workspace: Workspace, symbol_name: str) -> ToolResult:
+    return _run_search_tool(
+        workspace=workspace,
         tool_name=ToolName.FIND_CALLERS,
-        stdout='\n'.join(lines),
-        stderr='',
-        exit_code=0,
-        truncated=False,
+        command=_python_search_command(
+            workspace,
+            rf'(^|[^[:alnum:]_]){_regex_word(symbol_name)}([^[:alnum:]_]|$)',
+        ),
     )
 
 
-def _find_indexed_callees(
-    repository_index: RepoIndex,
+def _find_callees_with_search(
+    workspace: Workspace,
     file_path: str,
     symbol_name: str,
 ) -> ToolResult:
-    definition_ranges = [
-        (symbol.start_line, symbol.end_line)
-        for symbol in repository_index.symbols
-        if symbol.name == symbol_name and symbol.file_path == file_path
-    ]
-    callees = [
-        reference
-        for reference in repository_index.references
-        if reference.kind == ReferenceKind.CALL
-        and reference.file_path == file_path
-        and any(start <= reference.line <= end for start, end in definition_ranges)
-    ]
-    lines = [_format_reference(reference) for reference in callees]
-    return ToolResult(
+    del symbol_name
+    return _run_search_tool(
+        workspace=workspace,
         tool_name=ToolName.FIND_CALLEES,
-        stdout='\n'.join(lines),
-        stderr='',
-        exit_code=0,
+        command=_single_file_search_command(
+            workspace,
+            r'[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(',
+            file_path,
+        ),
+    )
+
+
+def _run_search_tool(workspace: Workspace, tool_name: ToolName, command: list[str]) -> ToolResult:
+    command_result = workspace.run_command(command, timeout=30)
+    exit_code = 0 if command_result.exit_code == 1 else command_result.exit_code
+    return ToolResult(
+        tool_name=tool_name,
+        stdout=_compact_output(command_result.stdout),
+        stderr=_compact_output(command_result.stderr),
+        exit_code=exit_code,
         truncated=False,
     )
 
 
-def _format_symbol(symbol: Symbol) -> str:
-    location = f'{symbol.file_path}:{symbol.start_line}-{symbol.end_line}'
-    return f'{location} {symbol.kind.value} {symbol.name}'
+def _python_search_command(workspace: Workspace, pattern: str) -> list[str]:
+    if isinstance(workspace, DockerWorkspace):
+        return ['grep', '-RInE', '--include=*.py', pattern, '.']
+    return ['rg', '--line-number', pattern, '--glob', '*.py']
 
 
-def _format_reference(reference: Reference) -> str:
-    return f'{reference.file_path}:{reference.line}: {reference.symbol_name}'
+def _single_file_search_command(workspace: Workspace, pattern: str, file_path: str) -> list[str]:
+    if isinstance(workspace, DockerWorkspace):
+        return ['grep', '-nE', pattern, file_path]
+    return ['rg', '--line-number', pattern, file_path]
+
+
+def _regex_word(value: str) -> str:
+    escaped = ''.join(
+        character if character.isalnum() or character == '_' else f'\\{character}'
+        for character in value
+    )
+    return escaped
 
 
 def _tool_timeout_seconds(tool: Tool) -> int | None:

@@ -23,6 +23,7 @@ from src.models.task import Origin, TaskContract, TaskRequest, TaskType
 from src.models.worker import Confidence, WorkerResult, WorkerStatus
 from src.workflows.main_workflow import (
     _review_and_revise_plan,
+    _run_candidate,
     _run_implementation_child,
     _run_plan_steps,
     _run_reproduction_child,
@@ -38,6 +39,7 @@ def _unit_usage() -> LLMUsage:
 def _workspace() -> HostWorkspace:
     return HostWorkspace(
         run_id='run-1',
+        execution_id='exec-1',
         base_sha='basesha',
         base_branch='main',
         current_branch='main',
@@ -409,6 +411,72 @@ async def test_review_loop_stops_at_cap_and_keeps_latest_plan(
     assert plan.steps[0].id == f'revised-{CONFIG.max_plan_review_rounds}'
 
 
+@pytest.mark.asyncio
+async def test_run_candidate_snapshots_candidate_result_before_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    candidate_workspace = _workspace().model_copy(
+        update={'current_branch': 'agentic/run-1/cand-0'}
+    )
+
+    async def fake_begin_candidate(workspace_arg: Workspace, candidate_index: int) -> Workspace:
+        events.append('begin')
+        return candidate_workspace
+
+    async def fake_run_plan_steps(
+        plan: Plan,
+        contract: TaskContract,
+        repo_index: RepoIndex,
+        workspace_info: Workspace,
+        reproduction: ReproductionContext | None,
+    ) -> tuple[Plan, list[WorkerResult], bool | None, LLMUsage]:
+        events.append('steps')
+        return plan, [_worker_result(WorkerStatus.SUCCESS)], None, _unit_usage()
+
+    async def fake_get_full_diff(workspace_arg: Workspace) -> str:
+        events.append('diff')
+        return 'diff --git a/app.py b/app.py\n'
+
+    async def fake_snapshot_candidate_result(workspace_arg: Workspace) -> Workspace:
+        events.append('snapshot')
+        return workspace_arg
+
+    async def fake_review_patch(request: ReviewRequest) -> tuple[ReviewVerdict, LLMUsage]:
+        events.append('review')
+        return ReviewVerdict(
+            verdict=ReviewDecision.ACCEPT,
+            evidence=[],
+            blocking_issues=[],
+            non_blocking_issues=[],
+            missing_tests=[],
+            regression_risks=[],
+            minimality_assessment='ok',
+            recommended_next_action='ship',
+        ), _unit_usage()
+
+    monkeypatch.setattr('src.workflows.main_workflow.begin_candidate', fake_begin_candidate)
+    monkeypatch.setattr('src.workflows.main_workflow._run_plan_steps', fake_run_plan_steps)
+    monkeypatch.setattr('src.workflows.main_workflow.get_full_diff', fake_get_full_diff)
+    monkeypatch.setattr(
+        'src.workflows.main_workflow.snapshot_candidate_result',
+        fake_snapshot_candidate_result,
+    )
+    monkeypatch.setattr('src.workflows.main_workflow.review_patch', fake_review_patch)
+
+    candidate, _ = await _run_candidate(
+        candidate_index=0,
+        workspace=_workspace(),
+        plan=_plan_with_step('step-1'),
+        contract=_contract(TaskType.FEATURE),
+        repo_index=RepoIndex(),
+        reproduction=None,
+    )
+
+    assert events == ['begin', 'steps', 'diff', 'snapshot', 'review']
+    assert candidate.branch == 'agentic/run-1/cand-0'
+
+
 def _install_common_workflow_fakes(
     monkeypatch: pytest.MonkeyPatch,
     contract: TaskContract,
@@ -428,6 +496,9 @@ def _install_common_workflow_fakes(
 
     async def fake_snapshot_candidate_base(workspace_arg: Workspace) -> Workspace:
         return workspace
+
+    async def fake_snapshot_candidate_result(workspace_arg: Workspace) -> Workspace:
+        return workspace_arg
 
     async def fake_reset_to_base(workspace_arg: Workspace) -> ToolResult:
         return _ok_result()
@@ -451,6 +522,9 @@ def _install_common_workflow_fakes(
     monkeypatch.setattr('src.workflows.main_workflow.begin_candidate', fake_begin_candidate)
     monkeypatch.setattr(
         'src.workflows.main_workflow.snapshot_candidate_base', fake_snapshot_candidate_base
+    )
+    monkeypatch.setattr(
+        'src.workflows.main_workflow.snapshot_candidate_result', fake_snapshot_candidate_result
     )
     monkeypatch.setattr('src.workflows.main_workflow.reset_to_base', fake_reset_to_base)
     monkeypatch.setattr('src.workflows.main_workflow.assess_complexity', fake_assess_complexity)
@@ -491,7 +565,40 @@ async def test_reproduction_child_uses_semantic_child_id(
     await _run_reproduction_child(_workspace(), _contract(TaskType.BUGFIX), RepoIndex())
 
     assert spawned_kwargs[0]['workflow_name'] == 'reproduction_workflow'
-    assert spawned_kwargs[0]['child_id'] == 'run-1:reproduction'
+    assert spawned_kwargs[0]['child_id'] == 'run-1:exec-1:reproduction'
+
+
+@pytest.mark.asyncio
+async def test_reproduction_child_id_is_unique_per_environment_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spawned_child_ids: list[str] = []
+
+    async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
+        spawned_child_ids.append(str(kwargs['child_id']))
+        return str(kwargs['child_id'])
+
+    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
+        return _reproduction_payload(ReproductionStatus.REPRODUCED)
+
+    monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
+    monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
+
+    await _run_reproduction_child(
+        _workspace().model_copy(update={'execution_id': 'exec-1'}),
+        _contract(TaskType.BUGFIX),
+        RepoIndex(),
+    )
+    await _run_reproduction_child(
+        _workspace().model_copy(update={'execution_id': 'exec-2'}),
+        _contract(TaskType.BUGFIX),
+        RepoIndex(),
+    )
+
+    assert spawned_child_ids == [
+        'run-1:exec-1:reproduction',
+        'run-1:exec-2:reproduction',
+    ]
 
 
 @pytest.mark.asyncio
@@ -525,7 +632,7 @@ async def test_implementation_child_uses_semantic_child_id(
 
     assert spawned_kwargs[0]['workflow_name'] == 'implementation_workflow'
     assert spawned_kwargs[0]['child_id'] == (
-        'run-1:implementation:agentic-run-1-cand-0:implement-subtract'
+        'run-1:exec-1:implementation:agentic-run-1-cand-0:implement-subtract'
     )
 
 

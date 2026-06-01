@@ -14,14 +14,7 @@ from src.activities.workspace_manager import (
 )
 from src.config import CONFIG
 from src.models.context import ArtifactKind, ContextSnippet
-from src.models.repo import (
-    Language,
-    Reference,
-    ReferenceKind,
-    RepoIndex,
-    Symbol,
-    SymbolKind,
-)
+from src.models.repo import RepoIndex
 from src.tools.definitions import (
     FindCallers,
     FindDefinition,
@@ -99,6 +92,35 @@ def test_snapshot_candidate_base_commits_working_tree_off_base_sha(
     assert snapshot.candidate_base_sha == 'snapsha'
 
 
+def test_snapshot_candidate_result_commits_and_moves_current_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outputs = {'git write-tree': 'treesha\n', 'git commit-tree': 'resultsha\n'}
+    commands: list[list[str]] = []
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        commands.append(command)
+        for prefix, stdout in outputs.items():
+            if ' '.join(command).startswith(prefix):
+                return CommandResult(stdout=stdout, stderr='', exit_code=0)
+        return CommandResult(stdout='', stderr='', exit_code=0)
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
+
+    workspace = _host_workspace().model_copy(update={'candidate_base_sha': 'snapsha'})
+
+    workspace.snapshot_candidate_result()
+
+    assert commands == [
+        ['git', 'add', '-A'],
+        ['git', 'write-tree'],
+        ['git', 'commit-tree', 'treesha', '-p', 'snapsha', '-m', 'agentic candidate result'],
+        ['git', 'reset', '--hard', 'resultsha'],
+    ]
+
+
 def test_reset_to_base_targets_candidate_base(monkeypatch: pytest.MonkeyPatch) -> None:
     commands: list[list[str]] = []
 
@@ -114,6 +136,32 @@ def test_reset_to_base_targets_candidate_base(monkeypatch: pytest.MonkeyPatch) -
     workspace.reset_to_base()
 
     assert commands[0] == ['git', 'reset', '--hard', 'snapsha']
+
+
+def test_finalize_to_base_discards_uncommitted_candidate_edits_before_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        commands.append(command)
+        return CommandResult(stdout='', stderr='', exit_code=0)
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
+
+    _host_workspace().finalize_to_base(
+        winner_branch='agentic/run-1/cand-2',
+        cleanup_branches=False,
+    )
+
+    assert commands[:4] == [
+        ['git', 'reset', '--hard'],
+        ['git', 'clean', '-fd'],
+        ['git', 'checkout', 'main'],
+        ['git', 'checkout', 'agentic/run-1/cand-2', '--', '.'],
+    ]
 
 
 def test_setup_docker_workspace_uses_existing_local_image(
@@ -476,60 +524,108 @@ async def test_pack_context_records_missing_host_snippet_as_artifact(
 
 
 @pytest.mark.asyncio
-async def test_run_tool_finds_definition_from_repo_index() -> None:
-    repository_index = RepoIndex(
-        symbols=[
-            Symbol(
-                name='Parser',
-                kind=SymbolKind.CLASS,
-                file_path='src/parser.py',
-                start_line=3,
-                end_line=8,
-                language=Language.PYTHON,
-            )
-        ]
-    )
+async def test_run_tool_finds_python_definition_with_targeted_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_commands: list[list[str]] = []
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        captured_commands.append(command)
+        assert timeout == 30
+        return CommandResult(
+            stdout='src/parser.py:3:class Parser:\n',
+            stderr='',
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
 
     result = await run_tool(
         ToolExecutionRequest(
             workspace=_host_workspace(),
             tool=FindDefinition(name='Parser', language='python'),
-            repo_index=repository_index,
+            repo_index=RepoIndex(),
         )
     )
 
     assert result.exit_code == 0
     assert result.tool_name == ToolName.FIND_DEFINITION
-    assert 'src/parser.py:3-8 class Parser' in result.stdout
+    assert result.stdout == 'src/parser.py:3:class Parser:\n'
+    assert 'rg' in ' '.join(captured_commands[0])
+    assert 'Parser' in ' '.join(captured_commands[0])
 
 
 @pytest.mark.asyncio
-async def test_run_tool_finds_callers_from_repo_index_excluding_mentions() -> None:
-    repository_index = RepoIndex(
-        references=[
-            Reference(
-                symbol_name='build_parser',
-                file_path='src/app.py',
-                line=12,
-                kind=ReferenceKind.CALL,
-            ),
-            Reference(
-                symbol_name='build_parser',
-                file_path='src/notes.py',
-                line=4,
-                kind=ReferenceKind.MENTION,
-            ),
-        ]
-    )
+async def test_run_tool_finds_callers_with_targeted_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_commands: list[list[str]] = []
+
+    def fake_run_command(
+        self: HostWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        captured_commands.append(command)
+        assert timeout == 30
+        return CommandResult(
+            stdout='src/app.py:12:    return build_parser()\n',
+            stderr='',
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(HostWorkspace, 'run_command', fake_run_command)
 
     result = await run_tool(
         ToolExecutionRequest(
             workspace=_host_workspace(),
             tool=FindCallers(symbol_name='build_parser'),
-            repo_index=repository_index,
+            repo_index=RepoIndex(),
         )
     )
 
     assert result.exit_code == 0
     assert result.tool_name == ToolName.FIND_CALLERS
-    assert result.stdout == 'src/app.py:12: build_parser'
+    assert result.stdout == 'src/app.py:12:    return build_parser()\n'
+    assert 'rg' in ' '.join(captured_commands[0])
+    assert 'build_parser' in ' '.join(captured_commands[0])
+
+
+@pytest.mark.asyncio
+async def test_run_tool_uses_grep_search_for_docker_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_commands: list[list[str]] = []
+
+    def fake_run_command(
+        self: DockerWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        captured_commands.append(command)
+        assert timeout == 30
+        return CommandResult(
+            stdout='astropy/modeling/separable.py:310:def separability_matrix(transform):\n',
+            stderr='',
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(DockerWorkspace, 'run_command', fake_run_command)
+
+    result = await run_tool(
+        ToolExecutionRequest(
+            workspace=DockerWorkspace(
+                run_id='run-1',
+                base_sha='basesha',
+                base_branch='main',
+                current_branch='main',
+                container_id='container-1',
+                container_repo_path='/testbed',
+            ),
+            tool=FindDefinition(name='separability_matrix', language='python'),
+            repo_index=RepoIndex(),
+        )
+    )
+
+    assert result.exit_code == 0
+    assert result.tool_name == ToolName.FIND_DEFINITION
+    assert captured_commands[0][0] == 'grep'
+    assert '--include=*.py' in captured_commands[0]

@@ -9,6 +9,8 @@ def test_contract_builder_prompt_requires_detailed_contract_fields() -> None:
 
 
 def test_planner_prompt_discourages_tiny_test_then_code_steps() -> None:
-    assert '5 to 10 minutes' in PLANNER_SYSTEM_PROMPT
-    assert 'Do not split' in PLANNER_SYSTEM_PROMPT
-    assert 'test and implementation' in PLANNER_SYSTEM_PROMPT
+    assert '15 to 20 minutes' in PLANNER_SYSTEM_PROMPT
+    assert 'Do not emit separate create-test, implement, and run-tests steps' in (
+        PLANNER_SYSTEM_PROMPT
+    )
+    assert 'regression test belongs in one step' in PLANNER_SYSTEM_PROMPT

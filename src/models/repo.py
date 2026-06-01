@@ -5,6 +5,8 @@ from pydantic import Field
 from src.models.frozen_base_model import FrozenBaseModel
 from src.runtime_enums import StrEnum
 
+FULL_FILE_TREE_LIMIT = 50
+
 
 class Language(StrEnum):
     PYTHON = 'python'
@@ -53,16 +55,45 @@ class RepoIndex(FrozenBaseModel):
     file_tree: list[FileEntry] = Field(default_factory=list)
     symbols: list[Symbol] = Field(default_factory=list)
     references: list[Reference] = Field(default_factory=list)
+    overview_text: str = ''
+    tracked_file_count: int = 0
 
     def directory_tree_text(self) -> str:
+        if self.overview_text:
+            return self.overview_text
         root: dict[str, dict] = {}
-        for path in sorted(entry.path for entry in self.file_tree):
+        paths = sorted(entry.path for entry in self.file_tree)
+        if len(paths) > FULL_FILE_TREE_LIMIT:
+            paths = _directory_paths(paths)
+        for path in paths:
             cursor = root
             for part in path.split('/'):
                 cursor = cursor.setdefault(part, {})
         lines: list[str] = []
         _append_tree_lines(root, 0, lines)
         return '\n'.join(lines)
+
+
+def _directory_paths(paths: list[str]) -> list[str]:
+    directories: set[str] = set()
+    for path in paths:
+        parts = path.split('/')[:-1]
+        for depth in range(1, len(parts) + 1):
+            directories.add('/'.join(parts[:depth]))
+    if not directories:
+        return ['.']
+    return sorted(directories)
+
+
+def directory_overview_for_paths(paths: list[str]) -> str:
+    root: dict[str, dict] = {}
+    for path in _directory_paths(sorted(paths)):
+        cursor = root
+        for part in path.split('/'):
+            cursor = cursor.setdefault(part, {})
+    lines: list[str] = []
+    _append_tree_lines(root, 0, lines)
+    return '\n'.join(lines)
 
 
 def _append_tree_lines(node: dict[str, dict], depth: int, lines: list[str]) -> None:

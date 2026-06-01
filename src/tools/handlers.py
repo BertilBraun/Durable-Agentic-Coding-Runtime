@@ -37,7 +37,7 @@ def command_for_tool(tool: Tool, workspace: Workspace) -> list[str]:
             return ['sh', '-lc', f'printf %s {encoded_patch} | base64 -d | git apply -']
         case RunTests(command=command, directory=directory):
             quoted_directory = shlex.quote(directory)
-            return ['sh', '-lc', f'cd {quoted_directory} && {command}']
+            return workspace.shell_invocation(f'cd {quoted_directory} && {command}')
         case RunLint(path=path):
             return ['ruff', 'check', path]
         case RunShell(command=command):

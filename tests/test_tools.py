@@ -40,12 +40,16 @@ def test_tool_exposes_stable_tool_name() -> None:
     assert run_shell.tool_name == ToolName.RUN_SHELL
 
 
-def test_docker_workspace_shell_invocation_uses_posix_sh() -> None:
+def test_docker_workspace_shell_invocation_activates_testbed_conda_env() -> None:
     command = command_for_tool(
         RunShell(command='git status', timeout_seconds=5), _docker_workspace()
     )
 
-    assert command == ['sh', '-lc', 'git status']
+    assert command == [
+        'sh',
+        '-lc',
+        'export PATH=/opt/miniconda3/envs/testbed/bin:$PATH && git status',
+    ]
 
 
 def test_host_workspace_shell_invocation_selects_shell_for_platform(
@@ -91,7 +95,11 @@ def test_run_tests_command_runs_from_requested_directory() -> None:
         _docker_workspace(),
     )
 
-    assert command == ['sh', '-lc', 'cd examples/smoke && pytest -q']
+    assert command == [
+        'sh',
+        '-lc',
+        'export PATH=/opt/miniconda3/envs/testbed/bin:$PATH && cd examples/smoke && pytest -q',
+    ]
 
 
 def test_run_tests_command_rejects_parent_traversal_directory() -> None:

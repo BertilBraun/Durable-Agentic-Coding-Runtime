@@ -32,6 +32,7 @@ from src.activities.workspace_manager import (
     run_tool,
     setup_environment,
     snapshot_candidate_base,
+    snapshot_candidate_result,
     teardown_environment,
 )
 from src.config import CONFIG
@@ -186,6 +187,7 @@ async def _run_candidate(
         )
 
     diff = await get_full_diff(candidate_workspace)
+    candidate_workspace = await snapshot_candidate_result(candidate_workspace)
     aggregated_test_results = [
         test_result
         for worker_result in worker_results
@@ -478,6 +480,8 @@ async def _run_implementation_child(
 
 def _child_workflow_id(workspace_info: Workspace, *parts: str) -> str:
     safe_parts = [_workflow_id_part(workspace_info.run_id)]
+    if workspace_info.execution_id:
+        safe_parts.append(_workflow_id_part(workspace_info.execution_id))
     safe_parts.extend(_workflow_id_part(part) for part in parts)
     return ':'.join(safe_parts)
 

@@ -15,6 +15,12 @@ venv/
 .agentic-workspaces/
 .agentic-artifacts/
 swe_bench_results.json
+agentic-coding-runtime.*.json
 
 *.log
+logs/
 *.egg-info/
+
+predictions/
+
+uv.lock
