@@ -5,7 +5,7 @@ from pytest import MonkeyPatch
 from src.activities.report_builder import FinalReport
 from src.activities.reviewer import ReviewDecision, ReviewVerdict
 from src.activities.workspace_manager import HostWorkspace
-from src.eval.smoke_workflow import _start_and_wait_for_workflow
+from src.eval.smoke_workflow import _start_and_wait_for_workflow, _stop_worker_process
 from src.llm.client import LLMUsage
 from src.models.plan import Plan
 from src.models.task import TaskContract, TaskType
@@ -112,3 +112,33 @@ async def test_start_and_wait_for_workflow_reports_timeout(
 
     assert result.status == expected_status
     assert result.report is None
+
+
+def test_stop_worker_process_kills_process_tree_on_windows(monkeypatch: MonkeyPatch) -> None:
+    commands: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 1234
+
+        def poll(self) -> None:
+            return None
+
+        def wait(self, timeout: int) -> int:
+            assert timeout == 10
+            return 0
+
+        def kill(self) -> None:
+            raise AssertionError('kill should not be needed when taskkill succeeds')
+
+    def fake_run(command: list[str], **keyword_arguments: object) -> None:
+        commands.append(command)
+        assert keyword_arguments['check'] is False
+        assert keyword_arguments['capture_output'] is True
+        assert keyword_arguments['text'] is True
+
+    monkeypatch.setattr('src.eval.smoke_workflow.os.name', 'nt')
+    monkeypatch.setattr('src.eval.smoke_workflow.subprocess.run', fake_run)
+
+    _stop_worker_process(FakeProcess())  # type: ignore[arg-type]
+
+    assert commands == [['taskkill', '/PID', '1234', '/T', '/F']]

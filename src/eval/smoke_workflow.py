@@ -37,8 +37,7 @@ async def run_smoke_workflow(
                 timeout_seconds=timeout_seconds,
             )
         finally:
-            worker_process.terminate()
-            worker_process.wait(timeout=10)
+            _stop_worker_process(worker_process)
 
 
 def _start_worker(temporal_database_url: str) -> subprocess.Popen[str]:
@@ -50,6 +49,25 @@ def _start_worker(temporal_database_url: str) -> subprocess.Popen[str]:
         stderr=subprocess.DEVNULL,
         text=True,
     )
+
+
+def _stop_worker_process(worker_process: subprocess.Popen[str]) -> None:
+    if worker_process.poll() is not None:
+        return
+    if os.name == 'nt':
+        subprocess.run(
+            ['taskkill', '/PID', str(worker_process.pid), '/T', '/F'],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        worker_process.terminate()
+    try:
+        worker_process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        worker_process.kill()
+        worker_process.wait(timeout=10)
 
 
 def _create_smoke_repository(temporary_directory: Path) -> Path:
