@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
+from src.models.context import ContextPack
 from src.models.frozen_base_model import FrozenBaseModel
 from src.models.plan import Plan
 from src.models.repo import RepoIndex
@@ -39,6 +40,7 @@ class PlanRequest(FrozenBaseModel):
     worker_results: list[WorkerResult]
     revision_feedback: str | None = None
     reproduction: ReproductionContext | None = None
+    context: ContextPack | None = None
 
 
 async def build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
@@ -57,6 +59,7 @@ async def build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
                     f'{_reproduction_guidance(request.reproduction)}\n\n'
                     f'Contract:\n{request.contract.model_dump_json()}\n\n'
                     f'Repository tree:\n{request.repo_index.directory_tree_text()}\n\n'
+                    f'{_context_guidance(request.context)}\n\n'
                     f'Worker results so far:\n{worker_results_json}'
                 ),
             ),
@@ -64,6 +67,17 @@ async def build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
         output_type=Plan,
     )
     return completion.output, completion.usage
+
+
+def _context_guidance(context: ContextPack | None) -> str:
+    if context is None or not context.snippets:
+        return 'No gathered code context.'
+    rendered_snippets = '\n\n'.join(
+        f'{snippet.file_path}:{snippet.start_line}-{snippet.end_line} ({snippet.reason})\n'
+        f'{snippet.content}'
+        for snippet in context.snippets
+    )
+    return f'Gathered code context ({context.task_summary}):\n{rendered_snippets}'
 
 
 def _reproduction_guidance(reproduction: ReproductionContext | None) -> str:
