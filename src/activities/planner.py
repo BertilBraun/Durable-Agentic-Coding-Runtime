@@ -37,12 +37,12 @@ class PlanRequest(FrozenBaseModel):
     contract: TaskContract
     repo_index: RepoIndex
     worker_results: list[WorkerResult]
-    human_feedback: str | None = None
+    revision_feedback: str | None = None
     reproduction: ReproductionContext | None = None
 
 
 async def build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
-    revision_guidance = request.human_feedback or 'No human revision guidance provided.'
+    revision_guidance = request.revision_feedback or 'No revision guidance provided.'
     worker_results_json = [
         worker_result.model_dump(mode='json') for worker_result in request.worker_results
     ]

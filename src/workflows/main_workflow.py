@@ -82,7 +82,7 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
             contract=contract,
             repo_index=repo_index,
             worker_results=[],
-            human_feedback=None,
+            revision_feedback=None,
             reproduction=reproduction_context,
         ),
     )
@@ -182,7 +182,7 @@ async def _run_plan_steps(
                         contract=contract,
                         repo_index=repo_index,
                         worker_results=worker_results,
-                        human_feedback=worker_result.replan_suggestion,
+                        revision_feedback=worker_result.replan_suggestion,
                         reproduction=reproduction,
                     )
                     usage += replan_usage
@@ -213,7 +213,7 @@ async def _run_plan_steps(
             contract=contract,
             repo_index=repo_index,
             worker_results=worker_results,
-            human_feedback=_gate_failure_feedback(repro_result, suite_result),
+            revision_feedback=_gate_failure_feedback(repro_result, suite_result),
             reproduction=reproduction,
         )
         usage += replan_usage
@@ -225,7 +225,7 @@ async def _replan(
     contract: TaskContract,
     repo_index: RepoIndex,
     worker_results: list[WorkerResult],
-    human_feedback: str | None,
+    revision_feedback: str | None,
     reproduction: ReproductionContext | None,
 ) -> tuple[Plan, LLMUsage]:
     return await build_plan(
@@ -233,7 +233,7 @@ async def _replan(
             contract=contract,
             repo_index=repo_index,
             worker_results=worker_results,
-            human_feedback=human_feedback,
+            revision_feedback=revision_feedback,
             reproduction=reproduction,
         ),
     )

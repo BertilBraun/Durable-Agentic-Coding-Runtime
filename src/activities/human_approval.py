@@ -53,7 +53,7 @@ async def approve_plan_or_replan(
                 contract=contract,
                 repo_index=repo_index,
                 worker_results=[],
-                human_feedback=approval.feedback,
+                revision_feedback=approval.feedback,
             ),
         )
         usage += plan_usage

@@ -234,7 +234,7 @@ async def test_run_plan_steps_replans_when_repro_still_failing(
         return ToolResult(stdout='still red', stderr='', exit_code=1, truncated=False)
 
     async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
-        feedbacks.append(request.human_feedback)
+        feedbacks.append(request.revision_feedback)
         return _plan_with_step('retry'), _unit_usage()
 
     monkeypatch.setattr(
