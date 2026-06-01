@@ -21,6 +21,10 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.5.0",
 ]
+eval = [
+    "datasets>=3.6.0",
+    "swebench>=4.1.0",
+]
 
 [tool.uv.sources]
 temporal-light = { path = "Temporal-Light", editable = true }

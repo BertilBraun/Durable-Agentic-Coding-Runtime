@@ -1,529 +1,285 @@
-import base64
+from __future__ import annotations
+
+import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
-from src.config import ModelRole
 from src.eval.swe_bench import (
-    EvaluationTaskResult,
-    SweBenchInstance,
-    _apply_patch_to_container,
-    _build_report,
-    _evaluate_patch_with_oracle,
-    _extract_patch_from_llm_response,
-    _extract_patch_from_workflow_result,
-    _pull_official_image,
-    _run_baseline_task,
-    _run_framework_task,
-    _run_oracle,
-    _select_evaluation_instances,
-    _start_official_container,
+    PredictionRecord,
+    _docker_image_for_instance,
+    generate_predictions,
+    load_swe_bench_instances,
+    run_official_evaluation,
+    write_predictions_jsonl,
 )
-from src.llm.client import LLMResult, LLMUsage, Message
 
 
-def test_select_evaluation_instances_returns_five_supported_instances() -> None:
-    instances = [
-        _instance('unsupported-1', 'rust'),
-        _instance('python-1', 'python'),
-        _instance('typescript-1', 'typescript'),
-        _instance('javascript-1', 'javascript'),
-        _instance('python-2', 'python'),
-        _instance('typescript-2', 'typescript'),
-        _instance('python-3', 'python'),
-    ]
-
-    selected_instances = _select_evaluation_instances(
-        instances=instances,
-        limit=5,
-        supported_only=True,
-    )
-
-    assert [instance.instance_id for instance in selected_instances] == [
-        'python-1',
-        'typescript-1',
-        'javascript-1',
-        'python-2',
-        'typescript-2',
-    ]
-
-
-def test_select_evaluation_instances_can_keep_unsupported_instances() -> None:
-    instances = [_instance('unsupported-1', 'rust'), _instance('python-1', 'python')]
-
-    selected_instances = _select_evaluation_instances(
-        instances=instances,
-        limit=2,
-        supported_only=False,
-    )
-
-    assert [instance.instance_id for instance in selected_instances] == [
-        'unsupported-1',
-        'python-1',
-    ]
-
-
-def test_select_evaluation_instances_limit_counts_eligible_instances() -> None:
-    instances = [
-        _instance('unsupported-1', 'rust'),
-        _instance('python-1', 'python'),
-        _instance('unsupported-2', 'go'),
-        _instance('python-2', 'python'),
-        _instance('python-3', 'python'),
-    ]
-
-    selected_instances = _select_evaluation_instances(
-        instances=instances,
-        limit=2,
-        supported_only=False,
-    )
-
-    assert [instance.instance_id for instance in selected_instances] == [
-        'unsupported-1',
-        'python-1',
-        'unsupported-2',
-        'python-2',
-    ]
-
-
-def test_select_evaluation_instances_without_limit_keeps_all_instances() -> None:
-    instances = [_instance('unsupported-1', 'rust'), _instance('python-1', 'python')]
-
-    selected_instances = _select_evaluation_instances(
-        instances=instances,
-        limit=None,
-        supported_only=False,
-    )
-
-    assert [instance.instance_id for instance in selected_instances] == [
-        'unsupported-1',
-        'python-1',
-    ]
-
-
-def test_extract_patch_from_llm_response_uses_diff_fence() -> None:
-    patch = _extract_patch_from_llm_response(
-        'Here is the patch:\n```diff\ndiff --git a/app.py b/app.py\n```\n'
-    )
-
-    assert patch == 'diff --git a/app.py b/app.py\n'
-
-
-def test_extract_patch_from_llm_response_returns_empty_for_prose() -> None:
-    patch = _extract_patch_from_llm_response('I could not determine the fix for this issue.')
-
-    assert patch == ''
-
-
-def test_extract_patch_from_llm_response_accepts_bare_unified_diff() -> None:
-    patch = _extract_patch_from_llm_response('diff --git a/app.py b/app.py\n')
-
-    assert patch == 'diff --git a/app.py b/app.py\n'
-
-
-def test_build_report_includes_required_summary_fields() -> None:
-    report = _build_report(
-        task_results=[
-            _task_result('resolved-1', 'completed', True, 2.0, 4, None),
-            _task_result('failed-1', 'failed', False, 1.0, 3, 'oracle_failed'),
-            _task_result('skipped-1', 'skipped', False, 0.0, 0, 'unsupported_language'),
-        ],
-        baseline_results=[
-            _task_result('baseline-1', 'baseline_patch_generated', False, 0.5, 1, None)
+def test_load_swe_bench_instances_normalizes_official_dataset_rows() -> None:
+    instances = load_swe_bench_instances(
+        dataset_name='princeton-nlp/SWE-bench_Lite',
+        split='test',
+        limit=1,
+        dataset_loader=lambda dataset_name, split: [
+            {
+                'instance_id': 'astropy__astropy-12907',
+                'repo': 'astropy/astropy',
+                'issue_id': 12907,
+                'base_commit': 'abc123',
+                'problem_statement': 'Fix the bug',
+                'version': '5.0',
+                'issue_url': 'https://github.com/astropy/astropy/issues/12907',
+                'pr_url': 'https://github.com/astropy/astropy/pull/12908',
+                'patch': 'gold patch is ignored',
+                'test_patch': 'diff --git a/tests/test_bug.py b/tests/test_bug.py\n',
+                'FAIL_TO_PASS': '["tests/test_bug.py::test_fixed"]',
+                'PASS_TO_PASS': ['tests/test_existing.py::test_existing'],
+            }
         ],
     )
 
-    assert report.resolved == 1
-    assert report.failed == 1
-    assert report.skipped == 1
-    assert report.cost_per_resolved_task == 2.0
-    assert report.llm_calls_per_task.resolved == 4.0
-    assert report.llm_calls_per_task.failed == 3.0
-    assert report.skip_reasons[0].reason == 'unsupported_language'
-    assert report.skip_reasons[0].count == 1
+    assert len(instances) == 1
+    assert instances[0].instance_id == 'astropy__astropy-12907'
+    assert instances[0].fail_to_pass == ['tests/test_bug.py::test_fixed']
+    assert instances[0].pass_to_pass == ['tests/test_existing.py::test_existing']
+    assert instances[0].test_patch == 'diff --git a/tests/test_bug.py b/tests/test_bug.py\n'
+    assert instances[0].difficulty is None
+    assert instances[0].language == 'python'
 
 
-def test_evaluate_patch_with_oracle_resolves_after_successful_apply() -> None:
-    docker_client = FakeDockerClient()
-
-    result = _evaluate_patch_with_oracle(
-        instance=SweBenchInstance(
-            instance_id='python-1',
-            repo='owner/repo',
-            problem_statement='Fix the bug',
-            language='python',
-            fail_to_pass=['tests/test_bug.py::test_fixed'],
-            pass_to_pass=['tests/test_existing.py::test_existing'],
-            docker_image='sweb.eval.x86_64.python-1:latest',
-        ),
-        patch='diff --git a/app.py b/app.py\n',
-        docker_client=docker_client,
+def test_load_swe_bench_instances_filters_to_python_before_limit() -> None:
+    instances = load_swe_bench_instances(
+        dataset_name='mixed-benchmark',
+        split='test',
+        limit=2,
+        dataset_loader=lambda dataset_name, split: [
+            _dataset_row('typescript__repo-1', language='typescript'),
+            _dataset_row('python__repo-1', language='python'),
+            _dataset_row('javascript__repo-1', language='javascript'),
+            _dataset_row('python__repo-2', language='python'),
+            _dataset_row('python__repo-3', language='python'),
+        ],
     )
 
-    assert result.resolved is True
-    assert result.reason is None
-    assert docker_client.images.pulled_images == ['sweb.eval.x86_64.python-1:latest']
-    assert 'git apply' in docker_client.containers.executions[0]['command'][-1]
-    assert docker_client.containers.executions[1]['command'] == [
-        'sh',
-        '-lc',
-        'pytest tests/test_bug.py::test_fixed',
+    assert [instance.instance_id for instance in instances] == [
+        'python__repo-1',
+        'python__repo-2',
     ]
 
 
-def test_evaluate_patch_with_oracle_fails_when_patch_apply_fails() -> None:
-    docker_client = FakeDockerClient()
-    docker_client.containers.git_apply_exit_code = 1
-
-    result = _evaluate_patch_with_oracle(
-        instance=_instance('python-1', 'python'),
-        patch='diff --git a/app.py b/app.py\n',
-        docker_client=docker_client,
-    )
-
-    assert result.resolved is False
-    assert result.reason == 'patch_apply_failed'
-
-
-def test_evaluate_patch_with_oracle_reads_artifact_patch(
-    tmp_path: Path,
-) -> None:
-    docker_client = FakeDockerClient()
-    patch_content = 'diff --git a/app.py b/app.py\n'
-    patch_path = tmp_path / 'patch.diff'
-    patch_path.write_text(patch_content, encoding='utf-8')
-
-    result = _evaluate_patch_with_oracle(
-        instance=_instance('python-1', 'python'),
-        patch=f'@{patch_path}',
-        docker_client=docker_client,
-    )
-
-    assert result.resolved is True
-    apply_shell_command = docker_client.containers.executions[0]['command'][-1]
-    encoded = apply_shell_command.split('echo ')[1].split(' |')[0]
-    assert base64.b64decode(encoded).decode() == patch_content
-
-
-@pytest.mark.asyncio
-async def test_run_baseline_task_scores_generated_patch_with_oracle(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    docker_client = FakeDockerClient()
-
-    async def fake_generate(role: ModelRole, messages: list[Message]) -> LLMResult:
-        return LLMResult(
-            content='```diff\ndiff --git a/app.py b/app.py\n```\n',
-            model='fake-model',
-            context_limit_tokens=100,
-            usage=LLMUsage(
-                call_count=1,
-                total_input_tokens=10,
-                total_output_tokens=2,
-            ),
+def test_load_swe_bench_instances_treats_missing_language_as_unknown_for_unknown_dataset() -> None:
+    with pytest.raises(ValueError, match='Requested 1 Python SWE-bench instances'):
+        load_swe_bench_instances(
+            dataset_name='custom/mixed-benchmark',
+            split='test',
+            limit=1,
+            dataset_loader=lambda dataset_name, split: [
+                _dataset_row('unknown__repo-1'),
+            ],
         )
 
-    monkeypatch.setattr('src.eval.swe_bench.generate', fake_generate)
 
-    result = await _run_baseline_task(
-        instance=_instance('python-1', 'python'),
-        docker_client=docker_client,
-    )
-
-    assert result.status == 'resolved'
-    assert result.resolved is True
-    assert result.llm_calls == 1
-    assert result.patch == 'diff --git a/app.py b/app.py\n'
+def test_load_swe_bench_instances_requires_subset_count_after_python_filter() -> None:
+    with pytest.raises(ValueError, match='Requested 2 Python SWE-bench instances'):
+        load_swe_bench_instances(
+            dataset_name='mixed-benchmark',
+            split='test',
+            limit=2,
+            dataset_loader=lambda dataset_name, split: [
+                _dataset_row('typescript__repo-1', language='typescript'),
+                _dataset_row('python__repo-1', language='python'),
+                _dataset_row('javascript__repo-1', language='javascript'),
+            ],
+        )
 
 
 @pytest.mark.asyncio
-async def test_run_framework_task_scores_workflow_patch_with_oracle(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    docker_client = FakeDockerClient()
-
-    class FakeHandle:
-        async def result(self, timeout: int) -> dict[str, object]:
-            assert timeout == 7200
-            return {
-                'patch': 'diff --git a/app.py b/app.py\n',
-                'llm_usage': {'total_cost_usd': 1.25, 'call_count': 7},
-            }
-
-    class FakeClient:
-        def __init__(self, base_url: str) -> None:
-            self.base_url = base_url
-
-        async def start(self, workflow_name: str, **workflow_input: object) -> FakeHandle:
-            assert self.base_url == 'http://temporal'
-            assert workflow_name == 'main_workflow'
-            request = workflow_input['request']
-            assert isinstance(request, dict)
-            assert request['raw_request'] == 'Fix the bug'
-            assert request['origin']['kind'] == 'docker'
-            assert request['origin']['docker_image'] == 'sweb.eval.x86_64.python-1:latest'
-            assert request['origin']['container_repo_path'] == '/testbed'
-            assert request['run_id'] == 'python-1'
-            return FakeHandle()
-
-    monkeypatch.setattr('src.eval.swe_bench.Client', FakeClient, raising=False)
-
-    result = await _run_framework_task(
-        instance=_instance('python-1', 'python'),
+async def test_generate_predictions_writes_sidecar_and_official_jsonl(tmp_path: Path) -> None:
+    predictions_path = await generate_predictions(
+        dataset_name='princeton-nlp/SWE-bench_Lite',
+        split='test',
+        subset=1,
         temporal_api_url='http://temporal',
-        docker_client=docker_client,
+        predictions_dir=tmp_path,
+        run_id='run-1',
+        model_name_or_path='agentic-runtime',
+        workflow_timeout_seconds=30,
+        dataset_loader=_fake_dataset_loader,
+        client_factory=FakeClient,
     )
 
-    assert result.status == 'resolved'
-    assert result.resolved is True
-    assert result.cost_usd == 1.25
-    assert result.llm_calls == 7
-    assert result.patch == 'diff --git a/app.py b/app.py\n'
-
-
-def test_pull_official_image_requires_instance_image() -> None:
-    with pytest.raises(ValueError, match='docker_image'):
-        _pull_official_image(
-            instance=_instance_without_image(),
-            docker_client=FakeDockerClient(),
-        )
-
-
-def test_pull_official_image_uses_instance_image() -> None:
-    docker_client = FakeDockerClient()
-
-    _pull_official_image(
-        instance=_instance('python-1', 'python'),
-        docker_client=docker_client,
-    )
-
-    assert docker_client.images.pulled_images == ['sweb.eval.x86_64.python-1:latest']
-
-
-def test_start_official_container_uses_testbed_workdir() -> None:
-    docker_client = FakeDockerClient()
-
-    container_id = _start_official_container(
-        instance=_instance('python-1', 'python'),
-        docker_client=docker_client,
-    )
-
-    assert container_id == 'container-1'
-    assert docker_client.containers.run_arguments == {
-        'image': 'sweb.eval.x86_64.python-1:latest',
-        'command': 'sleep infinity',
-        'detach': True,
-        'working_dir': '/testbed',
-    }
-
-
-def test_apply_patch_to_container_encodes_patch_for_git_apply() -> None:
-    docker_client = FakeDockerClient()
-    patch_content = 'diff --git a/app.py b/app.py\n'
-
-    result = _apply_patch_to_container(
-        container_id='container-1',
-        patch=patch_content,
-        docker_client=docker_client,
-    )
-
-    assert result.exit_code == 0
-    assert result.applied is True
-    apply_shell_command = docker_client.containers.executions[0]['command'][-1]
-    assert 'git apply -' in apply_shell_command
-    encoded = apply_shell_command.split('echo ')[1].split(' |')[0]
-    assert base64.b64decode(encoded).decode() == patch_content
-
-
-def test_apply_patch_to_container_rejects_empty_patch() -> None:
-    with pytest.raises(ValueError, match='patch'):
-        _apply_patch_to_container(
-            container_id='container-1',
-            patch='  \n',
-            docker_client=FakeDockerClient(),
-        )
-
-
-def test_run_oracle_resolves_when_fail_to_pass_and_pass_to_pass_succeed() -> None:
-    docker_client = FakeDockerClient()
-
-    result = _run_oracle(
-        container_id='container-1',
-        instance=SweBenchInstance(
-            instance_id='python-1',
-            repo='owner/repo',
-            problem_statement='Fix the bug',
-            language='python',
-            fail_to_pass=['tests/test_bug.py::test_fixed'],
-            pass_to_pass=['tests/test_existing.py::test_existing'],
-            docker_image='sweb.eval.x86_64.python-1:latest',
-        ),
-        docker_client=docker_client,
-    )
-
-    assert result.resolved is True
-    assert [command_result.command for command_result in result.command_results] == [
-        'pytest tests/test_bug.py::test_fixed',
-        'pytest tests/test_existing.py::test_existing',
+    sidecar = tmp_path / 'run-1' / 'python__repo-1.json'
+    sidecar_payload = json.loads(sidecar.read_text(encoding='utf-8'))
+    official_predictions = [
+        json.loads(line) for line in predictions_path.read_text(encoding='utf-8').splitlines()
     ]
 
-
-def test_run_oracle_fails_when_pass_to_pass_regresses() -> None:
-    docker_client = FakeDockerClient()
-    docker_client.containers.command_exit_codes = {
-        'pytest tests/test_bug.py::test_fixed': 0,
-        'pytest tests/test_existing.py::test_existing': 1,
+    assert predictions_path == tmp_path / 'run-1' / 'all_preds.jsonl'
+    assert sidecar_payload['instance_id'] == 'python__repo-1'
+    assert sidecar_payload['model_patch'] == 'diff --git a/app.py b/app.py\n'
+    assert sidecar_payload['docker_image'] == 'sweb.eval.x86_64.python__repo-1:latest'
+    assert sidecar_payload['cost'] == 1.25
+    assert sidecar_payload['llm_calls'] == 7
+    assert official_predictions == [
+        {
+            'instance_id': 'python__repo-1',
+            'model_name_or_path': 'agentic-runtime',
+            'model_patch': 'diff --git a/app.py b/app.py\n',
+        }
+    ]
+    assert FakeClient.started_requests[0]['request']['origin'] == {
+        'kind': 'docker',
+        'docker_image': 'sweb.eval.x86_64.python__repo-1:latest',
+        'container_repo_path': '/testbed',
     }
 
-    result = _run_oracle(
-        container_id='container-1',
-        instance=SweBenchInstance(
-            instance_id='python-1',
-            repo='owner/repo',
-            problem_statement='Fix the bug',
-            language='python',
-            fail_to_pass=['tests/test_bug.py::test_fixed'],
-            pass_to_pass=['tests/test_existing.py::test_existing'],
-            docker_image='sweb.eval.x86_64.python-1:latest',
-        ),
-        docker_client=docker_client,
+
+@pytest.mark.asyncio
+async def test_generate_predictions_reuses_existing_sidecar_without_force(tmp_path: Path) -> None:
+    run_dir = tmp_path / 'run-1'
+    run_dir.mkdir()
+    existing_prediction = PredictionRecord(
+        instance_id='python__repo-1',
+        model_name_or_path='agentic-runtime',
+        model_patch='diff --git a/cached.py b/cached.py\n',
+        status='completed',
+        dataset_name='princeton-nlp/SWE-bench_Lite',
+        split='test',
+        run_id='run-1',
+        workflow_run_id='run-1-python__repo-1',
+        docker_image='sweb.eval.x86_64.python__repo-1:latest',
+        container_repo_path='/testbed',
+    )
+    (run_dir / 'python__repo-1.json').write_text(
+        existing_prediction.model_dump_json(indent=2),
+        encoding='utf-8',
+    )
+    FakeClient.started_requests = []
+
+    predictions_path = await generate_predictions(
+        dataset_name='princeton-nlp/SWE-bench_Lite',
+        split='test',
+        subset=1,
+        temporal_api_url='http://temporal',
+        predictions_dir=tmp_path,
+        run_id='run-1',
+        model_name_or_path='agentic-runtime',
+        workflow_timeout_seconds=30,
+        dataset_loader=_fake_dataset_loader,
+        client_factory=FakeClient,
     )
 
-    assert result.resolved is False
-    assert result.reason == 'pass_to_pass_failed'
-
-
-def test_extract_patch_from_workflow_result_uses_patch_artifact_path() -> None:
-    patch = _extract_patch_from_workflow_result(
-        {
-            'patch_artifact': {
-                'path': '/artifacts/run-1/patch.diff',
-                'summary': 'Patch artifact',
-                'kind': 'diff',
-            }
-        }
+    assert FakeClient.started_requests == []
+    assert json.loads(predictions_path.read_text(encoding='utf-8'))['model_patch'] == (
+        'diff --git a/cached.py b/cached.py\n'
     )
 
-    assert patch == '@/artifacts/run-1/patch.diff'
+
+def test_write_predictions_jsonl_keeps_only_official_eval_fields(tmp_path: Path) -> None:
+    predictions_path = write_predictions_jsonl(
+        tmp_path,
+        [
+            PredictionRecord(
+                instance_id='python__repo-1',
+                model_name_or_path='agentic-runtime',
+                model_patch='diff --git a/app.py b/app.py\n',
+                status='completed',
+                dataset_name='princeton-nlp/SWE-bench_Lite',
+                split='test',
+                run_id='run-1',
+                workflow_run_id='run-1-python__repo-1',
+                docker_image='sweb.eval.x86_64.python__repo-1:latest',
+                container_repo_path='/testbed',
+                cost=1.25,
+                llm_calls=7,
+            )
+        ],
+    )
+
+    assert json.loads(predictions_path.read_text(encoding='utf-8')) == {
+        'instance_id': 'python__repo-1',
+        'model_name_or_path': 'agentic-runtime',
+        'model_patch': 'diff --git a/app.py b/app.py\n',
+    }
 
 
-def test_extract_patch_from_workflow_result_uses_inline_patch() -> None:
-    patch = _extract_patch_from_workflow_result(
-        {
+def test_run_official_evaluation_invokes_swe_bench_module(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def fake_runner(command: list[str], **keyword_arguments: object) -> FakeCompletedProcess:
+        calls.append(command)
+        assert keyword_arguments == {'check': True, 'text': True}
+        return FakeCompletedProcess(returncode=0)
+
+    result = run_official_evaluation(
+        dataset_name='princeton-nlp/SWE-bench_Lite',
+        predictions_path=tmp_path / 'all_preds.jsonl',
+        run_id='run-1',
+        max_workers=1,
+        command_runner=fake_runner,
+    )
+
+    assert result.returncode == 0
+    assert calls[0][1:3] == ['-m', 'swebench.harness.run_evaluation']
+    assert '--dataset_name' in calls[0]
+    assert 'princeton-nlp/SWE-bench_Lite' in calls[0]
+    assert '--predictions_path' in calls[0]
+    assert str(tmp_path / 'all_preds.jsonl') in calls[0]
+    assert '--run_id' in calls[0]
+    assert 'run-1' in calls[0]
+
+
+def test_docker_image_for_instance_uses_swe_bench_eval_image_name() -> None:
+    assert (
+        _docker_image_for_instance('astropy__astropy-12907')
+        == 'sweb.eval.x86_64.astropy__astropy-12907:latest'
+    )
+
+
+def _fake_dataset_loader(dataset_name: str, split: str) -> list[dict[str, object]]:
+    assert dataset_name == 'princeton-nlp/SWE-bench_Lite'
+    assert split == 'test'
+    return [_dataset_row('python__repo-1')]
+
+
+def _dataset_row(instance_id: str, language: str | None = None) -> dict[str, object]:
+    row: dict[str, object] = {
+        'instance_id': instance_id,
+        'repo': 'python/repo',
+        'base_commit': 'abc123',
+        'problem_statement': 'Fix the bug',
+        'version': '1.0',
+        'test_patch': '',
+        'FAIL_TO_PASS': '[]',
+        'PASS_TO_PASS': '[]',
+    }
+    if language is not None:
+        row['language'] = language
+    return row
+
+
+class FakeHandle:
+    async def result(self, timeout: int) -> dict[str, object]:
+        assert timeout == 30
+        return {
             'patch': 'diff --git a/app.py b/app.py\n',
+            'llm_usage': {'total_cost_usd': 1.25, 'call_count': 7},
         }
-    )
-
-    assert patch == 'diff --git a/app.py b/app.py\n'
 
 
-def test_extract_patch_from_workflow_result_rejects_missing_patch() -> None:
-    with pytest.raises(ValueError, match='patch'):
-        _extract_patch_from_workflow_result({'status': 'accept'})
+class FakeClient:
+    started_requests: ClassVar[list[dict[str, object]]] = []
 
+    def __init__(self, base_url: str) -> None:
+        assert base_url == 'http://temporal'
 
-def _instance(instance_id: str, language: str) -> SweBenchInstance:
-    return SweBenchInstance(
-        instance_id=instance_id,
-        repo='owner/repo',
-        problem_statement='Fix the bug',
-        language=language,
-        docker_image=f'sweb.eval.x86_64.{instance_id}:latest',
-    )
-
-
-def _instance_without_image() -> SweBenchInstance:
-    return SweBenchInstance(
-        instance_id='python-no-image',
-        repo='owner/repo',
-        problem_statement='Fix the bug',
-        language='python',
-        docker_image=None,
-    )
-
-
-def _task_result(
-    instance_id: str,
-    status: str,
-    resolved: bool,
-    cost_usd: float,
-    llm_calls: int,
-    reason: str | None,
-) -> EvaluationTaskResult:
-    return EvaluationTaskResult(
-        instance_id=instance_id,
-        status=status,
-        resolved=resolved,
-        cost_usd=cost_usd,
-        llm_calls=llm_calls,
-        wall_clock_seconds=1.0,
-        reason=reason,
-    )
-
-
-class FakeUsageLedger:
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-        self.total_cost_usd = 0.5
-
-
-class FakeImages:
-    def __init__(self) -> None:
-        self.pulled_images: list[str] = []
-
-    def pull(self, image: str) -> None:
-        self.pulled_images.append(image)
+    async def start(self, workflow_name: str, **workflow_input: object) -> FakeHandle:
+        assert workflow_name == 'main_workflow'
+        self.started_requests.append(workflow_input)
+        return FakeHandle()
 
 
 @dataclass
-class FakeExecResult:
-    exit_code: int
-    output: tuple[bytes | None, bytes | None]
-
-
-class FakeContainer:
-    id = 'container-1'
-
-    def __init__(self, containers: 'FakeContainers') -> None:
-        self._containers = containers
-
-    def exec_run(
-        self,
-        command: list[str],
-        workdir: str | None = None,
-        demux: bool = False,
-    ) -> FakeExecResult:
-        self._containers.executions.append({'command': command, 'workdir': workdir})
-        shell_command = command[-1] if isinstance(command, list) else command
-        if 'git apply' in shell_command:
-            exit_code = self._containers.git_apply_exit_code
-        else:
-            exit_code = self._containers.command_exit_codes.get(shell_command, 0)
-        return FakeExecResult(exit_code=exit_code, output=(b'ok', b''))
-
-    def stop(self, timeout: int = 10) -> None:
-        pass
-
-    def remove(self, force: bool = False) -> None:
-        pass
-
-
-class FakeContainers:
-    def __init__(self) -> None:
-        self.run_arguments: dict[str, object] | None = None
-        self.executions: list[dict[str, object]] = []
-        self.command_exit_codes: dict[str, int] = {}
-        self.git_apply_exit_code = 0
-
-    def run(self, **keyword_arguments: object) -> FakeContainer:
-        self.run_arguments = keyword_arguments
-        return FakeContainer(self)
-
-    def get(self, container_id: str) -> FakeContainer:
-        return FakeContainer(self)
-
-
-class FakeDockerClient:
-    def __init__(self) -> None:
-        self.images = FakeImages()
-        self.containers = FakeContainers()
+class FakeCompletedProcess:
+    returncode: int
