@@ -265,7 +265,13 @@ def _setup_docker_workspace(
     docker_image: str, container_repo_path: str, run_id: str
 ) -> DockerWorkspace:
     docker_client = _docker_client()
-    docker_client.images.pull(docker_image)
+    try:
+        docker_client.images.get(docker_image)
+    except docker.errors.ImageNotFound as error:
+        raise RuntimeError(
+            'Missing Docker image for docker workspace: '
+            f'{docker_image}. Build the SWE-bench image locally before running generation.'
+        ) from error
     container = docker_client.containers.run(
         image=docker_image,
         command=['sleep', 'infinity'],

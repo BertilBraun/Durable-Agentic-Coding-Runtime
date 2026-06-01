@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import time
@@ -10,6 +11,7 @@ from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
+import docker
 from pydantic import Field
 from temporal_light import Client, WorkflowFailedError
 
@@ -20,6 +22,7 @@ DEFAULT_SPLIT = 'test'
 DEFAULT_MODEL_NAME = 'agentic-coding-runtime'
 DEFAULT_PREDICTIONS_ROOT = Path('predictions')
 DEFAULT_TEMPORAL_API_URL = 'http://localhost:8080'
+DEFAULT_TEMPORAL_DATABASE_URL = 'postgresql://tl:changeme@localhost:5432/temporal_light'
 DEFAULT_CONTAINER_REPO_PATH = '/testbed'
 DEFAULT_WORKFLOW_TIMEOUT_SECONDS = 7200
 DEFAULT_MAX_WORKERS = 1
@@ -71,6 +74,7 @@ class PredictionRecord(FrozenBaseModel):
 DatasetLoader = Callable[[str, str], Iterable[dict[str, object]]]
 ClientFactory = Callable[[str], Client]
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
+DockerImageChecker = Callable[[list[str]], None]
 
 
 def load_swe_bench_instances(
@@ -172,7 +176,9 @@ async def generate_predictions(
     force: bool = False,
     dataset_loader: DatasetLoader | None = None,
     client_factory: ClientFactory = Client,
+    docker_image_checker: DockerImageChecker | None = None,
 ) -> Path:
+    docker_image_checker = docker_image_checker or ensure_docker_images_available
     instances = load_swe_bench_instances(
         dataset_name=dataset_name,
         split=split,
@@ -181,6 +187,14 @@ async def generate_predictions(
     )
     run_predictions_dir = predictions_dir / run_id
     run_predictions_dir.mkdir(parents=True, exist_ok=True)
+    pending_instances = [
+        instance
+        for instance in instances
+        if force or not _prediction_path(run_predictions_dir, instance.instance_id).exists()
+    ]
+    docker_image_checker(
+        [_docker_image_for_instance(instance.instance_id) for instance in pending_instances]
+    )
     prediction_records: list[PredictionRecord] = []
     for instance in instances:
         prediction_path = _prediction_path(run_predictions_dir, instance.instance_id)
@@ -200,6 +214,28 @@ async def generate_predictions(
         _write_prediction(prediction_path, prediction)
         prediction_records.append(prediction)
     return write_predictions_jsonl(run_predictions_dir, prediction_records)
+
+
+def ensure_docker_images_available(docker_images: list[str]) -> None:
+    docker_client = docker.from_env()
+    missing_images: list[str] = []
+    for docker_image in docker_images:
+        try:
+            docker_client.images.get(docker_image)
+        except docker.errors.ImageNotFound:
+            missing_images.append(docker_image)
+    if missing_images:
+        missing_list = ', '.join(missing_images)
+        instance_ids = ', '.join(_instance_id_from_docker_image(image) for image in missing_images)
+        raise RuntimeError(
+            'Missing required SWE-bench Docker image(s): '
+            f'{missing_list}. Build them locally before generation, preferably from WSL/Linux, '
+            'then rerun this command. Example: '
+            'uv run --group eval python -m swebench.harness.prepare_images '
+            f'--dataset_name {DEFAULT_DATASET_NAME} --split {DEFAULT_SPLIT} '
+            f'--instance_ids {instance_ids} --max_workers 1 '
+            '--tag latest --env_image_tag latest'
+        )
 
 
 async def _run_agent_prediction(
@@ -348,6 +384,11 @@ def _docker_image_for_instance(instance_id: str) -> str:
     return f'sweb.eval.x86_64.{instance_id}:latest'
 
 
+def _instance_id_from_docker_image(docker_image: str) -> str:
+    image_name = docker_image.removeprefix('sweb.eval.x86_64.')
+    return image_name.removesuffix(':latest')
+
+
 def _workflow_run_id(run_id: str, instance_id: str) -> str:
     return f'{run_id}-{instance_id}'
 
@@ -363,18 +404,25 @@ def _default_run_id(dataset_name: str) -> str:
 
 async def _main_async(arguments: argparse.Namespace) -> None:
     predictions_path = arguments.predictions_dir / arguments.run_id / 'all_preds.jsonl'
+    worker_process: subprocess.Popen[str] | None = None
     if not arguments.evaluate_only:
-        predictions_path = await generate_predictions(
-            dataset_name=arguments.dataset_name,
-            split=arguments.split,
-            subset=arguments.subset,
-            temporal_api_url=arguments.temporal_api_url,
-            predictions_dir=arguments.predictions_dir,
-            run_id=arguments.run_id,
-            model_name_or_path=arguments.model_name_or_path,
-            workflow_timeout_seconds=arguments.workflow_timeout_seconds,
-            force=arguments.force,
-        )
+        if arguments.start_worker:
+            worker_process = _start_worker(arguments.temporal_database_url)
+        try:
+            predictions_path = await generate_predictions(
+                dataset_name=arguments.dataset_name,
+                split=arguments.split,
+                subset=arguments.subset,
+                temporal_api_url=arguments.temporal_api_url,
+                predictions_dir=arguments.predictions_dir,
+                run_id=arguments.run_id,
+                model_name_or_path=arguments.model_name_or_path,
+                workflow_timeout_seconds=arguments.workflow_timeout_seconds,
+                force=arguments.force,
+            )
+        finally:
+            if worker_process is not None:
+                _stop_worker_process(worker_process)
     if not arguments.generate_only:
         run_official_evaluation(
             dataset_name=arguments.dataset_name,
@@ -385,12 +433,46 @@ async def _main_async(arguments: argparse.Namespace) -> None:
     print(json.dumps({'predictions_path': str(predictions_path)}, indent=2))
 
 
+def _start_worker(temporal_database_url: str) -> subprocess.Popen[str]:
+    environment = {
+        **os.environ,
+        'TEMPORAL_DATABASE_URL': temporal_database_url,
+    }
+    return subprocess.Popen(
+        [sys.executable, '-m', 'src.worker'],
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+
+
+def _stop_worker_process(worker_process: subprocess.Popen[str]) -> None:
+    if worker_process.poll() is not None:
+        return
+    if os.name == 'nt':
+        subprocess.run(
+            ['taskkill', '/PID', str(worker_process.pid), '/T', '/F'],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        worker_process.terminate()
+    try:
+        worker_process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        worker_process.kill()
+        worker_process.wait(timeout=10)
+
+
 def _parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset-name', default=DEFAULT_DATASET_NAME)
     parser.add_argument('--split', default=DEFAULT_SPLIT)
     parser.add_argument('--subset', type=int, default=1)
     parser.add_argument('--temporal-api-url', default=DEFAULT_TEMPORAL_API_URL)
+    parser.add_argument('--temporal-database-url', default=DEFAULT_TEMPORAL_DATABASE_URL)
     parser.add_argument('--predictions-dir', type=Path, default=DEFAULT_PREDICTIONS_ROOT)
     parser.add_argument('--run-id', default=None)
     parser.add_argument('--model-name-or-path', default=DEFAULT_MODEL_NAME)
@@ -403,6 +485,7 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument('--force', action='store_true')
     parser.add_argument('--generate-only', action='store_true')
     parser.add_argument('--evaluate-only', action='store_true')
+    parser.add_argument('--start-worker', action=argparse.BooleanOptionalAction, default=True)
     arguments = parser.parse_args()
     if arguments.run_id is None:
         arguments.run_id = _default_run_id(arguments.dataset_name)

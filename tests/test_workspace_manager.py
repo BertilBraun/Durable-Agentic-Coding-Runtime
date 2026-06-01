@@ -1,11 +1,14 @@
 from pathlib import Path
 
+import docker
 import pytest
 from src.activities.workspace_manager import (
     CommandResult,
     ContextPackRequest,
+    DockerWorkspace,
     HostWorkspace,
     ToolExecutionRequest,
+    _setup_docker_workspace,
     pack_context,
     run_tool,
 )
@@ -111,6 +114,83 @@ def test_reset_to_base_targets_candidate_base(monkeypatch: pytest.MonkeyPatch) -
     workspace.reset_to_base()
 
     assert commands[0] == ['git', 'reset', '--hard', 'snapsha']
+
+
+def test_setup_docker_workspace_uses_existing_local_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_calls: list[str] = []
+
+    class FakeImages:
+        def get(self, image_name: str) -> object:
+            image_calls.append(f'get:{image_name}')
+            return object()
+
+        def pull(self, image_name: str) -> object:
+            image_calls.append(f'pull:{image_name}')
+            return object()
+
+    class FakeContainers:
+        def run(self, **keyword_arguments: object) -> object:
+            assert keyword_arguments['image'] == 'sweb.eval.test:latest'
+            return type('Container', (), {'id': 'container-1'})()
+
+    class FakeDockerClient:
+        images = FakeImages()
+        containers = FakeContainers()
+
+    def fake_run_command(
+        self: DockerWorkspace, command: list[str], timeout: int | None = None
+    ) -> CommandResult:
+        command_text = ' '.join(command)
+        if command_text == 'git status --porcelain':
+            return CommandResult(stdout='', stderr='', exit_code=0)
+        if command_text == 'git rev-parse HEAD':
+            return CommandResult(stdout='basesha\n', stderr='', exit_code=0)
+        if command_text == 'git symbolic-ref --short -q HEAD':
+            return CommandResult(stdout='main\n', stderr='', exit_code=0)
+        raise AssertionError(f'unexpected command: {command}')
+
+    monkeypatch.setattr('src.activities.workspace_manager._docker_client', FakeDockerClient)
+    monkeypatch.setattr(DockerWorkspace, 'run_command', fake_run_command)
+
+    workspace = _setup_docker_workspace(
+        docker_image='sweb.eval.test:latest',
+        container_repo_path='/testbed',
+        run_id='run-1',
+    )
+
+    assert image_calls == ['get:sweb.eval.test:latest']
+    assert workspace.container_id == 'container-1'
+
+
+def test_setup_docker_workspace_reports_missing_local_image_without_pull(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_calls: list[str] = []
+
+    class FakeImages:
+        def get(self, image_name: str) -> object:
+            image_calls.append(f'get:{image_name}')
+            raise docker.errors.ImageNotFound('missing')
+
+        def pull(self, image_name: str) -> object:
+            image_calls.append(f'pull:{image_name}')
+            return object()
+
+    class FakeDockerClient:
+        images = FakeImages()
+
+    monkeypatch.setattr('src.activities.workspace_manager._docker_client', FakeDockerClient)
+
+    with pytest.raises(RuntimeError, match='Build the SWE-bench image locally'):
+        _setup_docker_workspace(
+            docker_image='sweb.eval.x86_64.astropy__astropy-12907:latest',
+            container_repo_path='/testbed',
+            run_id='run-1',
+        )
+
+    assert image_calls == ['get:sweb.eval.x86_64.astropy__astropy-12907:latest']
 
 
 @pytest.mark.asyncio

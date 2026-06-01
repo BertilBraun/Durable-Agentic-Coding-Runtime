@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from argparse import Namespace
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -9,6 +10,7 @@ import pytest
 from src.eval.swe_bench import (
     PredictionRecord,
     _docker_image_for_instance,
+    _main_async,
     generate_predictions,
     load_swe_bench_instances,
     run_official_evaluation,
@@ -107,6 +109,7 @@ async def test_generate_predictions_writes_sidecar_and_official_jsonl(tmp_path: 
         workflow_timeout_seconds=30,
         dataset_loader=_fake_dataset_loader,
         client_factory=FakeClient,
+        docker_image_checker=lambda docker_images: None,
     )
 
     sidecar = tmp_path / 'run-1' / 'python__repo-1.json'
@@ -176,6 +179,37 @@ async def test_generate_predictions_reuses_existing_sidecar_without_force(tmp_pa
     )
 
 
+@pytest.mark.asyncio
+async def test_generate_predictions_fails_before_workflow_when_image_is_missing(
+    tmp_path: Path,
+) -> None:
+    FakeClient.started_requests = []
+
+    def fake_image_checker(docker_images: list[str]) -> None:
+        assert docker_images == ['sweb.eval.x86_64.python__repo-1:latest']
+        raise RuntimeError(
+            'Missing required SWE-bench Docker image. '
+            '--tag latest --env_image_tag latest'
+        )
+
+    with pytest.raises(RuntimeError, match='--tag latest --env_image_tag latest'):
+        await generate_predictions(
+            dataset_name='princeton-nlp/SWE-bench_Lite',
+            split='test',
+            subset=1,
+            temporal_api_url='http://temporal',
+            predictions_dir=tmp_path,
+            run_id='run-1',
+            model_name_or_path='agentic-runtime',
+            workflow_timeout_seconds=30,
+            dataset_loader=_fake_dataset_loader,
+            client_factory=FakeClient,
+            docker_image_checker=fake_image_checker,
+        )
+
+    assert FakeClient.started_requests == []
+
+
 def test_write_predictions_jsonl_keeps_only_official_eval_fields(tmp_path: Path) -> None:
     predictions_path = write_predictions_jsonl(
         tmp_path,
@@ -235,6 +269,55 @@ def test_docker_image_for_instance_uses_swe_bench_eval_image_name() -> None:
         _docker_image_for_instance('astropy__astropy-12907')
         == 'sweb.eval.x86_64.astropy__astropy-12907:latest'
     )
+
+
+@pytest.mark.asyncio
+async def test_main_async_starts_worker_for_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    async def fake_generate_predictions(**keyword_arguments: object) -> Path:
+        calls.append(('generate', keyword_arguments['temporal_api_url']))
+        predictions_path = tmp_path / 'run-1' / 'all_preds.jsonl'
+        predictions_path.parent.mkdir()
+        predictions_path.write_text('', encoding='utf-8')
+        return predictions_path
+
+    def fake_start_worker(temporal_database_url: str) -> object:
+        calls.append(('start_worker', temporal_database_url))
+        return object()
+
+    def fake_stop_worker(worker_process: object) -> None:
+        calls.append(('stop_worker', worker_process))
+
+    monkeypatch.setattr('src.eval.swe_bench.generate_predictions', fake_generate_predictions)
+    monkeypatch.setattr('src.eval.swe_bench._start_worker', fake_start_worker)
+    monkeypatch.setattr('src.eval.swe_bench._stop_worker_process', fake_stop_worker)
+
+    await _main_async(
+        Namespace(
+            dataset_name='dataset',
+            split='test',
+            subset=1,
+            temporal_api_url='http://temporal',
+            temporal_database_url='postgresql://db',
+            predictions_dir=tmp_path,
+            run_id='run-1',
+            model_name_or_path='model',
+            workflow_timeout_seconds=30,
+            force=False,
+            evaluate_only=False,
+            generate_only=True,
+            max_workers=1,
+            start_worker=True,
+        )
+    )
+
+    assert calls[0] == ('start_worker', 'postgresql://db')
+    assert calls[1] == ('generate', 'http://temporal')
+    assert calls[2][0] == 'stop_worker'
 
 
 def _fake_dataset_loader(dataset_name: str, split: str) -> list[dict[str, object]]:

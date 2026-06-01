@@ -104,11 +104,11 @@ kind.
 
 ## 4. Evaluation
 
-- **SWE-bench** ([eval/swe_bench.py](src/eval/swe_bench.py)): pulls the official per-instance image,
-  runs the framework (and a single-call baseline) as DOCKER-origin tasks, applies the resulting
-  patch in a fresh official container, and scores it with the `FAIL_TO_PASS` / `PASS_TO_PASS`
-  oracle. Reports `resolved` / `failed` / `skipped`, cost-per-resolved, and llm-calls-per-task.
-  Non-Python/TS tasks are skipped.
+- **SWE-bench** ([eval/swe_bench.py](src/eval/swe_bench.py)): runs the framework as
+  DOCKER-origin tasks against locally built SWE-bench eval images (`sweb.eval...`). Generation
+  preflights required images before starting workflows so missing images fail fast instead of
+  hanging in Temporal or trying to pull non-published image names. Official scoring is delegated
+  to the SWE-bench harness after predictions are written.
 - **Smoke** ([eval/smoke_workflow.py](src/eval/smoke_workflow.py)): spins up a worker against a
   temp git repo via a HOST origin and asserts a real change + passing test end-to-end.
 
@@ -205,8 +205,29 @@ python -m src.eval.smoke_workflow --temporal-api-url http://localhost:8080 `
   --temporal-database-url postgresql://tl:changeme@localhost:5432/temporal_light --timeout-seconds 120
 ```
 
-SWE-bench subset:
+SWE-bench subset generation requires the per-instance Docker image to exist locally. Build images
+from WSL/Linux with Docker Desktop integration; the official harness imports Unix-only modules and
+does not run cleanly from native Windows. Pass explicit image tags because current `swebench`
+defaults can pass `None` into `make_test_spec`.
+
+```bash
+uv run --group eval python -m swebench.harness.prepare_images \
+  --dataset_name princeton-nlp/SWE-bench_Lite \
+  --split test \
+  --instance_ids astropy__astropy-12907 \
+  --max_workers 1 \
+  --tag latest \
+  --env_image_tag latest
+```
+
+Then verify the image is visible to Docker Desktop from Windows:
 
 ```powershell
-python -m src.eval.swe_bench --instances <instances.json> --temporal-api-url http://localhost:8080 --five-task-subset
+docker image inspect sweb.eval.x86_64.astropy__astropy-12907:latest
+```
+
+Run generation from Windows:
+
+```powershell
+python -m src.eval.swe_bench --generate-only --force --temporal-api-url http://localhost:8080
 ```
