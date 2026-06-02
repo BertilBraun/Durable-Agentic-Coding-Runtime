@@ -298,6 +298,8 @@ def _setup_docker_workspace(
         command=['sleep', 'infinity'],
         detach=True,
         working_dir=container_repo_path,
+        name=_swe_bench_container_name(run_id),
+        labels=_swe_bench_container_labels(run_id),
     )
     workspace = DockerWorkspace(
         run_id=run_id,
@@ -322,6 +324,26 @@ def _setup_docker_workspace(
             'current_branch': base_branch or base_sha,
         }
     )
+
+
+def _swe_bench_container_name(run_id: str) -> str:
+    return f'agentic-swe-bench-{_docker_name_part(run_id)}-{make_run_id()}'
+
+
+def _docker_name_part(value: str) -> str:
+    return ''.join(
+        character.lower() if character.isalnum() else '-'
+        for character in value
+    ).strip('-')
+
+
+def _swe_bench_container_labels(run_id: str) -> dict[str, str]:
+    return {
+        'com.docker.compose.project': 'agentic-swe-bench',
+        'com.docker.compose.service': 'workspace',
+        'agentic.workflow.run_id': run_id,
+        'agentic.workflow.kind': 'swe-bench',
+    }
 
 
 @activity(retries=0, timeout=300)

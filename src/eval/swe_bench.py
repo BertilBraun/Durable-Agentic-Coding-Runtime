@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +15,8 @@ import docker
 from pydantic import Field
 from temporal_light import Client, WorkflowFailedError
 
+from src.config import ModelRole
+from src.llm.client import Message, generate_structured
 from src.models.frozen_base_model import FrozenBaseModel
 
 DEFAULT_DATASET_NAME = 'princeton-nlp/SWE-bench_Lite'
@@ -26,6 +28,8 @@ DEFAULT_TEMPORAL_DATABASE_URL = 'postgresql://tl:changeme@localhost:5432/tempora
 DEFAULT_CONTAINER_REPO_PATH = '/testbed'
 DEFAULT_WORKFLOW_TIMEOUT_SECONDS = 7200
 DEFAULT_MAX_WORKERS = 1
+DEFAULT_IMAGE_TAG = 'latest'
+DEFAULT_ENV_IMAGE_TAG = 'latest'
 PYTHON_LANGUAGE = 'python'
 UNKNOWN_LANGUAGE = 'unknown'
 
@@ -39,6 +43,7 @@ class SweBenchInstance(FrozenBaseModel):
     issue_id: str | int | None = None
     issue_url: str | None = None
     pr_url: str | None = None
+    gold_patch: str | None = None
     test_patch: str | None = None
     fail_to_pass: list[str] = Field(default_factory=list)
     pass_to_pass: list[str] = Field(default_factory=list)
@@ -49,6 +54,14 @@ class SweBenchInstance(FrozenBaseModel):
 class WorkflowUsageSummary(FrozenBaseModel):
     total_cost_usd: float = 0.0
     call_count: int = 0
+
+
+class PatchComparison(FrozenBaseModel):
+    summary: str
+    likely_equivalent: bool
+    missing_from_model_patch: list[str] = Field(default_factory=list)
+    extra_in_model_patch: list[str] = Field(default_factory=list)
+    risk_notes: list[str] = Field(default_factory=list)
 
 
 class PredictionRecord(FrozenBaseModel):
@@ -69,12 +82,15 @@ class PredictionRecord(FrozenBaseModel):
     started_at: str | None = None
     completed_at: str | None = None
     instance: dict[str, object] = Field(default_factory=dict)
+    gold_patch: str | None = None
+    patch_comparison: PatchComparison | None = None
 
 
 DatasetLoader = Callable[[str, str], Iterable[dict[str, object]]]
 ClientFactory = Callable[[str], Client]
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 DockerImageChecker = Callable[[list[str]], None]
+PatchComparator = Callable[..., Awaitable[PatchComparison]]
 
 
 def load_swe_bench_instances(
@@ -116,6 +132,7 @@ def _instance_from_dataset_row(row: dict[str, object], dataset_name: str) -> Swe
         issue_id=row.get('issue_id') if row.get('issue_id') is not None else None,
         issue_url=_optional_string(row.get('issue_url')),
         pr_url=_optional_string(row.get('pr_url')),
+        gold_patch=_optional_string(row.get('patch')),
         test_patch=_optional_string(row.get('test_patch')),
         fail_to_pass=_coerce_test_list(row.get('FAIL_TO_PASS', [])),
         pass_to_pass=_coerce_test_list(row.get('PASS_TO_PASS', [])),
@@ -177,6 +194,7 @@ async def generate_predictions(
     dataset_loader: DatasetLoader | None = None,
     client_factory: ClientFactory = Client,
     docker_image_checker: DockerImageChecker | None = None,
+    patch_comparator: PatchComparator | None = None,
 ) -> Path:
     docker_image_checker = docker_image_checker or ensure_docker_images_available
     instances = load_swe_bench_instances(
@@ -211,6 +229,19 @@ async def generate_predictions(
             workflow_timeout_seconds=workflow_timeout_seconds,
             client_factory=client_factory,
         )
+        if prediction.model_patch and instance.gold_patch:
+            comparison = await (patch_comparator or compare_patch_to_gold)(
+                instance_id=instance.instance_id,
+                problem_statement=instance.problem_statement,
+                model_patch=prediction.model_patch,
+                gold_patch=instance.gold_patch,
+            )
+            prediction = prediction.model_copy(
+                update={
+                    'gold_patch': instance.gold_patch,
+                    'patch_comparison': comparison,
+                }
+            )
         _write_prediction(prediction_path, prediction)
         prediction_records.append(prediction)
     return write_predictions_jsonl(run_predictions_dir, prediction_records)
@@ -236,6 +267,72 @@ def ensure_docker_images_available(docker_images: list[str]) -> None:
             f'--instance_ids {instance_ids} --max_workers 1 '
             '--tag latest --env_image_tag latest'
         )
+
+
+async def compare_patch_to_gold(
+    instance_id: str,
+    problem_statement: str,
+    model_patch: str,
+    gold_patch: str,
+) -> PatchComparison:
+    completion = await generate_structured(
+        role=ModelRole.REVIEWER,
+        messages=[
+            Message(
+                role='system',
+                content=(
+                    'You compare a generated SWE-bench patch with the official gold patch '
+                    'for post-run introspection only. Do not grade by tests and do not suggest '
+                    'changes for resubmission. Identify likely semantic gaps, extra behavior, '
+                    'and risks using only the problem statement and the two diffs. The generated '
+                    'patch can be different from the gold patch and still be likely equivalent.'
+                ),
+                cacheable=True,
+            ),
+            Message(
+                role='user',
+                content=json.dumps(
+                    {
+                        'instance_id': instance_id,
+                        'problem_statement': problem_statement,
+                        'model_patch': model_patch,
+                        'gold_patch': gold_patch,
+                    }
+                ),
+            ),
+        ],
+        output_type=PatchComparison,
+    )
+    return completion.output
+
+
+def prepare_swe_bench_images(
+    dataset_name: str,
+    split: str,
+    instance_ids: Sequence[str],
+    max_workers: int,
+    tag: str,
+    env_image_tag: str,
+    command_runner: CommandRunner = subprocess.run,
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        sys.executable,
+        '-m',
+        'swebench.harness.prepare_images',
+        '--dataset_name',
+        dataset_name,
+        '--split',
+        split,
+        '--instance_ids',
+        *instance_ids,
+        '--max_workers',
+        str(max_workers),
+        '--tag',
+        tag,
+        '--env_image_tag',
+        env_image_tag,
+    ]
+    return command_runner(command, check=True, text=True)
 
 
 async def _run_agent_prediction(
@@ -309,6 +406,7 @@ async def _run_agent_prediction(
         started_at=started_at,
         completed_at=_utc_now(),
         instance=instance.model_dump(mode='json'),
+        gold_patch=instance.gold_patch,
     )
 
 
@@ -406,6 +504,24 @@ async def _main_async(arguments: argparse.Namespace) -> None:
     predictions_path = arguments.predictions_dir / arguments.run_id / 'all_preds.jsonl'
     worker_process: subprocess.Popen[str] | None = None
     if not arguments.evaluate_only:
+        if arguments.prepare_images:
+            instances = load_swe_bench_instances(
+                dataset_name=arguments.dataset_name,
+                split=arguments.split,
+                limit=arguments.subset,
+                dataset_loader=getattr(arguments, 'dataset_loader', None),
+            )
+            prepare_swe_bench_images(
+                dataset_name=arguments.dataset_name,
+                split=arguments.split,
+                instance_ids=[instance.instance_id for instance in instances],
+                max_workers=arguments.max_workers,
+                tag=arguments.image_tag,
+                env_image_tag=arguments.env_image_tag,
+            )
+        if arguments.prepare_only:
+            print(json.dumps({'prepared': True}, indent=2))
+            return
         if arguments.start_worker:
             worker_process = _start_worker(arguments.temporal_database_url)
         try:
@@ -482,9 +598,17 @@ def _parse_arguments() -> argparse.Namespace:
         default=DEFAULT_WORKFLOW_TIMEOUT_SECONDS,
     )
     parser.add_argument('--max-workers', type=int, default=DEFAULT_MAX_WORKERS)
+    parser.add_argument('--image-tag', default=DEFAULT_IMAGE_TAG)
+    parser.add_argument('--env-image-tag', default=DEFAULT_ENV_IMAGE_TAG)
     parser.add_argument('--force', action='store_true')
     parser.add_argument('--generate-only', action='store_true')
     parser.add_argument('--evaluate-only', action='store_true')
+    parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument(
+        '--prepare-images',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument('--start-worker', action=argparse.BooleanOptionalAction, default=True)
     arguments = parser.parse_args()
     if arguments.run_id is None:

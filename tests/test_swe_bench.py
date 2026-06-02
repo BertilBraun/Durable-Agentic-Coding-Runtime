@@ -8,11 +8,13 @@ from typing import ClassVar
 
 import pytest
 from src.eval.swe_bench import (
+    PatchComparison,
     PredictionRecord,
     _docker_image_for_instance,
     _main_async,
     generate_predictions,
     load_swe_bench_instances,
+    prepare_swe_bench_images,
     run_official_evaluation,
     write_predictions_jsonl,
 )
@@ -46,6 +48,7 @@ def test_load_swe_bench_instances_normalizes_official_dataset_rows() -> None:
     assert instances[0].fail_to_pass == ['tests/test_bug.py::test_fixed']
     assert instances[0].pass_to_pass == ['tests/test_existing.py::test_existing']
     assert instances[0].test_patch == 'diff --git a/tests/test_bug.py b/tests/test_bug.py\n'
+    assert instances[0].gold_patch == 'gold patch is ignored'
     assert instances[0].difficulty is None
     assert instances[0].language == 'python'
 
@@ -98,6 +101,18 @@ def test_load_swe_bench_instances_requires_subset_count_after_python_filter() ->
 
 @pytest.mark.asyncio
 async def test_generate_predictions_writes_sidecar_and_official_jsonl(tmp_path: Path) -> None:
+    async def fake_compare_patch_to_gold(**keyword_arguments: object) -> PatchComparison:
+        assert keyword_arguments['instance_id'] == 'python__repo-1'
+        assert keyword_arguments['model_patch'] == 'diff --git a/app.py b/app.py\n'
+        assert keyword_arguments['gold_patch'] == 'diff --git a/gold.py b/gold.py\n'
+        return PatchComparison(
+            summary='Model patch changes the same file.',
+            likely_equivalent=False,
+            missing_from_model_patch=['gold behavior'],
+            extra_in_model_patch=[],
+            risk_notes=['needs review'],
+        )
+
     predictions_path = await generate_predictions(
         dataset_name='princeton-nlp/SWE-bench_Lite',
         split='test',
@@ -110,6 +125,7 @@ async def test_generate_predictions_writes_sidecar_and_official_jsonl(tmp_path: 
         dataset_loader=_fake_dataset_loader,
         client_factory=FakeClient,
         docker_image_checker=lambda docker_images: None,
+        patch_comparator=fake_compare_patch_to_gold,
     )
 
     sidecar = tmp_path / 'run-1' / 'python__repo-1.json'
@@ -124,6 +140,14 @@ async def test_generate_predictions_writes_sidecar_and_official_jsonl(tmp_path: 
     assert sidecar_payload['docker_image'] == 'sweb.eval.x86_64.python__repo-1:latest'
     assert sidecar_payload['cost'] == 1.25
     assert sidecar_payload['llm_calls'] == 7
+    assert sidecar_payload['gold_patch'] == 'diff --git a/gold.py b/gold.py\n'
+    assert sidecar_payload['patch_comparison'] == {
+        'summary': 'Model patch changes the same file.',
+        'likely_equivalent': False,
+        'missing_from_model_patch': ['gold behavior'],
+        'extra_in_model_patch': [],
+        'risk_notes': ['needs review'],
+    }
     assert official_predictions == [
         {
             'instance_id': 'python__repo-1',
@@ -264,6 +288,44 @@ def test_run_official_evaluation_invokes_swe_bench_module(tmp_path: Path) -> Non
     assert 'run-1' in calls[0]
 
 
+def test_prepare_swe_bench_images_invokes_prepare_images_module() -> None:
+    calls: list[list[str]] = []
+
+    def fake_runner(command: list[str], **keyword_arguments: object) -> FakeCompletedProcess:
+        calls.append(command)
+        assert keyword_arguments == {'check': True, 'text': True}
+        return FakeCompletedProcess(returncode=0)
+
+    result = prepare_swe_bench_images(
+        dataset_name='princeton-nlp/SWE-bench_Lite',
+        split='test',
+        instance_ids=['astropy__astropy-12907'],
+        max_workers=1,
+        tag='latest',
+        env_image_tag='latest',
+        command_runner=fake_runner,
+    )
+
+    assert result.returncode == 0
+    assert calls[0] == [
+        calls[0][0],
+        '-m',
+        'swebench.harness.prepare_images',
+        '--dataset_name',
+        'princeton-nlp/SWE-bench_Lite',
+        '--split',
+        'test',
+        '--instance_ids',
+        'astropy__astropy-12907',
+        '--max_workers',
+        '1',
+        '--tag',
+        'latest',
+        '--env_image_tag',
+        'latest',
+    ]
+
+
 def test_docker_image_for_instance_uses_swe_bench_eval_image_name() -> None:
     assert (
         _docker_image_for_instance('astropy__astropy-12907')
@@ -277,6 +339,10 @@ async def test_main_async_starts_worker_for_generation(
     tmp_path: Path,
 ) -> None:
     calls: list[tuple[str, object]] = []
+
+    def fake_prepare_swe_bench_images(**keyword_arguments: object) -> FakeCompletedProcess:
+        calls.append(('prepare', keyword_arguments['instance_ids']))
+        return FakeCompletedProcess(returncode=0)
 
     async def fake_generate_predictions(**keyword_arguments: object) -> Path:
         calls.append(('generate', keyword_arguments['temporal_api_url']))
@@ -292,13 +358,17 @@ async def test_main_async_starts_worker_for_generation(
     def fake_stop_worker(worker_process: object) -> None:
         calls.append(('stop_worker', worker_process))
 
+    monkeypatch.setattr(
+        'src.eval.swe_bench.prepare_swe_bench_images',
+        fake_prepare_swe_bench_images,
+    )
     monkeypatch.setattr('src.eval.swe_bench.generate_predictions', fake_generate_predictions)
     monkeypatch.setattr('src.eval.swe_bench._start_worker', fake_start_worker)
     monkeypatch.setattr('src.eval.swe_bench._stop_worker_process', fake_stop_worker)
 
     await _main_async(
         Namespace(
-            dataset_name='dataset',
+            dataset_name='princeton-nlp/SWE-bench_Lite',
             split='test',
             subset=1,
             temporal_api_url='http://temporal',
@@ -309,15 +379,72 @@ async def test_main_async_starts_worker_for_generation(
             workflow_timeout_seconds=30,
             force=False,
             evaluate_only=False,
+            prepare_only=False,
+            prepare_images=True,
             generate_only=True,
             max_workers=1,
+            image_tag='latest',
+            env_image_tag='latest',
             start_worker=True,
+            dataset_loader=_fake_dataset_loader,
         )
     )
 
-    assert calls[0] == ('start_worker', 'postgresql://db')
-    assert calls[1] == ('generate', 'http://temporal')
-    assert calls[2][0] == 'stop_worker'
+    assert calls[0] == ('prepare', ['python__repo-1'])
+    assert calls[1] == ('start_worker', 'postgresql://db')
+    assert calls[2] == ('generate', 'http://temporal')
+    assert calls[3][0] == 'stop_worker'
+
+
+@pytest.mark.asyncio
+async def test_main_async_prepare_only_stops_before_worker_and_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_prepare_swe_bench_images(**keyword_arguments: object) -> FakeCompletedProcess:
+        calls.append(('prepare', keyword_arguments['instance_ids']))
+        return FakeCompletedProcess(returncode=0)
+
+    async def fake_generate_predictions(**keyword_arguments: object) -> Path:
+        raise AssertionError('prepare-only should not generate predictions')
+
+    def fake_start_worker(temporal_database_url: str) -> object:
+        raise AssertionError('prepare-only should not start a worker')
+
+    monkeypatch.setattr(
+        'src.eval.swe_bench.prepare_swe_bench_images',
+        fake_prepare_swe_bench_images,
+    )
+    monkeypatch.setattr('src.eval.swe_bench.generate_predictions', fake_generate_predictions)
+    monkeypatch.setattr('src.eval.swe_bench._start_worker', fake_start_worker)
+
+    await _main_async(
+        Namespace(
+            dataset_name='princeton-nlp/SWE-bench_Lite',
+            split='test',
+            subset=1,
+            temporal_api_url='http://temporal',
+            temporal_database_url='postgresql://db',
+            predictions_dir=tmp_path,
+            run_id='run-1',
+            model_name_or_path='model',
+            workflow_timeout_seconds=30,
+            force=False,
+            evaluate_only=False,
+            prepare_only=True,
+            prepare_images=True,
+            generate_only=False,
+            max_workers=1,
+            image_tag='latest',
+            env_image_tag='latest',
+            start_worker=True,
+            dataset_loader=_fake_dataset_loader,
+        )
+    )
+
+    assert calls == [('prepare', ['python__repo-1'])]
 
 
 def _fake_dataset_loader(dataset_name: str, split: str) -> list[dict[str, object]]:
@@ -332,6 +459,7 @@ def _dataset_row(instance_id: str, language: str | None = None) -> dict[str, obj
         'repo': 'python/repo',
         'base_commit': 'abc123',
         'problem_statement': 'Fix the bug',
+        'patch': 'diff --git a/gold.py b/gold.py\n',
         'version': '1.0',
         'test_patch': '',
         'FAIL_TO_PASS': '[]',

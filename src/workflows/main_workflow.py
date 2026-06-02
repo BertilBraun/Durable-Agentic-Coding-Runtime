@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from temporal_light import spawn_child, wait_for_child, workflow
 
 from src.activities.complexity_assessor import assess_complexity
@@ -15,11 +17,8 @@ from src.activities.reproduction import repro_run_tests
 from src.activities.reviewer import ReviewRequest, review_patch
 from src.activities.selector import (
     CandidateResult,
-    SelectionRequest,
     aggregate_candidate_confidence,
     candidate_count_for_confidence,
-    derive_candidate_confidence,
-    select_candidate,
 )
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
@@ -37,7 +36,7 @@ from src.activities.workspace_manager import (
 )
 from src.config import CONFIG
 from src.llm.client import LLMUsage
-from src.models.plan import Plan, PlanStep
+from src.models.plan import Plan, PlanContext, PlanStep
 from src.models.repo import RepoIndex
 from src.models.reproduction import (
     ReproductionContext,
@@ -48,6 +47,29 @@ from src.models.reproduction import (
 )
 from src.models.task import TaskContract, TaskRequest, TaskType
 from src.models.worker import Confidence, WorkerResult, WorkerStatus
+
+_CONFIDENCE_RANK: dict[Confidence, int] = {
+    Confidence.LOW: 0,
+    Confidence.MEDIUM: 1,
+    Confidence.HIGH: 2,
+}
+
+
+@dataclass(frozen=True)
+class StepCandidateRun:
+    index: int
+    workspace_info: Workspace
+    worker_results: list[WorkerResult]
+    llm_usage: LLMUsage
+
+
+@dataclass(frozen=True)
+class PlanExecutionResult:
+    plan: Plan
+    worker_results: list[WorkerResult]
+    reproduction_passed_after: bool | None
+    llm_usage: LLMUsage
+    workspace_info: Workspace
 
 
 @workflow
@@ -118,31 +140,49 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
         )
         usage += approval_usage
 
-    first_candidate, first_usage = await _run_candidate(
-        candidate_index=0,
-        workspace=workspace,
+    execution_result = await _run_plan_steps(
+        workspace_info=workspace,
         plan=plan,
         contract=contract,
         repo_index=repo_index,
         reproduction=reproduction_context,
     )
-    usage += first_usage
-    candidates = [first_candidate]
-    target_count = candidate_count_for_confidence(derive_candidate_confidence(first_candidate))
-    while len(candidates) < target_count:
-        await reset_to_base(workspace)
-        next_candidate, next_usage = await _run_candidate(
-            candidate_index=len(candidates),
-            workspace=workspace,
-            plan=plan,
-            contract=contract,
-            repo_index=repo_index,
-            reproduction=reproduction_context,
-        )
-        usage += next_usage
-        candidates.append(next_candidate)
+    usage += execution_result.llm_usage
 
-    chosen = await select_candidate(SelectionRequest(candidates=candidates))
+    reproduction_evidence: ReproductionEvidence | None = None
+    if reproduction_context is not None:
+        reproduction_evidence = build_reproduction_evidence(
+            repro_command=reproduction_context.repro_command,
+            passed_after=bool(execution_result.reproduction_passed_after),
+        )
+    diff = await get_full_diff(execution_result.workspace_info)
+    aggregated_test_results = [
+        test_result
+        for worker_result in execution_result.worker_results
+        for test_result in worker_result.test_results
+    ]
+    final_verdict, review_usage = await review_patch(
+        ReviewRequest(
+            contract=contract,
+            plan_step=None,
+            diff=diff,
+            test_results=aggregated_test_results,
+            worker_results=execution_result.worker_results,
+            workspace_info=execution_result.workspace_info,
+        ),
+    )
+    usage += review_usage
+    chosen = CandidateResult(
+        index=0,
+        branch=execution_result.workspace_info.current_branch,
+        diff=diff,
+        plan=execution_result.plan,
+        worker_results=execution_result.worker_results,
+        review_verdict=final_verdict,
+        confidence=aggregate_candidate_confidence(execution_result.worker_results),
+        test_results=aggregated_test_results,
+        reproduction_evidence=reproduction_evidence,
+    )
     final_report = FinalReport(
         status=chosen.review_verdict.verdict.value,
         patch=chosen.diff,
@@ -170,27 +210,27 @@ async def _run_candidate(
 ) -> tuple[CandidateResult, LLMUsage]:
     usage = LLMUsage()
     candidate_workspace = await begin_candidate(workspace, candidate_index)
-    plan, worker_results, reproduction_passed_after, run_usage = await _run_plan_steps(
+    execution_result = await _run_plan_steps(
         plan=plan,
         contract=contract,
         repo_index=repo_index,
         workspace_info=candidate_workspace,
         reproduction=reproduction,
     )
-    usage += run_usage
+    usage += execution_result.llm_usage
 
     reproduction_evidence: ReproductionEvidence | None = None
     if reproduction is not None:
         reproduction_evidence = build_reproduction_evidence(
             repro_command=reproduction.repro_command,
-            passed_after=bool(reproduction_passed_after),
+            passed_after=bool(execution_result.reproduction_passed_after),
         )
 
-    diff = await get_full_diff(candidate_workspace)
-    candidate_workspace = await snapshot_candidate_result(candidate_workspace)
+    diff = await get_full_diff(execution_result.workspace_info)
+    candidate_workspace = await snapshot_candidate_result(execution_result.workspace_info)
     aggregated_test_results = [
         test_result
-        for worker_result in worker_results
+        for worker_result in execution_result.worker_results
         for test_result in worker_result.test_results
     ]
     final_verdict, review_usage = await review_patch(
@@ -199,7 +239,7 @@ async def _run_candidate(
             plan_step=None,
             diff=diff,
             test_results=aggregated_test_results,
-            worker_results=worker_results,
+            worker_results=execution_result.worker_results,
             workspace_info=candidate_workspace,
         ),
     )
@@ -208,10 +248,10 @@ async def _run_candidate(
         index=candidate_index,
         branch=candidate_workspace.current_branch,
         diff=diff,
-        plan=plan,
-        worker_results=worker_results,
+        plan=execution_result.plan,
+        worker_results=execution_result.worker_results,
         review_verdict=final_verdict,
-        confidence=aggregate_candidate_confidence(worker_results),
+        confidence=aggregate_candidate_confidence(execution_result.worker_results),
         test_results=aggregated_test_results,
         reproduction_evidence=reproduction_evidence,
     )
@@ -266,24 +306,41 @@ async def _run_plan_steps(
     repo_index: RepoIndex,
     workspace_info: Workspace,
     reproduction: ReproductionContext | None,
-) -> tuple[Plan, list[WorkerResult], bool | None, LLMUsage]:
+) -> PlanExecutionResult:
     worker_results: list[WorkerResult] = []
     pending_plan_steps = list(plan.steps)
     usage = LLMUsage()
     replan_attempts = 0
     reproduction_passed_after: bool | None = None
+    current_workspace = workspace_info
+    next_candidate_index = 0
+    completed_step_summaries: list[str] = []
+    all_step_ids = [step.id for step in plan.steps]
     while True:
         if pending_plan_steps:
             plan_step = pending_plan_steps.pop(0)
-            worker_result, child_usage = await _run_implementation_child(
+            step_run, next_candidate_index = await _run_step_with_candidates(
                 plan_step=plan_step,
-                workspace_info=workspace_info,
+                plan_context=PlanContext(
+                    summary=plan.summary,
+                    current_step_id=plan_step.id,
+                    all_step_ids=all_step_ids,
+                    completed_step_summaries=completed_step_summaries,
+                ),
                 contract=contract,
                 repo_index=repo_index,
+                workspace_info=current_workspace,
+                first_candidate_index=next_candidate_index,
             )
-            usage += child_usage
-            worker_results.append(worker_result)
-            match worker_result.status:
+            usage += step_run.llm_usage
+            worker_results.extend(step_run.worker_results)
+            last_worker_result = step_run.worker_results[-1]
+            if last_worker_result.status == WorkerStatus.SUCCESS:
+                current_workspace = await snapshot_candidate_base(step_run.workspace_info)
+                completed_step_summaries.append(
+                    f'{plan_step.id}: {last_worker_result.diff_summary}'
+                )
+            match last_worker_result.status:
                 case WorkerStatus.NEEDS_REPLAN:
                     if replan_attempts >= CONFIG.max_replan_attempts:
                         worker_results.append(_replan_cap_blocked_result())
@@ -292,7 +349,7 @@ async def _run_plan_steps(
                     pending_plan_steps = [
                         _corrective_plan_step(
                             plan_step=plan_step,
-                            worker_result=worker_result,
+                            worker_result=last_worker_result,
                         )
                     ]
                 case WorkerStatus.FAILED | WorkerStatus.BLOCKED:
@@ -300,17 +357,17 @@ async def _run_plan_steps(
                 case WorkerStatus.SUCCESS:
                     if reproduction is not None:
                         gate_result = await _run_repro_command(
-                            workspace_info, repo_index, reproduction.repro_command
+                            current_workspace, repo_index, reproduction.repro_command
                         )
                         reproduction_passed_after = gate_result.exit_code == 0
             continue
         if reproduction is None:
             break
         repro_result = await _run_repro_command(
-            workspace_info, repo_index, reproduction.repro_command
+            current_workspace, repo_index, reproduction.repro_command
         )
         reproduction_passed_after = repro_result.exit_code == 0
-        suite_result = await _run_suite(workspace_info, repo_index, plan.integration_tests)
+        suite_result = await _run_suite(current_workspace, repo_index, plan.integration_tests)
         if repro_result.exit_code == 0 and suite_result.exit_code == 0:
             break
         if replan_attempts >= CONFIG.max_replan_attempts:
@@ -326,7 +383,117 @@ async def _run_plan_steps(
         )
         usage += replan_usage
         pending_plan_steps = list(plan.steps)
-    return plan, worker_results, reproduction_passed_after, usage
+        all_step_ids = [step.id for step in plan.steps]
+    return PlanExecutionResult(
+        plan=plan,
+        worker_results=worker_results,
+        reproduction_passed_after=reproduction_passed_after,
+        llm_usage=usage,
+        workspace_info=current_workspace,
+    )
+
+
+async def _run_step_with_candidates(
+    plan_step: PlanStep,
+    plan_context: PlanContext,
+    contract: TaskContract,
+    repo_index: RepoIndex,
+    workspace_info: Workspace,
+    first_candidate_index: int,
+) -> tuple[StepCandidateRun, int]:
+    candidates: list[StepCandidateRun] = []
+    next_candidate_index = first_candidate_index
+    target_count = 1
+    while len(candidates) < target_count:
+        if candidates:
+            await reset_to_base(workspace_info)
+        step_candidate = await _run_step_candidate(
+            plan_step=plan_step,
+            plan_context=plan_context,
+            contract=contract,
+            repo_index=repo_index,
+            workspace_info=workspace_info,
+            candidate_index=next_candidate_index,
+        )
+        next_candidate_index += 1
+        candidates.append(step_candidate)
+        if len(candidates) == 1:
+            target_count = _step_candidate_target_count(step_candidate)
+    return _select_step_candidate(candidates), next_candidate_index
+
+
+async def _run_step_candidate(
+    plan_step: PlanStep,
+    plan_context: PlanContext,
+    contract: TaskContract,
+    repo_index: RepoIndex,
+    workspace_info: Workspace,
+    candidate_index: int,
+) -> StepCandidateRun:
+    usage = LLMUsage()
+    worker_results: list[WorkerResult] = []
+    candidate_workspace = await begin_candidate(workspace_info, candidate_index)
+    current_step = plan_step
+    replan_attempts = 0
+    while True:
+        worker_result, child_usage = await _run_implementation_child(
+            plan_step=current_step,
+            plan_context=plan_context,
+            workspace_info=candidate_workspace,
+            contract=contract,
+            repo_index=repo_index,
+        )
+        usage += child_usage
+        worker_results.append(worker_result)
+        match worker_result.status:
+            case WorkerStatus.NEEDS_REPLAN:
+                if replan_attempts >= CONFIG.max_replan_attempts:
+                    worker_results.append(_replan_cap_blocked_result())
+                    break
+                replan_attempts += 1
+                current_step = _corrective_plan_step(current_step, worker_result)
+                continue
+            case WorkerStatus.SUCCESS | WorkerStatus.FAILED | WorkerStatus.BLOCKED:
+                break
+    candidate_workspace = await snapshot_candidate_result(candidate_workspace)
+    return StepCandidateRun(
+        index=candidate_index,
+        workspace_info=candidate_workspace,
+        worker_results=worker_results,
+        llm_usage=usage,
+    )
+
+
+def _derive_step_candidate_confidence(candidate: StepCandidateRun) -> Confidence:
+    last_result = candidate.worker_results[-1]
+    if last_result.status != WorkerStatus.SUCCESS:
+        return Confidence.LOW
+    return aggregate_candidate_confidence(candidate.worker_results)
+
+
+def _step_candidate_target_count(candidate: StepCandidateRun) -> int:
+    if candidate.worker_results[-1].status != WorkerStatus.SUCCESS:
+        return 1
+    return candidate_count_for_confidence(_derive_step_candidate_confidence(candidate))
+
+
+def _select_step_candidate(candidates: list[StepCandidateRun]) -> StepCandidateRun:
+    return max(candidates, key=_step_candidate_preference_key)
+
+
+def _step_candidate_preference_key(candidate: StepCandidateRun) -> tuple[int, int, int, int]:
+    last_result = candidate.worker_results[-1]
+    return (
+        1 if last_result.status == WorkerStatus.SUCCESS else 0,
+        _CONFIDENCE_RANK[_derive_step_candidate_confidence(candidate)],
+        sum(
+            1
+            for worker_result in candidate.worker_results
+            for test_result in worker_result.test_results
+            if test_result.passed
+        ),
+        -candidate.index,
+    )
 
 
 async def _replan(
@@ -453,6 +620,7 @@ async def _run_reproduction_child(
 
 async def _run_implementation_child(
     plan_step: PlanStep,
+    plan_context: PlanContext,
     workspace_info: Workspace,
     contract: TaskContract,
     repo_index: RepoIndex,
@@ -466,6 +634,7 @@ async def _run_implementation_child(
             plan_step.id,
         ),
         step=plan_step.model_dump(mode='json'),
+        plan_context=plan_context.model_dump(mode='json'),
         workspace=workspace_info.model_dump(mode='json'),
         contract=contract.model_dump(mode='json'),
         repo_index=repo_index.model_dump(mode='json'),

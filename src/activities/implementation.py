@@ -21,7 +21,7 @@ from src.config import CONFIG, ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.context import ContextPack
 from src.models.frozen_base_model import FrozenBaseModel
-from src.models.plan import PlanStep
+from src.models.plan import PlanContext, PlanStep
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
 from src.models.worker import Confidence, TestResult, WorkerResult, WorkerStatus
@@ -34,22 +34,27 @@ from src.tools.definitions import (
 )
 
 IMPLEMENTATION_SYSTEM_PROMPT = (
-    'You are the implementation worker. Inspect before editing when context '
-    'is insufficient, then use the smallest patch that satisfies the current '
-    'plan step. Edit with write_file or apply_patch and run tests with '
-    'run_tests; use run_shell for any other command (status, diff, search, '
-    'reading files), writing it for the environment described in the user '
-    'payload. Keep changes inside allowed files unless blocked, and explain '
-    'why any extra file is needed. Use mutating tools only for the current '
-    'step. Run relevant tests after edits; inspect failures before editing '
-    'again. Return done=true with WorkerResult only for complete, blocked, '
-    'failed, or needs_replan outcomes. Report success only with an applied '
-    'edit or observed test evidence. Do not fabricate progress, files, or '
-    'test results. For bugfix work a failing regression test may already '
-    'exist; make it pass by fixing the production code and never weaken, '
-    'skip, delete, or otherwise neuter that test to go green. The environment '
-    'is persistent across tool calls, so installed dependencies and prior '
-    'edits remain available.'
+    'You are the implementation worker for one step of a larger coding plan. '
+    'The workspace already contains any accepted prior steps listed in the '
+    'plan context; preserve that work and do not redo it. Use the plan context '
+    'only for orientation, and execute the current plan step only. Inspect '
+    'before editing when context is insufficient, then use the smallest patch '
+    'that satisfies the current step. Edit with write_file or apply_patch and '
+    'run tests with run_tests; use run_shell for any other command (status, '
+    'diff, search, reading files), writing it for the environment described '
+    'in the user payload. Keep changes inside allowed files unless blocked, '
+    'and explain why any extra file is needed. Run relevant tests after edits; '
+    'inspect failures before editing again. Return done=true with WorkerResult '
+    'only for complete, blocked, failed, or needs_replan outcomes. Report '
+    'success only with an applied edit or observed test evidence. Confidence '
+    'means confidence in this step based on observed diff and tests, not how '
+    'hard the task felt. Use needs_replan when partial progress exists but '
+    'more work is required in the same workspace. Do not fabricate progress, '
+    'files, or test results. For bugfix work a failing regression test may '
+    'already exist; make it pass by fixing the production code and never '
+    'weaken, skip, delete, or otherwise neuter that test to go green. The '
+    'environment is persistent across tool calls, so installed dependencies '
+    'and prior edits remain available.'
 )
 
 
@@ -61,6 +66,7 @@ IMPLEMENTATION_AVAILABLE_TOOLS: tuple[str, ...] = tuple(
 
 class ImplementationTurnRequest(FrozenBaseModel):
     plan_step: PlanStep
+    plan_context: PlanContext | None = None
     context_pack: ContextPack
     task_contract: TaskContract
     workspace_info: Workspace
@@ -191,6 +197,11 @@ async def run_implementation_turn(
 def _llm_user_payload(request: ImplementationTurnRequest) -> dict[str, object]:
     return {
         'plan_step': request.plan_step.model_dump(mode='json'),
+        'plan_context': (
+            request.plan_context.model_dump(mode='json')
+            if request.plan_context is not None
+            else None
+        ),
         'context_pack': request.context_pack.model_dump(mode='json'),
         'task_contract': request.task_contract.model_dump(mode='json'),
         'workspace_info': request.workspace_info.model_dump(mode='json'),

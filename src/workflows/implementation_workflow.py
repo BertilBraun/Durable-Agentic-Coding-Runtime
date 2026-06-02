@@ -12,7 +12,7 @@ from src.activities.implementation import (
 from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict, review_patch
 from src.activities.workspace_manager import Workspace, WorkspaceAdapter
 from src.llm.client import LLMUsage
-from src.models.plan import PlanStep
+from src.models.plan import PlanContext, PlanStep
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
 from src.models.worker import Confidence, WorkerResult, WorkerStatus
@@ -24,8 +24,12 @@ async def implementation_workflow(
     workspace: dict[str, object],
     contract: dict[str, object],
     repo_index: dict[str, object],
+    plan_context: dict[str, object] | None = None,
 ) -> dict[str, object]:
     plan_step = PlanStep.model_validate(step)
+    step_plan_context = (
+        PlanContext.model_validate(plan_context) if plan_context is not None else None
+    )
     workspace_info = WorkspaceAdapter.validate_python(workspace)
     task_contract = TaskContract.model_validate(contract)
     repository_index = RepoIndex.model_validate(repo_index)
@@ -43,6 +47,7 @@ async def implementation_workflow(
     worker_result, turn_usage = await run_implementation_turn(
         ImplementationTurnRequest(
             plan_step=plan_step,
+            plan_context=step_plan_context,
             context_pack=context_pack,
             task_contract=task_contract,
             workspace_info=workspace_info,

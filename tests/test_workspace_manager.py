@@ -181,6 +181,13 @@ def test_setup_docker_workspace_uses_existing_local_image(
     class FakeContainers:
         def run(self, **keyword_arguments: object) -> object:
             assert keyword_arguments['image'] == 'sweb.eval.test:latest'
+            assert keyword_arguments['name'].startswith('agentic-swe-bench-run-1-')
+            assert keyword_arguments['labels'] == {
+                'com.docker.compose.project': 'agentic-swe-bench',
+                'com.docker.compose.service': 'workspace',
+                'agentic.workflow.run_id': 'run-1',
+                'agentic.workflow.kind': 'swe-bench',
+            }
             return type('Container', (), {'id': 'container-1'})()
 
     class FakeDockerClient:

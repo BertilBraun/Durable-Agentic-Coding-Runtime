@@ -29,14 +29,45 @@ class ReviewDecision(StrEnum):
 
 
 class ReviewVerdict(FrozenBaseModel):
-    evidence: list[str] = Field(default_factory=list)
-    blocking_issues: list[str] = Field(default_factory=list)
-    non_blocking_issues: list[str] = Field(default_factory=list)
-    missing_tests: list[str] = Field(default_factory=list)
-    regression_risks: list[str] = Field(default_factory=list)
-    minimality_assessment: str
-    recommended_next_action: str
-    verdict: ReviewDecision
+    evidence: list[str] = Field(
+        default_factory=list,
+        description='Observed diff, worker, and test evidence used for the verdict.',
+    )
+    blocking_issues: list[str] = Field(
+        default_factory=list,
+        description=(
+            'Issues that must be fixed before acceptance; accept requires this to be empty.'
+        ),
+    )
+    non_blocking_issues: list[str] = Field(
+        default_factory=list,
+        description='Minor issues that do not prevent acceptance.',
+    )
+    missing_tests: list[str] = Field(
+        default_factory=list,
+        description=(
+            'Required verification evidence that is absent. Missing required tests should produce '
+            'a revise verdict unless acceptance criteria are otherwise proven.'
+        ),
+    )
+    regression_risks: list[str] = Field(
+        default_factory=list,
+        description='Specific regression risks observed from the diff or test evidence.',
+    )
+    minimality_assessment: str = Field(
+        description='Whether the diff is scoped to the contract and plan step.'
+    )
+    recommended_next_action: str = Field(
+        description=(
+            'Concrete next action: accept, revise with specific fixes, reject, or ask human.'
+        )
+    )
+    verdict: ReviewDecision = Field(
+        description=(
+            'accept only when there are no blocking issues and required evidence is sufficient; '
+            'revise when the current workspace can likely be corrected; reject for unusable work.'
+        )
+    )
 
 
 class ReviewRequest(FrozenBaseModel):
