@@ -872,9 +872,7 @@ async def test_main_workflow_low_confidence_escalates_and_finalizes_selected_bra
         worker_confidence=Confidence.HIGH,
         verdicts=[
             ReviewDecision.REVISE,
-            ReviewDecision.REVISE,
             ReviewDecision.ACCEPT,
-            ReviewDecision.REVISE,
         ],
     )
 
@@ -885,6 +883,6 @@ async def test_main_workflow_low_confidence_escalates_and_finalizes_selected_bra
     expected_count = CONFIG.candidate_count_low_confidence
     assert tracker.begin_indices == list(range(expected_count))
     assert tracker.reset_count == expected_count - 1
-    assert tracker.finalized_branch == 'cand-2'
+    assert tracker.finalized_branch == 'cand-1'
     assert report['status'] == ReviewDecision.ACCEPT.value
-    assert report['chosen_candidate']['index'] == 2
+    assert report['chosen_candidate']['index'] == 1

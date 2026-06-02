@@ -86,6 +86,8 @@ class AsyncOpenAIClient(Protocol):
     chat: ChatCompletionNamespace
     beta: BetaNamespace
 
+    async def close(self) -> None: ...
+
 
 def _structured_output_type(module_name: str, qualified_name: str) -> type[BaseModel]:
     module = importlib.import_module(module_name)

@@ -277,7 +277,7 @@ async def test_implementation_turn_preserves_run_tests_timeout(
 
     worker_result, _ = await run_implementation_turn(_implementation_request())
 
-    assert worker_result.status == WorkerStatus.FAILED
+    assert worker_result.status == WorkerStatus.NEEDS_REPLAN
     assert captured_timeout_seconds == [19]
 
 
@@ -529,6 +529,55 @@ async def test_implementation_turn_blocks_when_context_budget_is_high(
     assert worker_result.confidence == Confidence.LOW
     assert worker_result.replan_suggestion is not None
     assert 'run_shell' in worker_result.replan_suggestion
+
+
+@pytest.mark.asyncio
+async def test_implementation_turn_requests_replan_when_tool_rounds_are_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        turn = output_type.model_validate(
+            {
+                'done': False,
+                'tool_calls': [
+                    {
+                        'tool_name': 'write_file',
+                        'file_path': 'src/app.py',
+                        'content': 'def fixed():\n    return True\n',
+                    }
+                ],
+            }
+        )
+        return _structured_completion(turn, context_utilization=0.0)
+
+    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+        return ToolResult(
+            tool_name=ToolName.WRITE_FILE,
+            stdout='',
+            stderr='',
+            exit_code=0,
+            truncated=False,
+        )
+
+    _patch_generate_structured(monkeypatch, handler)
+    monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
+    monkeypatch.setattr(
+        implementation_module,
+        'CONFIG',
+        implementation_module.CONFIG.model_copy(update={'implementation_max_tool_rounds': 2}),
+    )
+
+    worker_result, _ = await run_implementation_turn(_implementation_request())
+
+    assert worker_result.status == WorkerStatus.NEEDS_REPLAN
+    assert worker_result.confidence == Confidence.MEDIUM
+    assert worker_result.diff_summary == 'Partial implementation work is present.'
+    assert worker_result.discovered_issues == ['maximum implementation tool rounds reached']
+    assert worker_result.replan_suggestion is not None
+    assert 'Current workspace may contain partial edits' in worker_result.replan_suggestion
+    assert 'write_file' in worker_result.replan_suggestion
 
 
 @pytest.mark.asyncio

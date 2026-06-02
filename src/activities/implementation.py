@@ -175,7 +175,17 @@ async def run_implementation_turn(
         messages.append(Message(role='assistant', content=agent_turn.model_dump_json()))
         messages.append(Message(role='user', content='\n\n'.join(observations)))
 
-    return failed_worker_result('maximum implementation tool rounds reached'), usage
+    return (
+        _tool_rounds_exhausted_worker_result(
+            evidence=ImplementationEvidence(
+                tests_run=tuple(tests_run),
+                test_results=tuple(test_results),
+                saw_diff=saw_diff,
+            ),
+            completed_tool_calls=completed_tool_calls,
+        ),
+        usage,
+    )
 
 
 def _llm_user_payload(request: ImplementationTurnRequest) -> dict[str, object]:
@@ -206,6 +216,32 @@ def _context_budget_blocked_worker_result(
         replan_suggestion=(
             'Context budget exceeded. Completed tool calls: '
             f'{completed_summary}. Pending tool calls: {pending_summary}.'
+        ),
+    )
+
+
+def _tool_rounds_exhausted_worker_result(
+    evidence: ImplementationEvidence,
+    completed_tool_calls: list[str],
+) -> WorkerResult:
+    completed_summary = ', '.join(completed_tool_calls) if completed_tool_calls else 'none'
+    confidence = Confidence.MEDIUM if evidence.saw_diff or evidence.test_results else Confidence.LOW
+    return WorkerResult(
+        status=WorkerStatus.NEEDS_REPLAN,
+        patch_id=None,
+        diff_summary=(
+            'Partial implementation work is present.'
+            if evidence.saw_diff
+            else 'Implementation did not complete within the tool-round budget.'
+        ),
+        tests_run=list(evidence.tests_run),
+        test_results=list(evidence.test_results),
+        discovered_issues=['maximum implementation tool rounds reached'],
+        confidence=confidence,
+        replan_suggestion=(
+            'Continue this step from the current workspace state. Current workspace may contain '
+            'partial edits; inspect git status, git diff, and the relevant files before editing. '
+            f'Completed tool calls: {completed_summary}.'
         ),
     )
 

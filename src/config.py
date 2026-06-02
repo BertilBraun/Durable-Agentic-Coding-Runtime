@@ -97,12 +97,12 @@ def load_settings() -> Settings:
         cleanup_candidate_branches=_parse_bool(
             os.getenv('CLEANUP_CANDIDATE_BRANCHES'), default=False
         ),
-        implementation_max_tool_rounds=int(os.getenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '12')),
-        reproducer_max_tool_rounds=int(os.getenv('REPRODUCER_MAX_TOOL_ROUNDS', '12')),
-        max_replan_attempts=int(os.getenv('MAX_REPLAN_ATTEMPTS', '3')),
+        implementation_max_tool_rounds=int(os.getenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '50')),
+        reproducer_max_tool_rounds=int(os.getenv('REPRODUCER_MAX_TOOL_ROUNDS', '50')),
+        max_replan_attempts=int(os.getenv('MAX_REPLAN_ATTEMPTS', '10')),
         max_plan_review_rounds=int(os.getenv('MAX_PLAN_REVIEW_ROUNDS', '2')),
-        candidate_count_medium_confidence=int(os.getenv('CANDIDATE_COUNT_MEDIUM_CONFIDENCE', '2')),
-        candidate_count_low_confidence=int(os.getenv('CANDIDATE_COUNT_LOW_CONFIDENCE', '4')),
+        candidate_count_medium_confidence=int(os.getenv('CANDIDATE_COUNT_MEDIUM_CONFIDENCE', '1')),
+        candidate_count_low_confidence=int(os.getenv('CANDIDATE_COUNT_LOW_CONFIDENCE', '2')),
         context_gatherer_max_tool_calls=int(os.getenv('CONTEXT_GATHERER_MAX_TOOL_CALLS', '10')),
         context_utilization_stop_threshold=float(
             os.getenv('CONTEXT_UTILIZATION_STOP_THRESHOLD', '0.80')

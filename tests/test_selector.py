@@ -79,6 +79,11 @@ def test_high_confidence_default_count_is_one() -> None:
     assert candidate_count_for_confidence(Confidence.HIGH) == 1
 
 
+def test_default_candidate_counts_are_conservative() -> None:
+    assert candidate_count_for_confidence(Confidence.MEDIUM) == 1
+    assert candidate_count_for_confidence(Confidence.LOW) == 2
+
+
 def test_accepted_high_confidence_candidate_stays_high() -> None:
     candidate = _candidate(0, ReviewDecision.ACCEPT, Confidence.HIGH)
     assert derive_candidate_confidence(candidate) == Confidence.HIGH
