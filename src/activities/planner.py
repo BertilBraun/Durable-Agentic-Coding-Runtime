@@ -130,7 +130,9 @@ def _render_planner_state(state: PlannerState) -> str:
         f'Reproduction:\n{reproduction_payload}\n\n'
         f'Repository tree:\n{state.repo_index.directory_tree_text()}\n\n'
         f'Context notes:\n{context_notes_json}\n\n'
-        f'Completed step history:\n{completed_steps_json}\n\n'
+        'Step attempt history. Entries with outcome=success are accepted immutable completed '
+        'steps; non-success entries are failed attempts for diagnosis, not completed work:\n'
+        f'{completed_steps_json}\n\n'
         f'Previous future step summary:\n{previous_future_steps}\n\n'
         f'Current evidence:\n{state.evidence.model_dump(mode="json")}'
     )

@@ -340,6 +340,63 @@ async def test_planner_loop_replans_after_one_step_and_does_not_run_stale_second
 
 
 @pytest.mark.asyncio
+async def test_failed_step_does_not_advance_workspace_or_completed_step_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_states: list[PlannerState] = []
+    turns = iter(
+        [
+            PlannerTurn(future_steps=[_step('failed-restore')]),
+            PlannerTurn(future_steps=[_step('retry-restore')]),
+            PlannerTurn(done=True),
+        ]
+    )
+    implementation_contexts: list[PlanContext] = []
+    diff_workspaces: list[Workspace] = []
+    worker_results = iter(
+        [
+            _worker_result(status=WorkerStatus.NEEDS_REPLAN, confidence=Confidence.LOW),
+            _worker_result(),
+        ]
+    )
+
+    async def fake_run_replanner_child(
+        workspace_info: Workspace,
+        repo_index: RepoIndex,
+        max_planner_turns: int,
+        planner_state: PlannerState,
+    ) -> tuple[PlannerTurn, list[object], list[ContextPack], int, LLMUsage]:
+        planner_states.append(planner_state)
+        return next(turns), [], [], 1, _usage()
+
+    async def fake_run_implementation_child(
+        plan_step: PlanStep,
+        plan_context: PlanContext,
+        context_pack: ContextPack,
+        workspace_info: Workspace,
+        contract: TaskContract,
+        repo_index: RepoIndex,
+    ) -> tuple[WorkerResult, LLMUsage]:
+        implementation_contexts.append(plan_context)
+        return next(worker_results), _usage()
+
+    async def fake_get_full_diff(workspace_arg: Workspace) -> str:
+        diff_workspaces.append(workspace_arg)
+        return 'diff --git a/app.py b/app.py'
+
+    monkeypatch.setattr(workflow_module, '_run_replanner_child', fake_run_replanner_child)
+    monkeypatch.setattr(workflow_module, '_run_implementation_child', fake_run_implementation_child)
+    monkeypatch.setattr(workflow_module, 'get_full_diff', fake_get_full_diff)
+    _install_step_branch_fakes(monkeypatch)
+
+    await _run_planner_loop(_workspace(), _contract(), RepoIndex(), None)
+
+    assert diff_workspaces[0].current_branch == 'main'
+    assert planner_states[1].completed_steps[0].outcome == WorkerStatus.NEEDS_REPLAN
+    assert implementation_contexts[1].completed_step_summaries == []
+
+
+@pytest.mark.asyncio
 async def test_planner_turn_cap_produces_blocked_result(monkeypatch: pytest.MonkeyPatch) -> None:
     replanner_calls = 0
 

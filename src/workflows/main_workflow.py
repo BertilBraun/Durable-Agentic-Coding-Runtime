@@ -288,7 +288,9 @@ async def _run_next_step(state: PlannerLoopState, turn: PlannerTurn) -> PlannerL
             current_step_id=plan_step.id,
             all_step_ids=[step.id for step in turn.future_steps],
             completed_step_summaries=[
-                f'{entry.step_id}: {entry.summary}' for entry in state.planner_state.completed_steps
+                f'{entry.step_id}: {entry.summary}'
+                for entry in state.planner_state.completed_steps
+                if entry.outcome == WorkerStatus.SUCCESS
             ],
         ),
         context_pack=_context_pack_for_step(plan_step, state.context_packs),
@@ -298,7 +300,7 @@ async def _run_next_step(state: PlannerLoopState, turn: PlannerTurn) -> PlannerL
         first_candidate_index=state.next_candidate_index,
     )
     selected_result = step_run.worker_results[-1]
-    workspace = step_run.workspace_info
+    workspace = state.workspace_info
     if selected_result.status == WorkerStatus.SUCCESS:
         workspace = await snapshot_candidate_base(step_run.workspace_info)
     history = _record_step_history(plan_step, step_run)
