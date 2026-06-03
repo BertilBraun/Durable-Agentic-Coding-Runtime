@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from temporal_light import spawn_child, wait_for_child, workflow
+from temporal_light import run_child, workflow
 
 from src.activities.contract_builder import build_contract
 from src.activities.implementation import get_full_diff
@@ -220,7 +220,7 @@ async def _bootstrap_workflow_state(
                 usage,
             )
         reproduction_context = ReproductionContext(
-            repro_command=reproduction_result.repro_command,
+            repro_target=reproduction_result.repro_target,
             failure_evidence=reproduction_result.failure_evidence,
         )
         workspace = await snapshot_candidate_base(workspace)
@@ -383,14 +383,14 @@ async def _refresh_planning_evidence(
         selected_test_results=latest_tests,
     )
     if reproduction is not None:
-        repro_result = await _run_repro_command(
+        repro_result = await _run_repro_target(
             state.workspace_info,
             repo_index,
-            reproduction.repro_command,
+            reproduction.repro_target,
         )
         evidence = evidence.model_copy(
             update={
-                'reproduction_command': reproduction.repro_command,
+                'reproduction_target': reproduction.repro_target,
                 'reproduction_passed': repro_result.exit_code == 0,
                 'reproduction_stdout_summary': repro_result.stdout,
                 'reproduction_stderr_summary': repro_result.stderr,
@@ -421,10 +421,10 @@ async def _finalize_or_block(
 ) -> tuple[ReproductionEvidence | None, list[TestResult], WorkerResult | None]:
     reproduction_evidence: ReproductionEvidence | None = None
     if reproduction is not None:
-        repro_result = await _run_repro_command(workspace, repo_index, reproduction.repro_command)
+        repro_result = await _run_repro_target(workspace, repo_index, reproduction.repro_target)
         reproduction_passed = repro_result.exit_code == 0
         reproduction_evidence = build_reproduction_evidence(
-            repro_command=reproduction.repro_command,
+            repro_target=reproduction.repro_target,
             passed_after=reproduction_passed,
         )
         if not reproduction_passed:
@@ -442,7 +442,7 @@ async def _finalize_or_block(
             )
     integration_results: list[TestResult] = []
     for index, command in enumerate(integration_tests, start=1):
-        suite_result = await _run_repro_command(workspace, repo_index, command)
+        suite_result = await _run_repro_target(workspace, repo_index, command)
         integration_results.append(_test_result_from_tool_result(command, suite_result, index))
         if suite_result.exit_code != 0:
             return (
@@ -626,15 +626,15 @@ def _step_candidate_preference_key(candidate: StepCandidateRun) -> tuple[int, in
     )
 
 
-async def _run_repro_command(
+async def _run_repro_target(
     workspace_info: Workspace,
     repo_index: RepoIndex,
-    repro_command: str,
+    repro_target: str,
 ) -> ToolResult:
     return await run_tool(
         ToolExecutionRequest(
             workspace=workspace_info,
-            tool=repro_run_tests(repro_command),
+            tool=repro_run_tests(repro_target),
             repo_index=repo_index,
         )
     )
@@ -645,15 +645,12 @@ async def _run_reproduction_child(
     contract: TaskContract,
     repo_index: RepoIndex,
 ) -> tuple[ReproductionResult, LLMUsage]:
-    child_id = await spawn_child(
+    child_result = await run_child(
         'reproduction_workflow',
-        child_id=_child_workflow_id(workspace_info, 'reproduction'),
         workspace=workspace_info.model_dump(mode='json'),
         contract=contract.model_dump(mode='json'),
         repo_index=repo_index.model_dump(mode='json'),
     )
-    child_result = await wait_for_child(child_id)
-    assert isinstance(child_result, dict), 'reproduction_workflow returns a dict payload'
     return (
         ReproductionResult.model_validate(child_result['reproduction_result']),
         LLMUsage.model_validate(child_result['llm_usage']),
@@ -666,16 +663,13 @@ async def _run_replanner_child(
     max_planner_turns: int,
     planner_state: PlannerState,
 ) -> tuple[PlannerTurn, list[ContextNote], list[ContextPack], int, LLMUsage]:
-    child_id = await spawn_child(
+    child_result = await run_child(
         'replanning_workflow',
-        child_id=_child_workflow_id(workspace_info, 'replanning'),
         workspace=workspace_info.model_dump(mode='json'),
         repo_index=repo_index.model_dump(mode='json'),
         max_planner_turns=max_planner_turns,
         planner_state=planner_state.model_dump(mode='json'),
     )
-    child_result = await wait_for_child(child_id)
-    assert isinstance(child_result, dict), 'replanning_workflow returns a dict payload'
     return (
         PlannerTurn.model_validate(child_result['planner_turn']),
         [ContextNote.model_validate(note) for note in child_result['context_notes']],
@@ -693,14 +687,8 @@ async def _run_implementation_child(
     contract: TaskContract,
     repo_index: RepoIndex,
 ) -> tuple[WorkerResult, LLMUsage]:
-    child_id = await spawn_child(
+    child_result = await run_child(
         'implementation_workflow',
-        child_id=_child_workflow_id(
-            workspace_info,
-            'implementation',
-            workspace_info.current_branch,
-            plan_step.id,
-        ),
         step=plan_step.model_dump(mode='json'),
         plan_context=plan_context.model_dump(mode='json'),
         context_pack=context_pack.model_dump(mode='json'),
@@ -708,8 +696,6 @@ async def _run_implementation_child(
         contract=contract.model_dump(mode='json'),
         repo_index=repo_index.model_dump(mode='json'),
     )
-    child_result = await wait_for_child(child_id)
-    assert isinstance(child_result, dict), 'implementation_workflow returns a dict payload'
     return (
         WorkerResult.model_validate(child_result['worker_result']),
         LLMUsage.model_validate(child_result['llm_usage']),
@@ -754,18 +740,4 @@ def _test_result_from_tool_result(
         stdout_summary=tool_result.stdout,
         stderr_summary=tool_result.stderr,
         passed=tool_result.exit_code == 0,
-    )
-
-
-def _child_workflow_id(workspace_info: Workspace, *parts: str) -> str:
-    safe_parts = [_workflow_id_part(workspace_info.run_id)]
-    if workspace_info.execution_id:
-        safe_parts.append(_workflow_id_part(workspace_info.execution_id))
-    safe_parts.extend(_workflow_id_part(part) for part in parts)
-    return ':'.join(safe_parts)
-
-
-def _workflow_id_part(value: str) -> str:
-    return ''.join(
-        character if character.isalnum() or character in '._-' else '-' for character in value
     )

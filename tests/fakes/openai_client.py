@@ -99,10 +99,10 @@ def _fake_structured_content(response_format: type[BaseModel], messages: list[Me
             return (
                 '{"summary":"Smoke test plan","steps":[{"id":"step_1",'
                 '"goal":"Add a deterministic smoke patch","target_files":["app.py","test_app.py"],'
-                '"tests_to_run":["pytest -q"],'
+                '"tests_to_run":["test_app.py"],'
                 '"expected_result":"Patch changes code and tests pass",'
                 '"risk":"low"}],'
-                '"integration_tests":["pytest -q"],'
+                '"integration_tests":["test_app.py"],'
                 '"definition_of_done":["Diff is non-empty","Smoke test passes"]}'
             )
         case 'ImplementationAgentTurn':
@@ -148,8 +148,8 @@ def _implementation_tool_turn() -> str:
     return (
         '{"done":false,"worker_result":null,"tool_calls":['
         f'{{"tool_name":"apply_patch","patch":{escaped_patch}}},'
-        '{"tool_name":"run_tests","command":"pytest -q",'
-        '"timeout_seconds":60,"directory":"."}'
+        '{"tool_name":"run_tests","test_targets":["test_app.py"],'
+        '"timeout_seconds":60}'
         ']}'
     )
 

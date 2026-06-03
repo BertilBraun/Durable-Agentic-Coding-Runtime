@@ -32,6 +32,7 @@ from src.tools.definitions import (
     RunTests,
     WriteFile,
 )
+from src.tools.handlers import pytest_command
 
 IMPLEMENTATION_SYSTEM_PROMPT = (
     'You execute exactly one planner-selected step. '
@@ -41,7 +42,9 @@ IMPLEMENTATION_SYSTEM_PROMPT = (
     'plan_step.required_changes, plan_step.tests_to_run, and plan_step.out_of_scope '
     'as the contract for this turn. Inspect before editing when context is insufficient, '
     'then use the smallest patch that satisfies the current step. Edit with write_file '
-    'or apply_patch and run tests with run_tests; use run_shell for any other command (status, '
+    'or apply_patch and run tests with run_tests, passing pytest node ids or file paths as '
+    'test_targets (the runner is fixed to "python -m pytest"; never include the runner). '
+    'Use run_shell for any other command (status, '
     'diff, search, reading files), writing it for the environment described '
     'in the user payload. Keep changes inside allowed files unless blocked, '
     'and explain why any extra file is needed. Run relevant tests after edits; '
@@ -169,7 +172,8 @@ async def run_implementation_turn(
                     observations.append(f'tool_result:\n{tool_result.model_dump_json()}')
                     completed_tool_calls.append(tool_call.tool_name.value)
                     match tool:
-                        case RunTests(command=command):
+                        case RunTests(test_targets=test_targets):
+                            command = pytest_command(test_targets)
                             tests_run.append(command)
                             test_results.append(
                                 _test_result_from_tool_result(

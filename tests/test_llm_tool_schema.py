@@ -64,11 +64,10 @@ def test_implementation_tool_union_parses_runtime_tool_models() -> None:
     assert TypeAdapter(ImplementationToolCall).validate_python(
         {
             'tool_name': 'run_tests',
-            'command': 'pytest -q',
+            'test_targets': ['tests/test_app.py'],
             'timeout_seconds': 60,
-            'directory': '.',
         }
-    ) == RunTests(command='pytest -q', timeout_seconds=60, directory='.')
+    ) == RunTests(test_targets=['tests/test_app.py'], timeout_seconds=60)
 
 
 def test_context_gatherer_tool_union_uses_runtime_tool_models() -> None:

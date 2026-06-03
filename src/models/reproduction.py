@@ -12,27 +12,27 @@ class ReproductionStatus(StrEnum):
 
 
 class ReproductionContext(FrozenBaseModel):
-    repro_command: str
+    repro_target: str
     failure_evidence: str
 
 
 class ReproductionResult(FrozenBaseModel):
     status: ReproductionStatus
-    repro_command: str
+    repro_target: str
     test_files: list[str] = Field(default_factory=list)
     failure_evidence: str
 
 
 class ReproductionEvidence(FrozenBaseModel):
-    repro_command: str
+    repro_target: str
     passed_after: bool
 
 
 def build_reproduction_evidence(
-    repro_command: str,
+    repro_target: str,
     passed_after: bool,
 ) -> ReproductionEvidence:
     return ReproductionEvidence(
-        repro_command=repro_command,
+        repro_target=repro_target,
         passed_after=passed_after,
     )

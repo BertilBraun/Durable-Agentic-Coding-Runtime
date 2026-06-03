@@ -74,31 +74,27 @@ def test_tool_command_rejects_parent_traversal_file_path() -> None:
         command_for_tool(WriteFile(file_path='../outside.txt', content='escape'), _host_workspace())
 
 
-def test_tool_command_rejects_parent_traversal_directory() -> None:
-    with pytest.raises(ValueError, match='workspace-relative'):
-        command_for_tool(
-            RunTests(command='pytest', timeout_seconds=60, directory='src/../..'),
-            _host_workspace(),
-        )
-
-
-def test_run_tests_command_runs_from_requested_directory() -> None:
+def test_run_tests_command_invokes_python_pytest_on_targets() -> None:
     command = command_for_tool(
-        RunTests(command='pytest -q', timeout_seconds=60, directory='examples/smoke'),
+        RunTests(
+            test_targets=['pkg/tests/test_mod.py::test_case', 'pkg/tests/test_other.py'],
+            timeout_seconds=60,
+        ),
         _docker_workspace(),
     )
 
     assert command == [
         'sh',
         '-lc',
-        'export PATH=/opt/miniconda3/envs/testbed/bin:$PATH && cd examples/smoke && pytest -q',
+        'export PATH=/opt/miniconda3/envs/testbed/bin:$PATH && '
+        'python -m pytest pkg/tests/test_mod.py::test_case pkg/tests/test_other.py',
     ]
 
 
-def test_run_tests_command_rejects_parent_traversal_directory() -> None:
+def test_run_tests_command_rejects_parent_traversal_target() -> None:
     with pytest.raises(ValueError, match='workspace-relative'):
         command_for_tool(
-            RunTests(command='pytest -q', timeout_seconds=60, directory='../outside'),
+            RunTests(test_targets=['../outside/test_mod.py::test_case'], timeout_seconds=60),
             _docker_workspace(),
         )
 

@@ -527,7 +527,7 @@ async def test_reproduction_failure_is_refreshed_as_planner_evidence(
         _workspace(),
         _contract(TaskType.BUGFIX),
         RepoIndex(),
-        ReproductionContext(repro_command='pytest bug.py', failure_evidence='boom'),
+        ReproductionContext(repro_target='bug.py', failure_evidence='boom'),
     )
 
     assert repro_calls == 1
@@ -536,30 +536,27 @@ async def test_reproduction_failure_is_refreshed_as_planner_evidence(
 
 
 @pytest.mark.asyncio
-async def test_reproduction_child_uses_semantic_child_id(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reproduction_child_passes_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     spawned_kwargs: list[dict[str, object]] = []
 
-    async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
+    async def fake_run_child(workflow_name: str, **kwargs: object) -> dict[str, object]:
         spawned_kwargs.append({'workflow_name': workflow_name, **kwargs})
-        return str(kwargs['child_id'])
-
-    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
         return {
             'reproduction_result': ReproductionResult(
                 status=ReproductionStatus.REPRODUCED,
-                repro_command='pytest bug.py',
+                repro_target='bug.py',
                 failure_evidence='boom',
             ).model_dump(mode='json'),
             'llm_usage': _usage().model_dump(mode='json'),
         }
 
-    monkeypatch.setattr(workflow_module, 'spawn_child', fake_spawn_child)
-    monkeypatch.setattr(workflow_module, 'wait_for_child', fake_wait_for_child)
+    monkeypatch.setattr(workflow_module, 'run_child', fake_run_child)
 
     await _run_reproduction_child(_workspace(), _contract(TaskType.BUGFIX), RepoIndex())
 
     assert spawned_kwargs[0]['workflow_name'] == 'reproduction_workflow'
-    assert spawned_kwargs[0]['child_id'] == 'run-1:exec-1:reproduction'
+    assert spawned_kwargs[0]['workspace']['repo_path'] == 'workspace'
+    assert spawned_kwargs[0]['contract']['goal'] == 'Do the thing'
 
 
 @pytest.mark.asyncio
@@ -568,18 +565,14 @@ async def test_implementation_child_includes_rich_step_payload(
 ) -> None:
     spawned_kwargs: list[dict[str, object]] = []
 
-    async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
+    async def fake_run_child(workflow_name: str, **kwargs: object) -> dict[str, object]:
         spawned_kwargs.append({'workflow_name': workflow_name, **kwargs})
-        return str(kwargs['child_id'])
-
-    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
         return {
             'worker_result': _worker_result().model_dump(mode='json'),
             'llm_usage': _usage().model_dump(mode='json'),
         }
 
-    monkeypatch.setattr(workflow_module, 'spawn_child', fake_spawn_child)
-    monkeypatch.setattr(workflow_module, 'wait_for_child', fake_wait_for_child)
+    monkeypatch.setattr(workflow_module, 'run_child', fake_run_child)
 
     await _run_implementation_child(
         plan_step=_step('implement/subtract'),
@@ -608,9 +601,6 @@ async def test_implementation_child_includes_rich_step_payload(
     )
 
     assert spawned_kwargs[0]['workflow_name'] == 'implementation_workflow'
-    assert spawned_kwargs[0]['child_id'] == (
-        'run-1:exec-1:implementation:agentic-run-1-cand-0:implement-subtract'
-    )
     assert spawned_kwargs[0]['step']['context_summary'] == 'Context for implement/subtract'
     assert spawned_kwargs[0]['step']['required_changes'] == ['Change implement/subtract']
     assert spawned_kwargs[0]['plan_context']['completed_step_summaries'] == ['prior: done']
@@ -618,16 +608,13 @@ async def test_implementation_child_includes_rich_step_payload(
 
 
 @pytest.mark.asyncio
-async def test_replanner_child_uses_semantic_child_id(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_replanner_child_passes_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     spawned_kwargs: list[dict[str, object]] = []
     planner_state = PlannerState(contract=_contract(), repo_index=RepoIndex())
     planner_turn = PlannerTurn(future_steps=[_step('step-1')])
 
-    async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
+    async def fake_run_child(workflow_name: str, **kwargs: object) -> dict[str, object]:
         spawned_kwargs.append({'workflow_name': workflow_name, **kwargs})
-        return str(kwargs['child_id'])
-
-    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
         return {
             'planner_turn': planner_turn.model_dump(mode='json'),
             'context_notes': [],
@@ -636,8 +623,7 @@ async def test_replanner_child_uses_semantic_child_id(monkeypatch: pytest.Monkey
             'llm_usage': _usage().model_dump(mode='json'),
         }
 
-    monkeypatch.setattr(workflow_module, 'spawn_child', fake_spawn_child)
-    monkeypatch.setattr(workflow_module, 'wait_for_child', fake_wait_for_child)
+    monkeypatch.setattr(workflow_module, 'run_child', fake_run_child)
 
     turn, notes, packs, turn_count, usage = await _run_replanner_child(
         _workspace(),
@@ -652,7 +638,6 @@ async def test_replanner_child_uses_semantic_child_id(monkeypatch: pytest.Monkey
     assert turn_count == 1
     assert usage.call_count == 1
     assert spawned_kwargs[0]['workflow_name'] == 'replanning_workflow'
-    assert spawned_kwargs[0]['child_id'] == 'run-1:exec-1:replanning'
     assert spawned_kwargs[0]['workspace']['repo_path'] == 'workspace'
     assert spawned_kwargs[0]['repo_index'] == RepoIndex().model_dump(mode='json')
     assert spawned_kwargs[0]['max_planner_turns'] == 5
@@ -700,7 +685,7 @@ async def test_main_workflow_reports_final_reproduction_failure(
         return (
             ReproductionResult(
                 status=ReproductionStatus.REPRODUCED,
-                repro_command='pytest bug.py',
+                repro_target='bug.py',
                 failure_evidence='boom',
             ),
             _usage(),
@@ -766,18 +751,14 @@ async def test_main_workflow_does_not_teardown_while_suspended_on_child(
     workspace = _workspace()
     _install_common_workflow_fakes(monkeypatch, _contract(), workspace)
 
-    async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
-        return 'child-1'
-
-    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
+    async def fake_run_child(workflow_name: str, **kwargs: object) -> dict[str, object]:
         raise WorkflowSuspended('Workflow waiting for child.')
 
     async def fake_teardown_environment(workspace_arg: Workspace) -> ToolResult:
         torn_down.append(workspace_arg)
         return _ok_tool()
 
-    monkeypatch.setattr(workflow_module, 'spawn_child', fake_spawn_child)
-    monkeypatch.setattr(workflow_module, 'wait_for_child', fake_wait_for_child)
+    monkeypatch.setattr(workflow_module, 'run_child', fake_run_child)
     monkeypatch.setattr(workflow_module, 'teardown_environment', fake_teardown_environment)
     _install_step_branch_fakes(monkeypatch)
 

@@ -250,9 +250,8 @@ async def test_implementation_turn_preserves_run_tests_timeout(
                 'tool_calls': [
                     {
                         'tool_name': 'run_tests',
-                        'command': 'pytest -q',
+                        'test_targets': ['tests/test_app.py'],
                         'timeout_seconds': 19,
-                        'directory': '.',
                     }
                 ],
             }
@@ -299,9 +298,8 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
                     'tool_calls': [
                         {
                             'tool_name': 'run_tests',
-                            'command': 'pytest tests/test_app.py -q',
+                            'test_targets': ['tests/test_app.py'],
                             'timeout_seconds': 30,
-                            'directory': '.',
                         },
                         {
                             'tool_name': 'write_file',
@@ -344,7 +342,7 @@ async def test_implementation_turn_adds_run_tests_result_to_success(
     worker_result, _ = await run_implementation_turn(_implementation_request())
 
     assert worker_result.status == WorkerStatus.SUCCESS
-    assert worker_result.tests_run == ['pytest tests/test_app.py -q']
+    assert worker_result.tests_run == ['python -m pytest tests/test_app.py']
     assert len(worker_result.test_results) == 1
     assert worker_result.test_results[0].passed is True
     assert worker_result.test_results[0].sequence == 1
@@ -369,21 +367,18 @@ async def test_implementation_turn_keeps_latest_pass_or_failure_run_sequence(
                     'tool_calls': [
                         {
                             'tool_name': 'run_tests',
-                            'command': 'pytest tests/test_app.py::test_old_failure -q',
+                            'test_targets': ['tests/test_app.py::test_old_failure'],
                             'timeout_seconds': 30,
-                            'directory': '.',
                         },
                         {
                             'tool_name': 'run_tests',
-                            'command': 'pytest tests/test_app.py::test_fixed -q',
+                            'test_targets': ['tests/test_app.py::test_fixed'],
                             'timeout_seconds': 30,
-                            'directory': '.',
                         },
                         {
                             'tool_name': 'run_tests',
-                            'command': 'pytest tests/test_app.py::test_regression -q',
+                            'test_targets': ['tests/test_app.py::test_regression'],
                             'timeout_seconds': 30,
-                            'directory': '.',
                         },
                     ],
                 }
@@ -408,8 +403,8 @@ async def test_implementation_turn_keeps_latest_pass_or_failure_run_sequence(
 
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
         match request.tool:
-            case RunTests(command=command):
-                exit_code = 0 if command.endswith('test_fixed -q') else 1
+            case RunTests(test_targets=test_targets):
+                exit_code = 0 if test_targets[0].endswith('test_fixed') else 1
                 return ToolResult(
                     stdout='passed' if exit_code == 0 else 'failed',
                     stderr='',
@@ -427,8 +422,8 @@ async def test_implementation_turn_keeps_latest_pass_or_failure_run_sequence(
     assert [result.sequence for result in worker_result.test_results] == [2, 3]
     assert [result.passed for result in worker_result.test_results] == [True, False]
     assert worker_result.tests_run == [
-        'pytest tests/test_app.py::test_fixed -q',
-        'pytest tests/test_app.py::test_regression -q',
+        'python -m pytest tests/test_app.py::test_fixed',
+        'python -m pytest tests/test_app.py::test_regression',
     ]
 
 

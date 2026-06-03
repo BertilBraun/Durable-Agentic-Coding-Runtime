@@ -45,9 +45,14 @@ class RunTests(ToolBase):
         default=ToolName.RUN_TESTS,
         description='Tool name tag.',
     )
-    command: str = Field(description='Test command to run, including needed setup for this call.')
-    timeout_seconds: int = Field(description='Maximum seconds to allow the test command to run.')
-    directory: str = Field(description='Workspace-relative directory to run from, or ".".')
+    test_targets: list[str] = Field(
+        description=(
+            'Pytest targets to run, each a file path or node id '
+            '(e.g. "pkg/tests/test_mod.py" or "pkg/tests/test_mod.py::test_case"). '
+            'The runner is fixed to "python -m pytest"; do not include it or any other shell.'
+        )
+    )
+    timeout_seconds: int = Field(description='Maximum seconds to allow the test run to take.')
 
 
 class RunShell(ToolBase):

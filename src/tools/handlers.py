@@ -34,9 +34,8 @@ def command_for_tool(tool: Tool, workspace: Workspace) -> list[str]:
         case ApplyPatch(patch=patch):
             encoded_patch = base64.b64encode(patch.encode('utf-8')).decode('ascii')
             return ['sh', '-lc', f'printf %s {encoded_patch} | base64 -d | git apply -']
-        case RunTests(command=command, directory=directory):
-            quoted_directory = shlex.quote(directory)
-            return workspace.shell_invocation(f'cd {quoted_directory} && {command}')
+        case RunTests(test_targets=test_targets):
+            return workspace.shell_invocation(pytest_command(test_targets))
         case RunShell(command=command):
             return workspace.shell_invocation(command)
         case FindDefinition() | FindCallers() | FindCallees():
@@ -45,10 +44,17 @@ def command_for_tool(tool: Tool, workspace: Workspace) -> list[str]:
             raise ValueError(f'No command defined for tool: {type(tool).__name__}')
 
 
+def pytest_command(test_targets: list[str]) -> str:
+    return ' '.join(['python', '-m', 'pytest', *(shlex.quote(target) for target in test_targets)])
+
+
 def _validate_tool_paths(tool: Tool) -> None:
     match tool:
-        case WriteFile(file_path=path) | RunTests(directory=path):
+        case WriteFile(file_path=path):
             _validate_workspace_relative_path(path)
+        case RunTests(test_targets=test_targets):
+            for target in test_targets:
+                _validate_workspace_relative_path(target.split('::', 1)[0])
         case _:
             return
 

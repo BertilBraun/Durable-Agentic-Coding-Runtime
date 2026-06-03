@@ -26,17 +26,21 @@ REPRODUCTION_SYSTEM_PROMPT = (
     'You are the reproduction agent for a bugfix task. Your only job is to '
     'demonstrate the bug with a test, never to fix it. Locate the buggy '
     'behavior using run_shell, find_definition / find_callers / find_callees, '
-    'and gather_context, then write a single focused regression test that '
-    'fails on the current (unfixed) code and isolates exactly the reported '
-    'defect. Add the test with write_file or apply_patch and confirm it fails '
-    'with run_tests; a failure from an assertion on the buggy behavior is a '
-    'real reproduction, while a syntax, import, or collection error is not. Do '
-    'not edit production code or weaken any existing test. Return done=true '
-    'with a ReproductionResult: set status=reproduced only once you have seen '
-    'the new test fail, giving the exact command that runs just that test, the '
-    'files you added, and the observed failing output. If the contract is too '
-    'vague to pin down, or the failure is flaky or environmental, return '
-    'status=could_not_reproduce instead of guessing.'
+    'and gather_context, then write a single focused pytest regression test '
+    'that fails on the current (unfixed) code and isolates exactly the reported '
+    'defect. Write a plain pytest test function (a top-level test_* function '
+    'with assert statements); never add an "if __name__" / pytest.main / sys.exit '
+    'block, since run_tests already runs the file under "python -m pytest". Add '
+    'the test with write_file or apply_patch and confirm it fails with run_tests; '
+    'a failure from an assertion on the buggy behavior is a real reproduction, '
+    'while a syntax, import, or collection error is not. Do not edit production '
+    'code or weaken any existing test. Return done=true with a ReproductionResult: '
+    'set status=reproduced only once you have seen the new test fail, giving '
+    'repro_target as the pytest node id that selects just that test '
+    '(e.g. "pkg/tests/test_mod.py::test_case"), the files you added, and the '
+    'observed failing output. If the contract is too vague to pin down, or the '
+    'failure is flaky or environmental, return status=could_not_reproduce '
+    'instead of guessing.'
 )
 
 
@@ -58,11 +62,10 @@ class ReproductionAgentTurn(FrozenBaseModel):
     tool_calls: list[ImplementationToolCall] = Field(default_factory=list)
 
 
-def repro_run_tests(repro_command: str) -> RunTests:
+def repro_run_tests(repro_target: str) -> RunTests:
     return RunTests(
-        command=repro_command,
+        test_targets=[repro_target],
         timeout_seconds=REPRODUCTION_COMMAND_TIMEOUT_SECONDS,
-        directory='.',
     )
 
 
@@ -117,7 +120,7 @@ async def _verify_reproduction(
     tool_result = await run_tool(
         ToolExecutionRequest(
             workspace=request.workspace_info,
-            tool=repro_run_tests(reproduction_result.repro_command),
+            tool=repro_run_tests(reproduction_result.repro_target),
             repo_index=request.repo_index,
         )
     )
@@ -190,7 +193,7 @@ def _observed_failure_text(tool_result: ToolResult) -> str:
 def _could_not_reproduce(reason: str) -> ReproductionResult:
     return ReproductionResult(
         status=ReproductionStatus.COULD_NOT_REPRODUCE,
-        repro_command='',
+        repro_target='',
         test_files=[],
         failure_evidence=reason,
     )

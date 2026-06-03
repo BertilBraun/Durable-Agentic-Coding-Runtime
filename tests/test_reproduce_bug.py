@@ -66,7 +66,7 @@ def _done_turn(status: ReproductionStatus) -> ReproductionAgentTurn:
         done=True,
         reproduction_result=ReproductionResult(
             status=status,
-            repro_command='pytest tests/test_bug.py::test_off_by_one',
+            repro_target='tests/test_bug.py::test_off_by_one',
             test_files=['tests/test_bug.py'],
             failure_evidence='model-claimed failure',
         ),

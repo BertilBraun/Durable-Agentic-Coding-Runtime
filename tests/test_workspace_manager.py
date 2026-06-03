@@ -293,7 +293,7 @@ async def test_run_tool_passes_tool_timeout_to_run_command(
     result = await run_tool(
         ToolExecutionRequest(
             workspace=_host_workspace(),
-            tool=RunTests(command='pytest', timeout_seconds=17, directory='.'),
+            tool=RunTests(test_targets=['tests/test_mod.py'], timeout_seconds=17),
         ),
     )
 
@@ -317,7 +317,7 @@ async def test_run_tool_propagates_run_command_errors(
         await run_tool(
             ToolExecutionRequest(
                 workspace=_host_workspace(),
-                tool=RunTests(command='pytest', timeout_seconds=17, directory='.'),
+                tool=RunTests(test_targets=['tests/test_mod.py'], timeout_seconds=17),
             ),
         )
 
@@ -356,7 +356,7 @@ async def test_run_tool_writes_large_stdout_to_artifact(
     result = await run_tool(
         ToolExecutionRequest(
             workspace=_host_workspace(run_id='run-large'),
-            tool=RunTests(command='pytest', timeout_seconds=17, directory='.'),
+            tool=RunTests(test_targets=['tests/test_mod.py'], timeout_seconds=17),
         ),
     )
 
@@ -426,13 +426,13 @@ async def test_run_tool_large_output_artifacts_do_not_collide_within_run(
     first_result = await run_tool(
         ToolExecutionRequest(
             workspace=workspace,
-            tool=RunTests(command='pytest tests/test_a.py', timeout_seconds=17, directory='.'),
+            tool=RunTests(test_targets=['tests/test_a.py'], timeout_seconds=17),
         ),
     )
     second_result = await run_tool(
         ToolExecutionRequest(
             workspace=workspace,
-            tool=RunTests(command='pytest tests/test_b.py', timeout_seconds=17, directory='.'),
+            tool=RunTests(test_targets=['tests/test_b.py'], timeout_seconds=17),
         ),
     )
 

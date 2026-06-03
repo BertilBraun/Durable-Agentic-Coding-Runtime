@@ -46,7 +46,11 @@ class PlanStep(FrozenBaseModel):
     )
     tests_to_run: list[str] = Field(
         default_factory=list,
-        description='Relevant verification commands for this step, not a separate work item.',
+        description=(
+            'Pytest targets to verify this step, each a file path or node id '
+            '(e.g. "pkg/tests/test_mod.py::test_case"); the runner is fixed to '
+            '"python -m pytest". Not a separate work item.'
+        ),
     )
     expected_result: str = Field(description='Observable state that means this step is complete.')
     risk: Risk = Field(description='Risk of this step if implemented incorrectly.')
@@ -121,7 +125,7 @@ class StepHistoryEntry(FrozenBaseModel):
 class PlanningEvidence(FrozenBaseModel):
     diff_summary: str | None = None
     selected_test_results: list[TestResult] = Field(default_factory=list)
-    reproduction_command: str | None = None
+    reproduction_target: str | None = None
     reproduction_passed: bool | None = None
     reproduction_stdout_summary: str | None = None
     reproduction_stderr_summary: str | None = None
