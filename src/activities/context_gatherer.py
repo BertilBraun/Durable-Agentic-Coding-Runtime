@@ -13,6 +13,7 @@ from src.config import CONFIG, ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.context import ContextPack, ContextSnippet
 from src.models.frozen_base_model import FrozenBaseModel
+from src.models.plan import ContextNote, ContextRequest
 from src.models.repo import RepoIndex
 from src.tools.definitions import ContextGathererToolCall
 
@@ -122,6 +123,61 @@ async def gather_context(request: ContextGatherRequest) -> tuple[ContextPack, LL
     finalize_turn, finalize_usage = await _finalize_emit_snippets(messages, budget_exceeded)
     pack = await _pack_curated_turn(request, finalize_turn)
     return pack, usage + finalize_usage
+
+
+async def fulfill_context_request(
+    workspace_info: Workspace,
+    repo_index: RepoIndex,
+    request: ContextRequest,
+) -> tuple[ContextNote, ContextPack, LLMUsage]:
+    context_pack, usage = await gather_context(
+        ContextGatherRequest(
+            workspace_info=workspace_info,
+            repo_index=repo_index,
+            gatherer_prompt=context_prompt_from_request(request),
+        )
+    )
+    return (
+        context_note_from_pack(request, context_pack),
+        context_pack,
+        usage,
+    )
+
+
+def context_prompt_from_request(request: ContextRequest) -> str:
+    return (
+        f'Reason: {request.reason}\n'
+        f'Queries: {request.queries}\n'
+        f'Suspected relevant files: {request.relevant_files}'
+    )
+
+
+def context_note_from_pack(
+    request: ContextRequest,
+    context_pack: ContextPack,
+) -> ContextNote:
+    relevant_files = list(
+        dict.fromkeys(
+            [
+                *request.relevant_files,
+                *(snippet.file_path for snippet in context_pack.snippets),
+            ]
+        )
+    )
+    return ContextNote(
+        id=request.id,
+        summary=context_pack.task_summary,
+        relevant_files=relevant_files,
+        snippets=[
+            ContextSnippet(
+                file_path=snippet.file_path,
+                start_line=snippet.start_line,
+                end_line=snippet.end_line,
+                reason=snippet.reason,
+            )
+            for snippet in context_pack.snippets
+        ],
+    )
 
 
 async def _pack_curated_turn(

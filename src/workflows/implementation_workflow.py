@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from temporal_light import workflow
 
-from src.activities.context_gatherer import ContextGatherRequest, gather_context
 from src.activities.implementation import (
     ImplementationTurnRequest,
     failed_worker_result,
@@ -12,6 +11,7 @@ from src.activities.implementation import (
 from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict, review_patch
 from src.activities.workspace_manager import Workspace, WorkspaceAdapter
 from src.llm.client import LLMUsage
+from src.models.context import ContextPack
 from src.models.plan import PlanContext, PlanStep
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract
@@ -25,6 +25,7 @@ async def implementation_workflow(
     contract: dict[str, object],
     repo_index: dict[str, object],
     plan_context: dict[str, object] | None = None,
+    context_pack: dict[str, object] | None = None,
 ) -> dict[str, object]:
     plan_step = PlanStep.model_validate(step)
     step_plan_context = (
@@ -33,22 +34,18 @@ async def implementation_workflow(
     workspace_info = WorkspaceAdapter.validate_python(workspace)
     task_contract = TaskContract.model_validate(contract)
     repository_index = RepoIndex.model_validate(repo_index)
-    usage = LLMUsage()
-
-    context_pack, gather_usage = await gather_context(
-        ContextGatherRequest(
-            workspace_info=workspace_info,
-            repo_index=repository_index,
-            gatherer_prompt=plan_step.goal,
-        ),
+    step_context_pack = (
+        ContextPack.model_validate(context_pack)
+        if context_pack is not None
+        else _context_pack_from_plan_step(plan_step)
     )
-    usage += gather_usage
+    usage = LLMUsage()
 
     worker_result, turn_usage = await run_implementation_turn(
         ImplementationTurnRequest(
             plan_step=plan_step,
             plan_context=step_plan_context,
-            context_pack=context_pack,
+            context_pack=step_context_pack,
             task_contract=task_contract,
             workspace_info=workspace_info,
             repo_index=repository_index,
@@ -65,6 +62,15 @@ async def implementation_workflow(
         usage += review_usage
         return _packaged_result(reviewed_result, usage)
     return _packaged_result(worker_result, usage)
+
+
+def _context_pack_from_plan_step(plan_step: PlanStep) -> ContextPack:
+    return ContextPack(
+        task_summary=plan_step.context_summary or plan_step.goal,
+        snippets=[],
+        artifact_references=[],
+        budget_remaining=0,
+    )
 
 
 def _packaged_result(worker_result: WorkerResult, usage: LLMUsage) -> dict[str, object]:

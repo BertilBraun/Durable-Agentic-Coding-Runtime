@@ -5,7 +5,7 @@ from pydantic import Field
 from src.models.frozen_base_model import FrozenBaseModel
 from src.runtime_enums import StrEnum
 
-FULL_FILE_TREE_LIMIT = 50
+FULL_FILE_TREE_LIMIT = 30
 
 
 class Language(StrEnum):
@@ -64,7 +64,7 @@ class RepoIndex(FrozenBaseModel):
         root: dict[str, dict] = {}
         paths = sorted(entry.path for entry in self.file_tree)
         if len(paths) > FULL_FILE_TREE_LIMIT:
-            paths = _directory_paths(paths)
+            return _bounded_directory_tree_text(paths, FULL_FILE_TREE_LIMIT)
         for path in paths:
             cursor = root
             for part in path.split('/'):
@@ -74,26 +74,42 @@ class RepoIndex(FrozenBaseModel):
         return '\n'.join(lines)
 
 
-def _directory_paths(paths: list[str]) -> list[str]:
-    directories: set[str] = set()
-    for path in paths:
-        parts = path.split('/')[:-1]
-        for depth in range(1, len(parts) + 1):
-            directories.add('/'.join(parts[:depth]))
-    if not directories:
-        return ['.']
-    return sorted(directories)
-
-
 def directory_overview_for_paths(paths: list[str]) -> str:
+    return _bounded_directory_tree_text(sorted(paths), FULL_FILE_TREE_LIMIT)
+
+
+def _bounded_directory_tree_text(paths: list[str], max_entries: int) -> str:
     root: dict[str, dict] = {}
-    for path in _directory_paths(sorted(paths)):
+    for path in sorted(paths):
         cursor = root
         for part in path.split('/'):
             cursor = cursor.setdefault(part, {})
+    expanded_depth = 0
+    lines = _tree_lines_to_depth(root, expanded_depth)
+    while True:
+        next_lines = _tree_lines_to_depth(root, expanded_depth + 1)
+        if len(next_lines) > max_entries or next_lines == lines:
+            return '\n'.join(lines)
+        lines = next_lines
+        expanded_depth += 1
+
+
+def _tree_lines_to_depth(node: dict[str, dict], max_depth: int) -> list[str]:
     lines: list[str] = []
-    _append_tree_lines(root, 0, lines)
-    return '\n'.join(lines)
+    _append_tree_lines_to_depth(node, 0, max_depth, lines)
+    return lines
+
+
+def _append_tree_lines_to_depth(
+    node: dict[str, dict],
+    depth: int,
+    max_depth: int,
+    lines: list[str],
+) -> None:
+    for name in sorted(node):
+        lines.append(f'{"  " * depth}{name}')
+        if depth < max_depth:
+            _append_tree_lines_to_depth(node[name], depth + 1, max_depth, lines)
 
 
 def _append_tree_lines(node: dict[str, dict], depth: int, lines: list[str]) -> None:

@@ -44,6 +44,10 @@ class WorkerResult(FrozenBaseModel):
         default_factory=list,
         description='Evidence-backed issues still requiring attention.',
     )
+    observations: list[str] = Field(
+        default_factory=list,
+        description='Concrete observations from the step that future planner turns can use.',
+    )
     replan_suggestion: str | None = Field(
         default=None,
         description='Specific continuation guidance when status is needs_replan.',

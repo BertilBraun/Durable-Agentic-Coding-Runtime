@@ -84,6 +84,11 @@ async def reproduce_bug(
         )
         usage += completion.usage
         agent_turn = completion.output
+        tool_observations, tool_usage = await _run_reproduction_tool_calls(
+            request=request,
+            tool_calls=agent_turn.tool_calls,
+        )
+        usage += tool_usage
         if agent_turn.done:
             if agent_turn.reproduction_result is None:
                 raise ValueError('reproduction_result is required when reproduction turn is done')
@@ -97,33 +102,8 @@ async def reproduce_bug(
                 _could_not_reproduce('context budget exceeded before reproduction'),
                 usage,
             )
-        observations: list[str] = []
-        for tool_call in agent_turn.tool_calls:
-            match tool_call:
-                case GatherContext(prompt=prompt):
-                    gathered_context, gather_usage = await gather_context(
-                        ContextGatherRequest(
-                            workspace_info=request.workspace_info,
-                            repo_index=request.repo_index,
-                            gatherer_prompt=prompt,
-                        )
-                    )
-                    usage += gather_usage
-                    observations.append(
-                        f'tool={tool_call.tool_name} context_pack:\n'
-                        f'{gathered_context.model_dump_json()}'
-                    )
-                case tool:
-                    tool_result = await run_tool(
-                        ToolExecutionRequest(
-                            workspace=request.workspace_info,
-                            tool=tool,
-                            repo_index=request.repo_index,
-                        )
-                    )
-                    observations.append(f'tool_result:\n{tool_result.model_dump_json()}')
         messages.append(Message(role='assistant', content=agent_turn.model_dump_json()))
-        messages.append(Message(role='user', content='\n\n'.join(observations)))
+        messages.append(Message(role='user', content='\n\n'.join(tool_observations)))
 
     return _could_not_reproduce('maximum reproduction tool rounds reached'), usage
 
@@ -145,8 +125,61 @@ async def _verify_reproduction(
         return _could_not_reproduce(
             'repro command passed on the unfixed tree; not a genuine reproduction'
         )
+    if not _is_assertion_failure(tool_result):
+        return _could_not_reproduce(
+            'repro command failed, but not with a collected test assertion failure'
+        )
     return reproduction_result.model_copy(
         update={'failure_evidence': _observed_failure_text(tool_result)}
+    )
+
+
+async def _run_reproduction_tool_calls(
+    request: ReproductionTurnRequest,
+    tool_calls: list[ImplementationToolCall],
+) -> tuple[list[str], LLMUsage]:
+    observations: list[str] = []
+    usage = LLMUsage()
+    for tool_call in tool_calls:
+        match tool_call:
+            case GatherContext(prompt=prompt):
+                gathered_context, gather_usage = await gather_context(
+                    ContextGatherRequest(
+                        workspace_info=request.workspace_info,
+                        repo_index=request.repo_index,
+                        gatherer_prompt=prompt,
+                    )
+                )
+                usage += gather_usage
+                observations.append(
+                    f'tool={tool_call.tool_name} context_pack:\n'
+                    f'{gathered_context.model_dump_json()}'
+                )
+            case tool:
+                tool_result = await run_tool(
+                    ToolExecutionRequest(
+                        workspace=request.workspace_info,
+                        tool=tool,
+                        repo_index=request.repo_index,
+                    )
+                )
+                observations.append(f'tool_result:\n{tool_result.model_dump_json()}')
+    return observations, usage
+
+
+def _is_assertion_failure(tool_result: ToolResult) -> bool:
+    output = f'{tool_result.stdout}\n{tool_result.stderr}'.lower()
+    non_reproduction_markers = [
+        'file or directory not found',
+        'collected 0 items',
+        'no tests ran',
+        'error collecting',
+        'syntaxerror',
+        'importerror',
+        'modulenotfounderror',
+    ]
+    return tool_result.exit_code == 1 and not any(
+        marker in output for marker in non_reproduction_markers
     )
 
 

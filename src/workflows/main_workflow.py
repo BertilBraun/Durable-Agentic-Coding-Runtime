@@ -4,17 +4,12 @@ from dataclasses import dataclass
 
 from temporal_light import spawn_child, wait_for_child, workflow
 
-from src.activities.complexity_assessor import assess_complexity
-from src.activities.context_gatherer import ContextGatherRequest, gather_context
 from src.activities.contract_builder import build_contract
-from src.activities.human_approval import approve_plan_or_replan
 from src.activities.implementation import get_full_diff
-from src.activities.plan_reviewer import PlanReviewDecision, PlanReviewRequest, review_plan
-from src.activities.planner import PlanRequest, build_plan
 from src.activities.repo_indexer import build_repo_index
 from src.activities.report_builder import FinalReport
 from src.activities.reproduction import repro_run_tests
-from src.activities.reviewer import ReviewRequest, review_patch
+from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict, review_patch
 from src.activities.selector import (
     CandidateResult,
     aggregate_candidate_confidence,
@@ -36,7 +31,18 @@ from src.activities.workspace_manager import (
 )
 from src.config import CONFIG
 from src.llm.client import LLMUsage
-from src.models.plan import Plan, PlanContext, PlanStep
+from src.models.context import ContextPack
+from src.models.frozen_base_model import FrozenBaseModel
+from src.models.plan import (
+    ContextNote,
+    Plan,
+    PlanContext,
+    PlannerState,
+    PlannerTurn,
+    PlanningEvidence,
+    PlanStep,
+    StepHistoryEntry,
+)
 from src.models.repo import RepoIndex
 from src.models.reproduction import (
     ReproductionContext,
@@ -46,7 +52,7 @@ from src.models.reproduction import (
     build_reproduction_evidence,
 )
 from src.models.task import TaskContract, TaskRequest, TaskType
-from src.models.worker import Confidence, WorkerResult, WorkerStatus
+from src.models.worker import Confidence, TestResult, WorkerResult, WorkerStatus
 
 _CONFIDENCE_RANK: dict[Confidence, int] = {
     Confidence.LOW: 0,
@@ -63,11 +69,54 @@ class StepCandidateRun:
     llm_usage: LLMUsage
 
 
+class PlannerLoopState(FrozenBaseModel):
+    workspace_info: Workspace
+    planner_state: PlannerState
+    context_packs: list[ContextPack]
+    latest_future_steps: list[PlanStep]
+    worker_results: list[WorkerResult]
+    usage: LLMUsage
+    next_candidate_index: int = 0
+
+    def with_usage(self, usage: LLMUsage) -> PlannerLoopState:
+        return self.model_copy(update={'usage': self.usage + usage})
+
+    def with_context(
+        self,
+        notes: list[ContextNote],
+        packs: list[ContextPack],
+    ) -> PlannerLoopState:
+        return self.model_copy(
+            update={
+                'planner_state': self.planner_state.model_copy(
+                    update={'context_notes': [*self.planner_state.context_notes, *notes]}
+                ),
+                'context_packs': [*self.context_packs, *packs],
+            }
+        )
+
+    def with_worker_result(self, worker_result: WorkerResult) -> PlannerLoopState:
+        return self.model_copy(update={'worker_results': [*self.worker_results, worker_result]})
+
+    def with_previous_future_steps(self, steps: list[PlanStep]) -> PlannerLoopState:
+        return self.model_copy(
+            update={
+                'planner_state': self.planner_state.model_copy(
+                    update={'previous_future_steps': steps}
+                )
+            }
+        )
+
+    def with_evidence(self, evidence: PlanningEvidence) -> PlannerLoopState:
+        return self.model_copy(
+            update={'planner_state': self.planner_state.model_copy(update={'evidence': evidence})}
+        )
+
+
 @dataclass(frozen=True)
 class PlanExecutionResult:
     plan: Plan
     worker_results: list[WorkerResult]
-    reproduction_passed_after: bool | None
     llm_usage: LLMUsage
     workspace_info: Workspace
 
@@ -77,12 +126,82 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
     task_request = TaskRequest.model_validate(request)
     run_id = task_request.run_id or make_run_id()
     usage = LLMUsage()
+    (
+        contract,
+        workspace,
+        repo_index,
+        reproduction_context,
+        blocked_reason,
+        bootstrap_usage,
+    ) = await _bootstrap_workflow_state(task_request, run_id)
+    usage += bootstrap_usage
+    if blocked_reason is not None:
+        blocked_report = FinalReport(
+            status=WorkerStatus.BLOCKED.value,
+            workflow_status='blocked',
+            agent_verdict=WorkerStatus.BLOCKED.value,
+            reproduction_passed=False,
+            official_prediction_emitted=False,
+            patch='',
+            contract=contract,
+            workspace_info=workspace,
+            llm_usage=usage,
+            blocked_reason=blocked_reason,
+        )
+        await teardown_environment(workspace)
+        return blocked_report.model_dump(mode='json')
 
+    execution_result = await _run_planner_loop(
+        workspace_info=workspace,
+        contract=contract,
+        repo_index=repo_index,
+        reproduction=reproduction_context,
+    )
+    usage += execution_result.llm_usage
+    (
+        final_reproduction_evidence,
+        final_test_results,
+        final_blocker,
+    ) = await _finalize_or_block(
+        workspace=execution_result.workspace_info,
+        repo_index=repo_index,
+        reproduction=reproduction_context,
+        integration_tests=execution_result.plan.integration_tests,
+    )
+    if final_blocker is not None:
+        execution_result.worker_results.append(final_blocker)
+    report, report_usage = await _build_final_report(
+        workspace=workspace,
+        contract=contract,
+        execution_result=execution_result,
+        final_reproduction_evidence=final_reproduction_evidence,
+        final_test_results=final_test_results,
+        final_blocker=final_blocker,
+        usage=usage,
+    )
+    usage += report_usage
+    report = report.model_copy(update={'llm_usage': usage})
+    await finalize_winner(workspace, execution_result.workspace_info.current_branch)
+    await teardown_environment(workspace)
+    return report.model_dump(mode='json')
+
+
+async def _bootstrap_workflow_state(
+    task_request: TaskRequest,
+    run_id: str,
+) -> tuple[
+    TaskContract,
+    Workspace,
+    RepoIndex,
+    ReproductionContext | None,
+    str | None,
+    LLMUsage,
+]:
+    usage = LLMUsage()
     contract, contract_usage = await build_contract(task_request)
     usage += contract_usage
     workspace = await setup_environment(task_request.origin, run_id)
     repo_index = await build_repo_index(workspace)
-
     reproduction_context: ReproductionContext | None = None
     if contract.task_type == TaskType.BUGFIX:
         reproduction_result, reproduction_usage = await _run_reproduction_child(
@@ -92,86 +211,294 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
         )
         usage += reproduction_usage
         if reproduction_result.status == ReproductionStatus.COULD_NOT_REPRODUCE:
-            blocked_report = FinalReport(
-                status=WorkerStatus.BLOCKED.value,
-                patch='',
-                contract=contract,
-                workspace_info=workspace,
-                llm_usage=usage,
-                blocked_reason=(
-                    f'could not reproduce the bug: {reproduction_result.failure_evidence}'
-                ),
+            return (
+                contract,
+                workspace,
+                repo_index,
+                None,
+                f'could not reproduce the bug: {reproduction_result.failure_evidence}',
+                usage,
             )
-            await teardown_environment(workspace)
-            return blocked_report.model_dump(mode='json')
         reproduction_context = ReproductionContext(
             repro_command=reproduction_result.repro_command,
             failure_evidence=reproduction_result.failure_evidence,
         )
         workspace = await snapshot_candidate_base(workspace)
+    return contract, workspace, repo_index, reproduction_context, None, usage
 
-    plan, plan_usage = await build_plan(
-        PlanRequest(
+
+async def _run_planner_loop(
+    workspace_info: Workspace,
+    contract: TaskContract,
+    repo_index: RepoIndex,
+    reproduction: ReproductionContext | None,
+) -> PlanExecutionResult:
+    state = PlannerLoopState(
+        workspace_info=workspace_info,
+        planner_state=PlannerState(
             contract=contract,
             repo_index=repo_index,
-            worker_results=[],
-            revision_feedback=None,
-            reproduction=reproduction_context,
+            reproduction=reproduction,
+        ),
+        context_packs=[],
+        latest_future_steps=[],
+        worker_results=[],
+        usage=LLMUsage(),
+    )
+    hit_cap = True
+    planner_turns_remaining = CONFIG.max_planner_turns
+    while planner_turns_remaining > 0:
+        turn, notes, context_packs, planner_turn_count, turn_usage = await _run_replanner_child(
+            workspace_info=state.workspace_info,
+            repo_index=repo_index,
+            max_planner_turns=planner_turns_remaining,
+            planner_state=state.planner_state,
+        )
+        assert not turn.context_requests, 'replanning_workflow should not return context requests'
+        planner_turns_remaining -= planner_turn_count
+        state = state.with_usage(turn_usage).with_context(notes, context_packs)
+        if turn.done and not turn.future_steps:
+            state = state.with_previous_future_steps([])
+            hit_cap = False
+            break
+        if not turn.future_steps:
+            continue
+        state = state.with_previous_future_steps(turn.future_steps)
+        state = await _run_next_step(state, turn)
+        state = await _refresh_planning_evidence(state, repo_index, reproduction)
+    if hit_cap:
+        blocked = WorkerResult(
+            status=WorkerStatus.BLOCKED,
+            patch_id=None,
+            diff_summary='Planner turn cap reached before done.',
+            discovered_issues=[f'planner turn cap of {CONFIG.max_planner_turns} reached'],
+            confidence=Confidence.LOW,
+            replan_suggestion=None,
+        )
+        state = state.with_worker_result(blocked)
+    return _plan_execution_result_from_state(state)
+
+
+async def _run_next_step(state: PlannerLoopState, turn: PlannerTurn) -> PlannerLoopState:
+    plan_step = turn.future_steps[0]
+    step_run, next_candidate_index = await _run_step_with_candidates(
+        plan_step=plan_step,
+        plan_context=PlanContext(
+            summary='Planner-driven execution',
+            current_step_id=plan_step.id,
+            all_step_ids=[step.id for step in turn.future_steps],
+            completed_step_summaries=[
+                f'{entry.step_id}: {entry.summary}' for entry in state.planner_state.completed_steps
+            ],
+        ),
+        context_pack=_context_pack_for_step(plan_step, state.context_packs),
+        contract=state.planner_state.contract,
+        repo_index=state.planner_state.repo_index,
+        workspace_info=state.workspace_info,
+        first_candidate_index=state.next_candidate_index,
+    )
+    selected_result = step_run.worker_results[-1]
+    workspace = step_run.workspace_info
+    if selected_result.status == WorkerStatus.SUCCESS:
+        workspace = await snapshot_candidate_base(step_run.workspace_info)
+    history = _record_step_history(plan_step, step_run)
+    return state.model_copy(
+        update={
+            'workspace_info': workspace,
+            'planner_state': state.planner_state.model_copy(
+                update={
+                    'completed_steps': [*state.planner_state.completed_steps, history],
+                    'previous_future_steps': turn.future_steps,
+                }
+            ),
+            'latest_future_steps': turn.future_steps,
+            'worker_results': [*state.worker_results, *step_run.worker_results],
+            'usage': state.usage + step_run.llm_usage,
+            'next_candidate_index': next_candidate_index,
+        }
+    )
+
+
+def _record_step_history(
+    plan_step: PlanStep,
+    step_run: StepCandidateRun,
+) -> StepHistoryEntry:
+    worker_result = step_run.worker_results[-1]
+    return StepHistoryEntry(
+        step_id=plan_step.id,
+        outcome=worker_result.status,
+        confidence=worker_result.confidence,
+        summary=worker_result.diff_summary,
+        tests=_select_relevant_test_history(worker_result.test_results),
+        observations=worker_result.observations,
+    )
+
+
+def _context_pack_for_step(plan_step: PlanStep, context_packs: list[ContextPack]) -> ContextPack:
+    matching_snippets = [
+        snippet
+        for context_pack in context_packs
+        for snippet in context_pack.snippets
+        if not plan_step.target_files or snippet.file_path in plan_step.target_files
+    ]
+    if not matching_snippets:
+        matching_snippets = [
+            snippet for context_pack in context_packs for snippet in context_pack.snippets
+        ]
+    summaries = [context_pack.task_summary for context_pack in context_packs]
+    task_summary = plan_step.context_summary or '\n'.join(summaries) or plan_step.goal
+    return ContextPack(
+        task_summary=task_summary,
+        snippets=matching_snippets,
+        artifact_references=[
+            artifact
+            for context_pack in context_packs
+            for artifact in context_pack.artifact_references
+        ],
+        budget_remaining=min(
+            (context_pack.budget_remaining for context_pack in context_packs),
+            default=0,
         ),
     )
-    usage += plan_usage
-    plan, review_loop_usage = await _review_and_revise_plan(
-        plan=plan,
-        contract=contract,
-        repo_index=repo_index,
-        workspace_info=workspace,
-        reproduction=reproduction_context,
-    )
-    usage += review_loop_usage
-    complexity_verdict, complexity_usage = await assess_complexity(contract)
-    usage += complexity_usage
 
-    if complexity_verdict.requires_human_approval:
-        plan, approval_usage = await approve_plan_or_replan(
-            run_id=run_id,
-            contract=contract,
-            repo_index=repo_index,
-            plan=plan,
+
+async def _refresh_planning_evidence(
+    state: PlannerLoopState,
+    repo_index: RepoIndex,
+    reproduction: ReproductionContext | None,
+) -> PlannerLoopState:
+    diff_summary = await get_full_diff(state.workspace_info)
+    latest_tests = (
+        state.planner_state.completed_steps[-1].tests if state.planner_state.completed_steps else []
+    )
+    evidence = PlanningEvidence(
+        diff_summary=diff_summary,
+        selected_test_results=latest_tests,
+    )
+    if reproduction is not None:
+        repro_result = await _run_repro_command(
+            state.workspace_info,
+            repo_index,
+            reproduction.repro_command,
         )
-        usage += approval_usage
+        evidence = evidence.model_copy(
+            update={
+                'reproduction_command': reproduction.repro_command,
+                'reproduction_passed': repro_result.exit_code == 0,
+                'reproduction_stdout_summary': repro_result.stdout,
+                'reproduction_stderr_summary': repro_result.stderr,
+            }
+        )
+    return state.with_evidence(evidence)
 
-    execution_result = await _run_plan_steps(
-        workspace_info=workspace,
-        plan=plan,
-        contract=contract,
-        repo_index=repo_index,
-        reproduction=reproduction_context,
-    )
-    usage += execution_result.llm_usage
 
+def _select_relevant_test_history(results: list[TestResult]) -> list[TestResult]:
+    last_pass_index = None
+    for index, result in enumerate(results):
+        if result.passed:
+            last_pass_index = index
+    if last_pass_index is None:
+        return [result for result in results if not result.passed]
+    return [
+        result
+        for index, result in enumerate(results)
+        if index == last_pass_index or index > last_pass_index
+    ]
+
+
+async def _finalize_or_block(
+    workspace: Workspace,
+    repo_index: RepoIndex,
+    reproduction: ReproductionContext | None,
+    integration_tests: list[str],
+) -> tuple[ReproductionEvidence | None, list[TestResult], WorkerResult | None]:
     reproduction_evidence: ReproductionEvidence | None = None
-    if reproduction_context is not None:
+    if reproduction is not None:
+        repro_result = await _run_repro_command(workspace, repo_index, reproduction.repro_command)
+        reproduction_passed = repro_result.exit_code == 0
         reproduction_evidence = build_reproduction_evidence(
-            repro_command=reproduction_context.repro_command,
-            passed_after=bool(execution_result.reproduction_passed_after),
+            repro_command=reproduction.repro_command,
+            passed_after=reproduction_passed,
         )
+        if not reproduction_passed:
+            return (
+                reproduction_evidence,
+                [],
+                WorkerResult(
+                    status=WorkerStatus.BLOCKED,
+                    patch_id=None,
+                    diff_summary='Final reproduction command failed.',
+                    discovered_issues=[_tool_result_summary(repro_result)],
+                    confidence=Confidence.LOW,
+                    replan_suggestion=None,
+                ),
+            )
+    integration_results: list[TestResult] = []
+    for index, command in enumerate(integration_tests, start=1):
+        suite_result = await _run_repro_command(workspace, repo_index, command)
+        integration_results.append(_test_result_from_tool_result(command, suite_result, index))
+        if suite_result.exit_code != 0:
+            return (
+                reproduction_evidence,
+                integration_results,
+                WorkerResult(
+                    status=WorkerStatus.BLOCKED,
+                    patch_id=None,
+                    diff_summary='Final integration test failed.',
+                    test_results=integration_results,
+                    tests_run=[result.command for result in integration_results],
+                    discovered_issues=[_tool_result_summary(suite_result)],
+                    confidence=Confidence.LOW,
+                    replan_suggestion=None,
+                ),
+            )
+    return reproduction_evidence, integration_results, None
+
+
+async def _build_final_report(
+    workspace: Workspace,
+    contract: TaskContract,
+    execution_result: PlanExecutionResult,
+    final_reproduction_evidence: ReproductionEvidence | None,
+    final_test_results: list[TestResult],
+    final_blocker: WorkerResult | None,
+    usage: LLMUsage,
+) -> tuple[FinalReport, LLMUsage]:
     diff = await get_full_diff(execution_result.workspace_info)
     aggregated_test_results = [
         test_result
         for worker_result in execution_result.worker_results
         for test_result in worker_result.test_results
     ]
-    final_verdict, review_usage = await review_patch(
-        ReviewRequest(
-            contract=contract,
-            plan_step=None,
-            diff=diff,
-            test_results=aggregated_test_results,
-            worker_results=execution_result.worker_results,
-            workspace_info=execution_result.workspace_info,
-        ),
+    aggregated_test_results.extend(final_test_results)
+    if final_blocker is None:
+        final_verdict, review_usage = await review_patch(
+            ReviewRequest(
+                contract=contract,
+                plan_step=None,
+                diff=diff,
+                test_results=aggregated_test_results,
+                worker_results=execution_result.worker_results,
+                workspace_info=execution_result.workspace_info,
+            )
+        )
+    else:
+        review_usage = LLMUsage()
+        final_verdict = ReviewVerdict(
+            verdict=ReviewDecision.REVISE,
+            evidence=[final_blocker.diff_summary],
+            blocking_issues=final_blocker.discovered_issues,
+            non_blocking_issues=[],
+            missing_tests=[],
+            regression_risks=[],
+            minimality_assessment='final invariant failed',
+            recommended_next_action='revise',
+        )
+    reproduction_passed = (
+        final_reproduction_evidence.passed_after
+        if final_reproduction_evidence is not None
+        else None
     )
-    usage += review_usage
     chosen = CandidateResult(
         index=0,
         branch=execution_result.workspace_info.current_branch,
@@ -181,221 +508,31 @@ async def main_workflow(request: dict[str, object]) -> dict[str, object]:
         review_verdict=final_verdict,
         confidence=aggregate_candidate_confidence(execution_result.worker_results),
         test_results=aggregated_test_results,
-        reproduction_evidence=reproduction_evidence,
+        reproduction_evidence=final_reproduction_evidence,
     )
-    final_report = FinalReport(
-        status=chosen.review_verdict.verdict.value,
-        patch=chosen.diff,
+    report = FinalReport(
+        status=final_verdict.verdict.value,
+        workflow_status='completed',
+        agent_verdict=final_verdict.verdict.value,
+        reproduction_passed=reproduction_passed,
+        official_prediction_emitted=bool(diff),
+        patch=diff,
         contract=contract,
-        plan=chosen.plan,
-        worker_results=chosen.worker_results,
-        final_verdict=chosen.review_verdict,
-        workspace_info=workspace,
-        llm_usage=usage,
-        reproduction_evidence=chosen.reproduction_evidence,
-        chosen_candidate=chosen,
-    )
-    await finalize_winner(workspace, chosen.branch)
-    await teardown_environment(workspace)
-    return final_report.model_dump(mode='json')
-
-
-async def _run_candidate(
-    candidate_index: int,
-    workspace: Workspace,
-    plan: Plan,
-    contract: TaskContract,
-    repo_index: RepoIndex,
-    reproduction: ReproductionContext | None,
-) -> tuple[CandidateResult, LLMUsage]:
-    usage = LLMUsage()
-    candidate_workspace = await begin_candidate(workspace, candidate_index)
-    execution_result = await _run_plan_steps(
-        plan=plan,
-        contract=contract,
-        repo_index=repo_index,
-        workspace_info=candidate_workspace,
-        reproduction=reproduction,
-    )
-    usage += execution_result.llm_usage
-
-    reproduction_evidence: ReproductionEvidence | None = None
-    if reproduction is not None:
-        reproduction_evidence = build_reproduction_evidence(
-            repro_command=reproduction.repro_command,
-            passed_after=bool(execution_result.reproduction_passed_after),
-        )
-
-    diff = await get_full_diff(execution_result.workspace_info)
-    candidate_workspace = await snapshot_candidate_result(execution_result.workspace_info)
-    aggregated_test_results = [
-        test_result
-        for worker_result in execution_result.worker_results
-        for test_result in worker_result.test_results
-    ]
-    final_verdict, review_usage = await review_patch(
-        ReviewRequest(
-            contract=contract,
-            plan_step=None,
-            diff=diff,
-            test_results=aggregated_test_results,
-            worker_results=execution_result.worker_results,
-            workspace_info=candidate_workspace,
-        ),
-    )
-    usage += review_usage
-    candidate = CandidateResult(
-        index=candidate_index,
-        branch=candidate_workspace.current_branch,
-        diff=diff,
         plan=execution_result.plan,
         worker_results=execution_result.worker_results,
-        review_verdict=final_verdict,
-        confidence=aggregate_candidate_confidence(execution_result.worker_results),
-        test_results=aggregated_test_results,
-        reproduction_evidence=reproduction_evidence,
-    )
-    return candidate, usage
-
-
-async def _review_and_revise_plan(
-    plan: Plan,
-    contract: TaskContract,
-    repo_index: RepoIndex,
-    workspace_info: Workspace,
-    reproduction: ReproductionContext | None,
-) -> tuple[Plan, LLMUsage]:
-    usage = LLMUsage()
-    for _ in range(CONFIG.max_plan_review_rounds):
-        verdict, review_usage = await review_plan(
-            PlanReviewRequest(
-                contract=contract,
-                plan=plan,
-                repo_index=repo_index,
-                reproduction=reproduction,
-            ),
-        )
-        usage += review_usage
-        if verdict.decision == PlanReviewDecision.ACCEPT:
-            break
-        context_pack, gather_usage = await gather_context(
-            ContextGatherRequest(
-                workspace_info=workspace_info,
-                repo_index=repo_index,
-                gatherer_prompt=verdict.feedback,
-            ),
-        )
-        usage += gather_usage
-        plan, replan_usage = await build_plan(
-            PlanRequest(
-                contract=contract,
-                repo_index=repo_index,
-                worker_results=[],
-                revision_feedback=verdict.feedback,
-                reproduction=reproduction,
-                context=context_pack,
-            ),
-        )
-        usage += replan_usage
-    return plan, usage
-
-
-async def _run_plan_steps(
-    plan: Plan,
-    contract: TaskContract,
-    repo_index: RepoIndex,
-    workspace_info: Workspace,
-    reproduction: ReproductionContext | None,
-) -> PlanExecutionResult:
-    worker_results: list[WorkerResult] = []
-    pending_plan_steps = list(plan.steps)
-    usage = LLMUsage()
-    replan_attempts = 0
-    reproduction_passed_after: bool | None = None
-    current_workspace = workspace_info
-    next_candidate_index = 0
-    completed_step_summaries: list[str] = []
-    all_step_ids = [step.id for step in plan.steps]
-    while True:
-        if pending_plan_steps:
-            plan_step = pending_plan_steps.pop(0)
-            step_run, next_candidate_index = await _run_step_with_candidates(
-                plan_step=plan_step,
-                plan_context=PlanContext(
-                    summary=plan.summary,
-                    current_step_id=plan_step.id,
-                    all_step_ids=all_step_ids,
-                    completed_step_summaries=completed_step_summaries,
-                ),
-                contract=contract,
-                repo_index=repo_index,
-                workspace_info=current_workspace,
-                first_candidate_index=next_candidate_index,
-            )
-            usage += step_run.llm_usage
-            worker_results.extend(step_run.worker_results)
-            last_worker_result = step_run.worker_results[-1]
-            if last_worker_result.status == WorkerStatus.SUCCESS:
-                current_workspace = await snapshot_candidate_base(step_run.workspace_info)
-                completed_step_summaries.append(
-                    f'{plan_step.id}: {last_worker_result.diff_summary}'
-                )
-            match last_worker_result.status:
-                case WorkerStatus.NEEDS_REPLAN:
-                    if replan_attempts >= CONFIG.max_replan_attempts:
-                        worker_results.append(_replan_cap_blocked_result())
-                        break
-                    replan_attempts += 1
-                    pending_plan_steps = [
-                        _corrective_plan_step(
-                            plan_step=plan_step,
-                            worker_result=last_worker_result,
-                        )
-                    ]
-                case WorkerStatus.FAILED | WorkerStatus.BLOCKED:
-                    break
-                case WorkerStatus.SUCCESS:
-                    if reproduction is not None:
-                        gate_result = await _run_repro_command(
-                            current_workspace, repo_index, reproduction.repro_command
-                        )
-                        reproduction_passed_after = gate_result.exit_code == 0
-            continue
-        if reproduction is None:
-            break
-        repro_result = await _run_repro_command(
-            current_workspace, repo_index, reproduction.repro_command
-        )
-        reproduction_passed_after = repro_result.exit_code == 0
-        suite_result = await _run_suite(current_workspace, repo_index, plan.integration_tests)
-        if repro_result.exit_code == 0 and suite_result.exit_code == 0:
-            break
-        if replan_attempts >= CONFIG.max_replan_attempts:
-            worker_results.append(_gate_blocked_result(repro_result, suite_result))
-            break
-        replan_attempts += 1
-        plan, replan_usage = await _replan(
-            contract=contract,
-            repo_index=repo_index,
-            worker_results=worker_results,
-            revision_feedback=_gate_failure_feedback(repro_result, suite_result),
-            reproduction=reproduction,
-        )
-        usage += replan_usage
-        pending_plan_steps = list(plan.steps)
-        all_step_ids = [step.id for step in plan.steps]
-    return PlanExecutionResult(
-        plan=plan,
-        worker_results=worker_results,
-        reproduction_passed_after=reproduction_passed_after,
+        final_verdict=final_verdict,
+        workspace_info=workspace,
         llm_usage=usage,
-        workspace_info=current_workspace,
+        reproduction_evidence=final_reproduction_evidence,
+        chosen_candidate=chosen,
     )
+    return report, review_usage
 
 
 async def _run_step_with_candidates(
     plan_step: PlanStep,
     plan_context: PlanContext,
+    context_pack: ContextPack,
     contract: TaskContract,
     repo_index: RepoIndex,
     workspace_info: Workspace,
@@ -410,6 +547,7 @@ async def _run_step_with_candidates(
         step_candidate = await _run_step_candidate(
             plan_step=plan_step,
             plan_context=plan_context,
+            context_pack=context_pack,
             contract=contract,
             repo_index=repo_index,
             workspace_info=workspace_info,
@@ -425,42 +563,27 @@ async def _run_step_with_candidates(
 async def _run_step_candidate(
     plan_step: PlanStep,
     plan_context: PlanContext,
+    context_pack: ContextPack,
     contract: TaskContract,
     repo_index: RepoIndex,
     workspace_info: Workspace,
     candidate_index: int,
 ) -> StepCandidateRun:
-    usage = LLMUsage()
-    worker_results: list[WorkerResult] = []
     candidate_workspace = await begin_candidate(workspace_info, candidate_index)
-    current_step = plan_step
-    replan_attempts = 0
-    while True:
-        worker_result, child_usage = await _run_implementation_child(
-            plan_step=current_step,
-            plan_context=plan_context,
-            workspace_info=candidate_workspace,
-            contract=contract,
-            repo_index=repo_index,
-        )
-        usage += child_usage
-        worker_results.append(worker_result)
-        match worker_result.status:
-            case WorkerStatus.NEEDS_REPLAN:
-                if replan_attempts >= CONFIG.max_replan_attempts:
-                    worker_results.append(_replan_cap_blocked_result())
-                    break
-                replan_attempts += 1
-                current_step = _corrective_plan_step(current_step, worker_result)
-                continue
-            case WorkerStatus.SUCCESS | WorkerStatus.FAILED | WorkerStatus.BLOCKED:
-                break
+    worker_result, child_usage = await _run_implementation_child(
+        plan_step=plan_step,
+        plan_context=plan_context,
+        context_pack=context_pack,
+        workspace_info=candidate_workspace,
+        contract=contract,
+        repo_index=repo_index,
+    )
     candidate_workspace = await snapshot_candidate_result(candidate_workspace)
     return StepCandidateRun(
         index=candidate_index,
         workspace_info=candidate_workspace,
-        worker_results=worker_results,
-        llm_usage=usage,
+        worker_results=[worker_result],
+        llm_usage=child_usage,
     )
 
 
@@ -496,24 +619,6 @@ def _step_candidate_preference_key(candidate: StepCandidateRun) -> tuple[int, in
     )
 
 
-async def _replan(
-    contract: TaskContract,
-    repo_index: RepoIndex,
-    worker_results: list[WorkerResult],
-    revision_feedback: str | None,
-    reproduction: ReproductionContext | None,
-) -> tuple[Plan, LLMUsage]:
-    return await build_plan(
-        PlanRequest(
-            contract=contract,
-            repo_index=repo_index,
-            worker_results=worker_results,
-            revision_feedback=revision_feedback,
-            reproduction=reproduction,
-        ),
-    )
-
-
 async def _run_repro_command(
     workspace_info: Workspace,
     repo_index: RepoIndex,
@@ -525,76 +630,6 @@ async def _run_repro_command(
             tool=repro_run_tests(repro_command),
             repo_index=repo_index,
         )
-    )
-
-
-async def _run_suite(
-    workspace_info: Workspace,
-    repo_index: RepoIndex,
-    integration_tests: list[str],
-) -> ToolResult:
-    last_result = ToolResult(stdout='', stderr='', exit_code=0, truncated=False)
-    for command in integration_tests:
-        last_result = await _run_repro_command(workspace_info, repo_index, command)
-        if last_result.exit_code != 0:
-            return last_result
-    return last_result
-
-
-def _gate_failure_feedback(repro_result: ToolResult, suite_result: ToolResult) -> str:
-    if repro_result.exit_code != 0:
-        return (
-            'bug not reproduced: regression test still failing\n'
-            f'{repro_result.stdout}\n{repro_result.stderr}'
-        ).strip()
-    return (
-        'regression in pre-existing suite: a previously passing test now fails\n'
-        f'{suite_result.stdout}\n{suite_result.stderr}'
-    ).strip()
-
-
-def _corrective_plan_step(plan_step: PlanStep, worker_result: WorkerResult) -> PlanStep:
-    feedback = worker_result.replan_suggestion or '; '.join(worker_result.discovered_issues)
-    tests_run = ', '.join(worker_result.tests_run) if worker_result.tests_run else 'none'
-    issues = '; '.join(worker_result.discovered_issues) or 'none reported'
-    prior_summary = worker_result.diff_summary or 'no prior summary'
-    return plan_step.model_copy(
-        update={
-            'id': f'revise-{plan_step.id}',
-            'goal': (
-                f'Complete this corrective implementation step. Original step goal: '
-                f'{plan_step.goal} Review feedback to address: {feedback} '
-                f'Prior worker summary: {prior_summary}. Prior tests run: {tests_run}. '
-                f'Prior discovered issues: {issues}. Inspect the current workspace state, '
-                f'apply only the missing corrections, and rerun the relevant tests.'
-            ),
-            'expected_result': (
-                f'{plan_step.expected_result} The review feedback is resolved and the '
-                f'current workspace contains the complete corrected change.'
-            ),
-        }
-    )
-
-
-def _replan_cap_blocked_result() -> WorkerResult:
-    return WorkerResult(
-        status=WorkerStatus.BLOCKED,
-        patch_id=None,
-        diff_summary='Replan attempts exhausted before reaching an acceptable candidate.',
-        discovered_issues=[f'replan cap of {CONFIG.max_replan_attempts} attempts reached'],
-        confidence=Confidence.LOW,
-        replan_suggestion=None,
-    )
-
-
-def _gate_blocked_result(repro_result: ToolResult, suite_result: ToolResult) -> WorkerResult:
-    return WorkerResult(
-        status=WorkerStatus.BLOCKED,
-        patch_id=None,
-        diff_summary='Reproduction gate never went green within the replan budget.',
-        discovered_issues=[_gate_failure_feedback(repro_result, suite_result)],
-        confidence=Confidence.LOW,
-        replan_suggestion=None,
     )
 
 
@@ -618,9 +653,35 @@ async def _run_reproduction_child(
     )
 
 
+async def _run_replanner_child(
+    workspace_info: Workspace,
+    repo_index: RepoIndex,
+    max_planner_turns: int,
+    planner_state: PlannerState,
+) -> tuple[PlannerTurn, list[ContextNote], list[ContextPack], int, LLMUsage]:
+    child_id = await spawn_child(
+        'replanning_workflow',
+        child_id=_child_workflow_id(workspace_info, 'replanning'),
+        workspace=workspace_info.model_dump(mode='json'),
+        repo_index=repo_index.model_dump(mode='json'),
+        max_planner_turns=max_planner_turns,
+        planner_state=planner_state.model_dump(mode='json'),
+    )
+    child_result = await wait_for_child(child_id)
+    assert isinstance(child_result, dict), 'replanning_workflow returns a dict payload'
+    return (
+        PlannerTurn.model_validate(child_result['planner_turn']),
+        [ContextNote.model_validate(note) for note in child_result['context_notes']],
+        [ContextPack.model_validate(pack) for pack in child_result['context_packs']],
+        int(child_result['planner_turn_count']),
+        LLMUsage.model_validate(child_result['llm_usage']),
+    )
+
+
 async def _run_implementation_child(
     plan_step: PlanStep,
     plan_context: PlanContext,
+    context_pack: ContextPack,
     workspace_info: Workspace,
     contract: TaskContract,
     repo_index: RepoIndex,
@@ -635,6 +696,7 @@ async def _run_implementation_child(
         ),
         step=plan_step.model_dump(mode='json'),
         plan_context=plan_context.model_dump(mode='json'),
+        context_pack=context_pack.model_dump(mode='json'),
         workspace=workspace_info.model_dump(mode='json'),
         contract=contract.model_dump(mode='json'),
         repo_index=repo_index.model_dump(mode='json'),
@@ -644,6 +706,47 @@ async def _run_implementation_child(
     return (
         WorkerResult.model_validate(child_result['worker_result']),
         LLMUsage.model_validate(child_result['llm_usage']),
+    )
+
+
+def _plan_execution_result_from_state(state: PlannerLoopState) -> PlanExecutionResult:
+    plan = Plan(
+        summary='Planner-driven execution',
+        steps=state.latest_future_steps,
+        integration_tests=_integration_tests_from_steps(state.latest_future_steps),
+        definition_of_done=['planner done', 'final review complete'],
+    )
+    return PlanExecutionResult(
+        plan=plan,
+        worker_results=state.worker_results,
+        llm_usage=state.usage,
+        workspace_info=state.workspace_info,
+    )
+
+
+def _integration_tests_from_steps(steps: list[PlanStep]) -> list[str]:
+    commands: list[str] = []
+    for step in steps:
+        commands.extend(step.tests_to_run)
+    return list(dict.fromkeys(commands))
+
+
+def _tool_result_summary(result: ToolResult) -> str:
+    return f'exit_code={result.exit_code}\nstdout={result.stdout}\nstderr={result.stderr}'.strip()
+
+
+def _test_result_from_tool_result(
+    command: str,
+    tool_result: ToolResult,
+    sequence: int,
+) -> TestResult:
+    return TestResult(
+        sequence=sequence,
+        command=command,
+        exit_code=tool_result.exit_code,
+        stdout_summary=tool_result.stdout,
+        stderr_summary=tool_result.stderr,
+        passed=tool_result.exit_code == 0,
     )
 
 
@@ -657,6 +760,5 @@ def _child_workflow_id(workspace_info: Workspace, *parts: str) -> str:
 
 def _workflow_id_part(value: str) -> str:
     return ''.join(
-        character if character.isalnum() or character in '._-' else '-'
-        for character in value
+        character if character.isalnum() or character in '._-' else '-' for character in value
     )

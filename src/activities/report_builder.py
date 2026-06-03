@@ -15,6 +15,10 @@ from src.models.worker import WorkerResult
 
 class FinalReport(FrozenBaseModel):
     status: str
+    workflow_status: str = 'completed'
+    agent_verdict: str | None = None
+    reproduction_passed: bool | None = None
+    official_prediction_emitted: bool = False
     patch: str
     contract: TaskContract
     plan: Plan | None = None

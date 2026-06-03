@@ -6,6 +6,7 @@ from src.activities import context_gatherer as context_gatherer_module
 from src.activities.context_gatherer import (
     ContextGathererTurn,
     ContextGatherRequest,
+    fulfill_context_request,
     gather_context,
 )
 from src.activities.workspace_manager import (
@@ -17,6 +18,7 @@ from src.activities.workspace_manager import (
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, StructuredCompletion
 from src.models.context import ContextPack, PackedSnippet
+from src.models.plan import ContextRequest
 from src.models.repo import RepoIndex
 from src.tools.definitions import ContextGathererToolCallAdapter
 
@@ -292,3 +294,49 @@ def _context_gather_request() -> ContextGatherRequest:
         repo_index=RepoIndex(),
         gatherer_prompt='Find relevant code',
     )
+
+
+@pytest.mark.asyncio
+async def test_fulfill_context_request_returns_context_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompts: list[str] = []
+
+    async def fake_gather_context(request: ContextGatherRequest) -> tuple[ContextPack, LLMUsage]:
+        prompts.append(request.gatherer_prompt)
+        return (
+            ContextPack(
+                task_summary='Auth handler found',
+                snippets=[
+                    PackedSnippet(
+                        file_path='src/auth.py',
+                        start_line=1,
+                        end_line=3,
+                        reason='handler',
+                        content='def auth(): ...',
+                    )
+                ],
+                budget_remaining=0,
+            ),
+            LLMUsage(call_count=1),
+        )
+
+    monkeypatch.setattr(context_gatherer_module, 'gather_context', fake_gather_context)
+
+    note, context_pack, usage = await fulfill_context_request(
+        workspace_info=_context_gather_request().workspace_info,
+        repo_index=RepoIndex(),
+        request=ContextRequest(
+            id='ctx-1',
+            reason='Need auth context',
+            queries=['Find auth handler'],
+            relevant_files=['src/maybe_auth.py'],
+        ),
+    )
+
+    assert usage.call_count == 1
+    assert note.id == 'ctx-1'
+    assert note.summary == 'Auth handler found'
+    assert note.relevant_files == ['src/maybe_auth.py', 'src/auth.py']
+    assert context_pack.snippets[0].content == 'def auth(): ...'
+    assert 'Need auth context' in prompts[0]

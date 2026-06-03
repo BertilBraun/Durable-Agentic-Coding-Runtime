@@ -140,6 +140,10 @@ async def test_generate_predictions_writes_sidecar_and_official_jsonl(tmp_path: 
     assert sidecar_payload['docker_image'] == 'sweb.eval.x86_64.python__repo-1:latest'
     assert sidecar_payload['cost'] == 1.25
     assert sidecar_payload['llm_calls'] == 7
+    assert sidecar_payload['workflow_status'] == 'completed'
+    assert sidecar_payload['agent_verdict'] == 'accept'
+    assert sidecar_payload['reproduction_passed'] is True
+    assert sidecar_payload['official_prediction_emitted'] is True
     assert sidecar_payload['gold_patch'] == 'diff --git a/gold.py b/gold.py\n'
     assert sidecar_payload['patch_comparison'] == {
         'summary': 'Model patch changes the same file.',
@@ -260,6 +264,32 @@ def test_write_predictions_jsonl_keeps_only_official_eval_fields(tmp_path: Path)
         'model_name_or_path': 'agentic-runtime',
         'model_patch': 'diff --git a/app.py b/app.py\n',
     }
+
+
+def test_prediction_record_sidecar_separates_workflow_and_agent_status() -> None:
+    record = PredictionRecord(
+        instance_id='python__repo-1',
+        model_name_or_path='agentic-runtime',
+        model_patch='diff --git a/app.py b/app.py\n',
+        status='completed',
+        dataset_name='princeton-nlp/SWE-bench_Lite',
+        split='test',
+        run_id='run-1',
+        workflow_run_id='run-1-python__repo-1',
+        docker_image='sweb.eval.x86_64.python__repo-1:latest',
+        container_repo_path='/testbed',
+        workflow_status='completed',
+        agent_verdict='revise',
+        reproduction_passed=False,
+        official_prediction_emitted=True,
+    )
+
+    payload = record.model_dump(mode='json')
+
+    assert payload['workflow_status'] == 'completed'
+    assert payload['agent_verdict'] == 'revise'
+    assert payload['reproduction_passed'] is False
+    assert payload['official_prediction_emitted'] is True
 
 
 def test_run_official_evaluation_invokes_swe_bench_module(tmp_path: Path) -> None:
@@ -476,6 +506,10 @@ class FakeHandle:
         return {
             'patch': 'diff --git a/app.py b/app.py\n',
             'llm_usage': {'total_cost_usd': 1.25, 'call_count': 7},
+            'workflow_status': 'completed',
+            'agent_verdict': 'accept',
+            'reproduction_passed': True,
+            'official_prediction_emitted': True,
         }
 
 

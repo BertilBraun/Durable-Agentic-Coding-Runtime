@@ -17,7 +17,9 @@ REVIEWER_SYSTEM_PROMPT = (
     'diff, test, worker, and acceptance-criteria evidence. Ground every '
     'finding in observed evidence. Request revision when evidence is missing, '
     'tests are inadequate, or the patch changes unrelated behavior. Do not '
-    'invent validation or assume unrun tests passed.'
+    'invent validation or assume unrun tests passed. For final workflow review, '
+    'distinguish whether the workflow produced a patch, reproduction passed, '
+    'tests passed, and the patch is acceptable.'
 )
 
 

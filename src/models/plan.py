@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pydantic import Field
 
+from src.models.context import ContextSnippet
 from src.models.frozen_base_model import FrozenBaseModel
+from src.models.repo import RepoIndex
+from src.models.reproduction import ReproductionContext
+from src.models.task import TaskContract
+from src.models.worker import Confidence, TestResult, WorkerStatus
 from src.runtime_enums import StrEnum
 
 
@@ -23,8 +28,21 @@ class PlanStep(FrozenBaseModel):
     target_files: list[str] = Field(
         default_factory=list,
         description=(
-            'Files this step is expected to inspect or modify; extra files require evidence.'
+            'Files the implementer should inspect or modify for this step; extra files require '
+            'evidence.'
         ),
+    )
+    context_summary: str = Field(
+        default='',
+        description='Step-specific code and domain context the implementer should rely on.',
+    )
+    required_changes: list[str] = Field(
+        default_factory=list,
+        description='Concrete changes this step must make or verify.',
+    )
+    out_of_scope: list[str] = Field(
+        default_factory=list,
+        description='Explicit work the implementer must not do in this step.',
     )
     tests_to_run: list[str] = Field(
         default_factory=list,
@@ -64,3 +82,66 @@ class PlanContext(FrozenBaseModel):
         default_factory=list,
         description='Summaries of accepted prior steps already present in the workspace.',
     )
+
+
+class ContextRequest(FrozenBaseModel):
+    id: str = Field(description='Stable id for this context request.')
+    reason: str = Field(
+        description='Why this context is needed before planning implementation work.'
+    )
+    queries: list[str] = Field(
+        default_factory=list,
+        description='Concrete read-only questions or searches the context gatherer should answer.',
+    )
+    relevant_files: list[str] = Field(
+        default_factory=list,
+        description='Files the planner already suspects are relevant.',
+    )
+
+
+class ContextNote(FrozenBaseModel):
+    id: str = Field(description='Stable id tying this note to gathered evidence.')
+    summary: str = Field(description='Concise evidence summary produced after gathering context.')
+    relevant_files: list[str] = Field(
+        default_factory=list,
+        description='Files supported by the gathered evidence.',
+    )
+    snippets: list[ContextSnippet] = Field(
+        default_factory=list,
+        description='Code snippet references that support this note.',
+    )
+
+
+class StepHistoryEntry(FrozenBaseModel):
+    step_id: str
+    outcome: WorkerStatus
+    confidence: Confidence
+    summary: str
+    tests: list[TestResult] = Field(default_factory=list)
+    observations: list[str] = Field(default_factory=list)
+
+
+class PlanningEvidence(FrozenBaseModel):
+    diff_summary: str | None = None
+    selected_test_results: list[TestResult] = Field(default_factory=list)
+    reproduction_command: str | None = None
+    reproduction_passed: bool | None = None
+    reproduction_stdout_summary: str | None = None
+    reproduction_stderr_summary: str | None = None
+
+
+class PlannerState(FrozenBaseModel):
+    contract: TaskContract
+    repo_index: RepoIndex
+    reproduction: ReproductionContext | None = None
+    context_notes: list[ContextNote] = Field(default_factory=list)
+    completed_steps: list[StepHistoryEntry] = Field(default_factory=list)
+    previous_future_steps: list[PlanStep] = Field(default_factory=list)
+    evidence: PlanningEvidence = Field(default_factory=PlanningEvidence)
+
+
+class PlannerTurn(FrozenBaseModel):
+    context_requests: list[ContextRequest] = Field(default_factory=list)
+    future_steps: list[PlanStep] = Field(default_factory=list)
+    done: bool = False
+    done_reason: str | None = None

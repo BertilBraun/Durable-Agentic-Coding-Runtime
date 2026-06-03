@@ -79,6 +79,10 @@ class PredictionRecord(FrozenBaseModel):
     llm_calls: int = 0
     wall_clock_seconds: float = 0.0
     reason: str | None = None
+    workflow_status: str | None = None
+    agent_verdict: str | None = None
+    reproduction_passed: bool | None = None
+    official_prediction_emitted: bool = False
     started_at: str | None = None
     completed_at: str | None = None
     instance: dict[str, object] = Field(default_factory=dict)
@@ -384,9 +388,20 @@ async def _run_agent_prediction(
     if workflow_result is not None:
         patch = _extract_patch(workflow_result)
         usage = _usage_from_workflow_result(workflow_result)
+        workflow_status = _optional_workflow_string(workflow_result, 'workflow_status')
+        agent_verdict = _optional_workflow_string(workflow_result, 'agent_verdict')
+        reproduction_passed = _optional_workflow_bool(workflow_result, 'reproduction_passed')
+        official_prediction_emitted = bool(
+            workflow_result.get('official_prediction_emitted', bool(patch))
+        )
         if not patch:
             status = 'failed'
             reason = 'workflow_patch_missing'
+    else:
+        workflow_status = None
+        agent_verdict = None
+        reproduction_passed = None
+        official_prediction_emitted = False
 
     return PredictionRecord(
         instance_id=instance.instance_id,
@@ -403,6 +418,10 @@ async def _run_agent_prediction(
         llm_calls=usage.call_count,
         wall_clock_seconds=time.monotonic() - started_at_monotonic,
         reason=reason,
+        workflow_status=workflow_status,
+        agent_verdict=agent_verdict,
+        reproduction_passed=reproduction_passed,
+        official_prediction_emitted=official_prediction_emitted,
         started_at=started_at,
         completed_at=_utc_now(),
         instance=instance.model_dump(mode='json'),
@@ -422,6 +441,20 @@ def _usage_from_workflow_result(workflow_result: dict[str, object]) -> WorkflowU
     if isinstance(raw_usage, dict):
         return WorkflowUsageSummary.model_validate(raw_usage)
     return WorkflowUsageSummary()
+
+
+def _optional_workflow_string(workflow_result: dict[str, object], key: str) -> str | None:
+    value = workflow_result.get(key)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _optional_workflow_bool(workflow_result: dict[str, object], key: str) -> bool | None:
+    value = workflow_result.get(key)
+    if isinstance(value, bool):
+        return value
+    return None
 
 
 def write_predictions_jsonl(

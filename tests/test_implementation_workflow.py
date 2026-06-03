@@ -1,7 +1,7 @@
 import pytest
 from src.activities.reviewer import ReviewDecision, ReviewVerdict
 from src.llm.client import LLMUsage
-from src.models.context import ContextPack
+from src.models.context import ContextPack, PackedSnippet
 from src.models.plan import PlanStep, Risk
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract, TaskType
@@ -25,19 +25,10 @@ async def test_implementation_workflow_reviews_successful_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     review_requests: list[object] = []
-
-    async def fake_gather_context(request: object) -> tuple[ContextPack, LLMUsage]:
-        return (
-            ContextPack(
-                task_summary='Implement behavior',
-                snippets=[],
-                artifact_references=[],
-                budget_remaining=1,
-            ),
-            _unit_usage(),
-        )
+    turn_requests: list[object] = []
 
     async def fake_run_implementation_turn(request: object) -> tuple[WorkerResult, LLMUsage]:
+        turn_requests.append(request)
         return (
             WorkerResult(
                 status=WorkerStatus.SUCCESS,
@@ -71,7 +62,6 @@ async def test_implementation_workflow_reviews_successful_step(
             _unit_usage(),
         )
 
-    monkeypatch.setattr('src.workflows.implementation_workflow.gather_context', fake_gather_context)
     monkeypatch.setattr(
         'src.workflows.implementation_workflow.run_implementation_turn',
         fake_run_implementation_turn,
@@ -87,25 +77,65 @@ async def test_implementation_workflow_reviews_successful_step(
     )
 
     assert result['worker_result']['status'] == WorkerStatus.SUCCESS
-    assert result['llm_usage']['call_count'] == 3
+    assert result['llm_usage']['call_count'] == 2
     assert len(review_requests) == 1
+    assert turn_requests[0].context_pack.task_summary == 'Implement behavior'
+
+
+@pytest.mark.asyncio
+async def test_implementation_workflow_passes_provided_context_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    turn_requests: list[object] = []
+    provided_context = ContextPack(
+        task_summary='Gathered parser context',
+        snippets=[
+            PackedSnippet(
+                file_path='app.py',
+                start_line=1,
+                end_line=3,
+                reason='parser',
+                content='def parse(): ...',
+            )
+        ],
+        artifact_references=[],
+        budget_remaining=5,
+    )
+
+    async def fake_run_implementation_turn(request: object) -> tuple[WorkerResult, LLMUsage]:
+        turn_requests.append(request)
+        return (
+            WorkerResult(
+                status=WorkerStatus.BLOCKED,
+                patch_id=None,
+                diff_summary='inspected context',
+                discovered_issues=[],
+                confidence=Confidence.LOW,
+                replan_suggestion=None,
+            ),
+            _zero_usage(),
+        )
+
+    monkeypatch.setattr(
+        'src.workflows.implementation_workflow.run_implementation_turn',
+        fake_run_implementation_turn,
+    )
+
+    await implementation_workflow(
+        step=_plan_step().model_dump(mode='json'),
+        workspace=_workspace(),
+        contract=_task_contract().model_dump(mode='json'),
+        repo_index=RepoIndex().model_dump(mode='json'),
+        context_pack=provided_context.model_dump(mode='json'),
+    )
+
+    assert turn_requests[0].context_pack.snippets[0].content == 'def parse(): ...'
 
 
 @pytest.mark.asyncio
 async def test_implementation_workflow_fails_successful_step_rejected_by_review(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_gather_context(request: object) -> tuple[ContextPack, LLMUsage]:
-        return (
-            ContextPack(
-                task_summary='Implement behavior',
-                snippets=[],
-                artifact_references=[],
-                budget_remaining=1,
-            ),
-            _zero_usage(),
-        )
-
     async def fake_run_implementation_turn(request: object) -> tuple[WorkerResult, LLMUsage]:
         return (
             WorkerResult(
@@ -139,7 +169,6 @@ async def test_implementation_workflow_fails_successful_step_rejected_by_review(
             _zero_usage(),
         )
 
-    monkeypatch.setattr('src.workflows.implementation_workflow.gather_context', fake_gather_context)
     monkeypatch.setattr(
         'src.workflows.implementation_workflow.run_implementation_turn',
         fake_run_implementation_turn,
@@ -164,17 +193,6 @@ async def test_implementation_workflow_returns_blocked_result_immediately(
 ) -> None:
     turn_calls = 0
 
-    async def fake_gather_context(request: object) -> tuple[ContextPack, LLMUsage]:
-        return (
-            ContextPack(
-                task_summary='Implement behavior',
-                snippets=[],
-                artifact_references=[],
-                budget_remaining=1,
-            ),
-            _zero_usage(),
-        )
-
     async def fake_run_implementation_turn(request: object) -> tuple[WorkerResult, LLMUsage]:
         nonlocal turn_calls
         turn_calls += 1
@@ -195,7 +213,6 @@ async def test_implementation_workflow_returns_blocked_result_immediately(
     async def fake_review_patch(request: object) -> tuple[ReviewVerdict, LLMUsage]:
         raise AssertionError('blocked worker results should not be reviewed as successes')
 
-    monkeypatch.setattr('src.workflows.implementation_workflow.gather_context', fake_gather_context)
     monkeypatch.setattr(
         'src.workflows.implementation_workflow.run_implementation_turn',
         fake_run_implementation_turn,
@@ -220,17 +237,6 @@ async def test_implementation_workflow_returns_failed_result_without_review(
 ) -> None:
     turn_calls = 0
 
-    async def fake_gather_context(request: object) -> tuple[ContextPack, LLMUsage]:
-        return (
-            ContextPack(
-                task_summary='Implement behavior',
-                snippets=[],
-                artifact_references=[],
-                budget_remaining=1,
-            ),
-            _zero_usage(),
-        )
-
     async def fake_run_implementation_turn(request: object) -> tuple[WorkerResult, LLMUsage]:
         nonlocal turn_calls
         turn_calls += 1
@@ -251,7 +257,6 @@ async def test_implementation_workflow_returns_failed_result_without_review(
     async def fake_review_patch(request: object) -> tuple[ReviewVerdict, LLMUsage]:
         raise AssertionError('failed worker results should not be reviewed')
 
-    monkeypatch.setattr('src.workflows.implementation_workflow.gather_context', fake_gather_context)
     monkeypatch.setattr(
         'src.workflows.implementation_workflow.run_implementation_turn',
         fake_run_implementation_turn,

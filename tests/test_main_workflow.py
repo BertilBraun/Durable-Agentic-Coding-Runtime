@@ -1,12 +1,6 @@
 import pytest
-from src.activities.complexity_assessor import ComplexityVerdict
-from src.activities.plan_reviewer import (
-    PlanReviewDecision,
-    PlanReviewRequest,
-    PlanReviewVerdict,
-)
-from src.activities.planner import PlanRequest
-from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict
+from src.activities.context_gatherer import context_note_from_pack
+from src.activities.reviewer import ReviewDecision
 from src.activities.workspace_manager import (
     HostWorkspace,
     ToolExecutionRequest,
@@ -15,26 +9,34 @@ from src.activities.workspace_manager import (
 )
 from src.config import CONFIG
 from src.llm.client import LLMUsage
-from src.models.context import ContextPack
-from src.models.plan import Plan, PlanContext, PlanStep, Risk
+from src.models.context import ContextPack, PackedSnippet
+from src.models.plan import (
+    ContextRequest,
+    PlanContext,
+    PlannerState,
+    PlannerTurn,
+    PlanStep,
+    Risk,
+)
 from src.models.repo import RepoIndex
 from src.models.reproduction import ReproductionContext, ReproductionResult, ReproductionStatus
 from src.models.task import Origin, TaskContract, TaskRequest, TaskType
-from src.models.worker import Confidence, WorkerResult, WorkerStatus
+from src.models.worker import Confidence, TestResult, WorkerResult, WorkerStatus
+from src.workflows import main_workflow as workflow_module
 from src.workflows.main_workflow import (
-    PlanExecutionResult,
-    _review_and_revise_plan,
-    _run_candidate,
+    PlannerLoopState,
     _run_implementation_child,
-    _run_plan_steps,
+    _run_planner_loop,
+    _run_replanner_child,
     _run_reproduction_child,
+    _select_relevant_test_history,
     main_workflow,
 )
 from temporal_light.exceptions import WorkflowSuspended
 
 
-def _unit_usage() -> LLMUsage:
-    return LLMUsage(call_count=1, total_input_tokens=10, total_cost_usd=0.01)
+def _usage(count: int = 1) -> LLMUsage:
+    return LLMUsage(call_count=count, total_input_tokens=10, total_cost_usd=0.01)
 
 
 def _workspace() -> HostWorkspace:
@@ -48,63 +50,55 @@ def _workspace() -> HostWorkspace:
     )
 
 
-def _ok_result() -> ToolResult:
+def _ok_tool() -> ToolResult:
     return ToolResult(stdout='', stderr='', exit_code=0, truncated=False)
 
 
-def _worker_result(status: WorkerStatus, replan_suggestion: str | None = None) -> WorkerResult:
+def _contract(task_type: TaskType = TaskType.FEATURE) -> TaskContract:
+    return TaskContract(task_type=task_type, goal='Do the thing')
+
+
+def _step(step_id: str, confidence: Confidence = Confidence.HIGH) -> PlanStep:
+    return PlanStep(
+        id=step_id,
+        goal=f'Complete {step_id}',
+        target_files=[f'{step_id}.py'],
+        context_summary=f'Context for {step_id}',
+        required_changes=[f'Change {step_id}'],
+        out_of_scope=['Do not touch unrelated files'],
+        tests_to_run=[],
+        expected_result=f'{step_id} complete',
+        risk=Risk.LOW,
+        requires_human_approval=False,
+    )
+
+
+def _worker_result(
+    status: WorkerStatus = WorkerStatus.SUCCESS,
+    confidence: Confidence = Confidence.HIGH,
+    tests: list[TestResult] | None = None,
+) -> WorkerResult:
     return WorkerResult(
         status=status,
         patch_id='patch-1' if status == WorkerStatus.SUCCESS else None,
         diff_summary='did work',
-        tests_run=[],
-        test_results=[],
+        tests_run=[test.command for test in tests or []],
+        test_results=tests or [],
         discovered_issues=[],
-        confidence=Confidence.HIGH,
-        replan_suggestion=replan_suggestion,
+        observations=['observed behavior'],
+        confidence=confidence,
+        replan_suggestion=None,
     )
 
 
-def _contract(task_type: TaskType) -> TaskContract:
-    return TaskContract(task_type=task_type, goal='Do the thing')
-
-
-def _plan_with_step(step_id: str, integration_tests: list[str] | None = None) -> Plan:
-    return Plan(
-        summary=f'Plan {step_id}',
-        steps=[
-            PlanStep(
-                id=step_id,
-                goal='Update generated output',
-                target_files=['generated.py'],
-                tests_to_run=[],
-                expected_result='Generated output updated',
-                risk=Risk.LOW,
-                requires_human_approval=False,
-            )
-        ],
-        integration_tests=integration_tests or [],
-        definition_of_done=['diff reviewed'],
-    )
-
-
-def _plan_with_steps(step_ids: list[str]) -> Plan:
-    return Plan(
-        summary='Multi-step plan',
-        steps=[
-            PlanStep(
-                id=step_id,
-                goal=f'Complete {step_id}',
-                target_files=[f'{step_id}.py'],
-                tests_to_run=[],
-                expected_result=f'{step_id} complete',
-                risk=Risk.LOW,
-                requires_human_approval=False,
-            )
-            for step_id in step_ids
-        ],
-        integration_tests=[],
-        definition_of_done=['diff reviewed'],
+def _test_result(sequence: int, passed: bool) -> TestResult:
+    return TestResult(
+        sequence=sequence,
+        command=f'pytest test_{sequence}.py',
+        exit_code=0 if passed else 1,
+        stdout_summary='passed' if passed else 'failed',
+        stderr_summary='',
+        passed=passed,
     )
 
 
@@ -113,7 +107,7 @@ def _install_step_branch_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
         return workspace_arg.model_copy(update={'current_branch': f'cand-{candidate_index}'})
 
     async def fake_reset_to_base(workspace_arg: Workspace) -> ToolResult:
-        return _ok_result()
+        return _ok_tool()
 
     async def fake_snapshot_candidate_result(workspace_arg: Workspace) -> Workspace:
         return workspace_arg
@@ -123,588 +117,328 @@ def _install_step_branch_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
             update={'candidate_base_sha': f'base-after-{workspace_arg.current_branch}'}
         )
 
-    monkeypatch.setattr('src.workflows.main_workflow.begin_candidate', fake_begin_candidate)
-    monkeypatch.setattr('src.workflows.main_workflow.reset_to_base', fake_reset_to_base)
+    monkeypatch.setattr(workflow_module, 'begin_candidate', fake_begin_candidate)
+    monkeypatch.setattr(workflow_module, 'reset_to_base', fake_reset_to_base)
     monkeypatch.setattr(
-        'src.workflows.main_workflow.snapshot_candidate_result',
+        workflow_module,
+        'snapshot_candidate_result',
         fake_snapshot_candidate_result,
     )
-    monkeypatch.setattr(
-        'src.workflows.main_workflow.snapshot_candidate_base',
-        fake_snapshot_candidate_base,
+    monkeypatch.setattr(workflow_module, 'snapshot_candidate_base', fake_snapshot_candidate_base)
+
+
+def test_context_note_from_pack_keeps_compact_evidence_only() -> None:
+    note = context_note_from_pack(
+        ContextRequest(
+            id='ctx-1',
+            reason='Find parser',
+            queries=['Where is parse?'],
+            relevant_files=['src/requested.py'],
+        ),
+        ContextPack(
+            task_summary='Parser is in src/parser.py',
+            snippets=[
+                PackedSnippet(
+                    file_path='src/parser.py',
+                    start_line=1,
+                    end_line=3,
+                    reason='parser',
+                    content='def parse(): ...',
+                )
+            ],
+            budget_remaining=0,
+        ),
     )
 
+    assert note.id == 'ctx-1'
+    assert note.summary == 'Parser is in src/parser.py'
+    assert note.relevant_files == ['src/requested.py', 'src/parser.py']
 
-@pytest.mark.asyncio
-async def test_run_plan_steps_adds_child_workflow_usage(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_run_implementation_child(
-        plan_step: PlanStep,
-        plan_context: PlanContext,
-        workspace_info: Workspace,
-        contract: TaskContract,
-        repo_index: RepoIndex,
-    ) -> tuple[WorkerResult, LLMUsage]:
-        return _worker_result(WorkerStatus.SUCCESS), LLMUsage(
-            call_count=3, total_input_tokens=30, total_output_tokens=12, total_cost_usd=0.05
-        )
 
-    monkeypatch.setattr(
-        'src.workflows.main_workflow._run_implementation_child', fake_run_implementation_child
-    )
-    _install_step_branch_fakes(monkeypatch)
-
-    result = await _run_plan_steps(
-        plan=_plan_with_step('step-1'),
-        contract=_contract(TaskType.FEATURE),
-        repo_index=RepoIndex(),
+def test_planner_loop_state_appends_context_notes_immutably() -> None:
+    state = PlannerLoopState(
         workspace_info=_workspace(),
-        reproduction=None,
+        planner_state=PlannerState(contract=_contract(), repo_index=RepoIndex()),
+        context_packs=[],
+        latest_future_steps=[],
+        worker_results=[],
+        usage=LLMUsage(),
+    )
+    note = context_note_from_pack(
+        ContextRequest(id='ctx-1', reason='Find parser'),
+        ContextPack(task_summary='Parser context', snippets=[], budget_remaining=0),
     )
 
-    assert len(result.worker_results) == 1
-    assert result.reproduction_passed_after is None
-    assert result.llm_usage.call_count == 3
-    assert result.llm_usage.total_cost_usd == 0.05
+    updated = state.with_context(notes=[note], packs=[])
+
+    assert state.planner_state.context_notes == []
+    assert updated.planner_state.context_notes == [note]
+    assert updated is not state
 
 
 @pytest.mark.asyncio
-async def test_run_plan_steps_samples_candidates_only_for_low_confidence_step(
+async def test_planner_loop_fulfills_context_then_runs_first_future_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    executed_steps: list[tuple[str, str]] = []
-    begin_indices: list[int] = []
-    reset_branches: list[str] = []
-    snapshot_result_branches: list[str] = []
-    snapshot_base_branches: list[str] = []
-    step_2_attempts = 0
-
-    async def fake_begin_candidate(workspace_arg: Workspace, candidate_index: int) -> Workspace:
-        begin_indices.append(candidate_index)
-        return workspace_arg.model_copy(update={'current_branch': f'cand-{candidate_index}'})
-
-    async def fake_reset_to_base(workspace_arg: Workspace) -> ToolResult:
-        reset_branches.append(workspace_arg.current_branch)
-        return _ok_result()
-
-    async def fake_snapshot_candidate_result(workspace_arg: Workspace) -> Workspace:
-        snapshot_result_branches.append(workspace_arg.current_branch)
-        return workspace_arg
-
-    async def fake_snapshot_candidate_base(workspace_arg: Workspace) -> Workspace:
-        snapshot_base_branches.append(workspace_arg.current_branch)
-        return workspace_arg.model_copy(
-            update={'candidate_base_sha': f'base-after-{workspace_arg.current_branch}'}
-        )
-
-    async def fake_run_implementation_child(
-        plan_step: PlanStep,
-        plan_context: PlanContext,
-        workspace_info: Workspace,
-        contract: TaskContract,
-        repo_index: RepoIndex,
-    ) -> tuple[WorkerResult, LLMUsage]:
-        nonlocal step_2_attempts
-        executed_steps.append((plan_step.id, workspace_info.current_branch))
-        confidence = Confidence.HIGH
-        if plan_step.id == 'step-2':
-            step_2_attempts += 1
-            confidence = Confidence.LOW if step_2_attempts == 1 else Confidence.HIGH
-        return (
-            _worker_result(WorkerStatus.SUCCESS).model_copy(update={'confidence': confidence}),
-            _unit_usage(),
-        )
-
-    monkeypatch.setattr('src.workflows.main_workflow.begin_candidate', fake_begin_candidate)
-    monkeypatch.setattr('src.workflows.main_workflow.reset_to_base', fake_reset_to_base)
-    monkeypatch.setattr(
-        'src.workflows.main_workflow.snapshot_candidate_result',
-        fake_snapshot_candidate_result,
+    planner_states: list[PlannerState] = []
+    turns = iter(
+        [
+            PlannerTurn(future_steps=[_step('step-1'), _step('stale-step-2')]),
+            PlannerTurn(done=True, done_reason='ready'),
+        ]
     )
-    monkeypatch.setattr(
-        'src.workflows.main_workflow.snapshot_candidate_base',
-        fake_snapshot_candidate_base,
-    )
-    monkeypatch.setattr(
-        'src.workflows.main_workflow._run_implementation_child', fake_run_implementation_child
-    )
-
-    result = await _run_plan_steps(
-        plan=_plan_with_steps(['step-1', 'step-2']),
-        contract=_contract(TaskType.FEATURE),
-        repo_index=RepoIndex(),
-        workspace_info=_workspace(),
-        reproduction=None,
-    )
-
-    assert executed_steps == [
-        ('step-1', 'cand-0'),
-        ('step-2', 'cand-1'),
-        ('step-2', 'cand-2'),
-    ]
-    assert begin_indices == [0, 1, 2]
-    assert reset_branches == ['cand-0']
-    assert snapshot_result_branches == ['cand-0', 'cand-1', 'cand-2']
-    assert snapshot_base_branches == ['cand-0', 'cand-2']
-    assert [worker_result.confidence for worker_result in result.worker_results] == [
-        Confidence.HIGH,
-        Confidence.HIGH,
-    ]
-    assert result.workspace_info.current_branch == 'cand-2'
-
-
-@pytest.mark.asyncio
-async def test_run_plan_steps_caps_replan_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
-
-    implementation_calls = 0
-    build_plan_calls = 0
-
-    async def fake_run_implementation_child(
-        plan_step: PlanStep,
-        plan_context: PlanContext,
-        workspace_info: Workspace,
-        contract: TaskContract,
-        repo_index: RepoIndex,
-    ) -> tuple[WorkerResult, LLMUsage]:
-        nonlocal implementation_calls
-        implementation_calls += 1
-        return _worker_result(WorkerStatus.NEEDS_REPLAN, 'try again'), _unit_usage()
-
-    async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
-        nonlocal build_plan_calls
-        build_plan_calls += 1
-        return _plan_with_step('step'), _unit_usage()
-
-    monkeypatch.setattr(
-        'src.workflows.main_workflow._run_implementation_child', fake_run_implementation_child
-    )
-    monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
-    _install_step_branch_fakes(monkeypatch)
-
-    result = await _run_plan_steps(
-        plan=_plan_with_step('step'),
-        contract=_contract(TaskType.FEATURE),
-        repo_index=RepoIndex(),
-        workspace_info=_workspace(),
-        reproduction=None,
-    )
-
-    assert implementation_calls == CONFIG.max_replan_attempts + 1
-    assert build_plan_calls == 0
-    assert result.worker_results[-1].status == WorkerStatus.BLOCKED
-
-
-@pytest.mark.asyncio
-async def test_run_plan_steps_uses_single_corrective_step_after_review_replan(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    executed_steps: list[PlanStep] = []
-
-    async def fake_run_implementation_child(
-        plan_step: PlanStep,
-        plan_context: PlanContext,
-        workspace_info: Workspace,
-        contract: TaskContract,
-        repo_index: RepoIndex,
-    ) -> tuple[WorkerResult, LLMUsage]:
-        executed_steps.append(plan_step)
-        if len(executed_steps) == 1:
-            return (
-                _worker_result(WorkerStatus.NEEDS_REPLAN, 'add zero case').model_copy(
-                    update={
-                        'tests_run': ['pytest test_app.py'],
-                        'discovered_issues': ['missing zero coverage'],
-                    }
-                ),
-                _unit_usage(),
-            )
-        return _worker_result(WorkerStatus.SUCCESS), _unit_usage()
-
-    async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
-        raise AssertionError('review feedback should schedule a corrective step, not replan')
-
-    monkeypatch.setattr(
-        'src.workflows.main_workflow._run_implementation_child', fake_run_implementation_child
-    )
-    monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
-    _install_step_branch_fakes(monkeypatch)
-
-    result = await _run_plan_steps(
-        plan=_plan_with_step('implement'),
-        contract=_contract(TaskType.FEATURE),
-        repo_index=RepoIndex(),
-        workspace_info=_workspace(),
-        reproduction=None,
-    )
-
-    assert [step.id for step in executed_steps] == ['implement', 'revise-implement']
-    assert executed_steps[1].target_files == executed_steps[0].target_files
-    assert executed_steps[1].tests_to_run == executed_steps[0].tests_to_run
-    assert 'Original step goal: Update generated output' in executed_steps[1].goal
-    assert 'add zero case' in executed_steps[1].goal
-    assert 'pytest test_app.py' in executed_steps[1].goal
-    assert 'missing zero coverage' in executed_steps[1].goal
-    assert 'current workspace' in executed_steps[1].expected_result
-    assert [worker_result.status for worker_result in result.worker_results] == [
-        WorkerStatus.NEEDS_REPLAN,
-        WorkerStatus.SUCCESS,
-    ]
-
-
-@pytest.mark.asyncio
-async def test_run_plan_steps_final_gate_passes_when_repro_and_suite_green(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def fake_run_implementation_child(
-        plan_step: PlanStep,
-        plan_context: PlanContext,
-        workspace_info: Workspace,
-        contract: TaskContract,
-        repo_index: RepoIndex,
-    ) -> tuple[WorkerResult, LLMUsage]:
-        return _worker_result(WorkerStatus.SUCCESS), _unit_usage()
-
-    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
-        return _ok_result()
-
-    monkeypatch.setattr(
-        'src.workflows.main_workflow._run_implementation_child', fake_run_implementation_child
-    )
-    monkeypatch.setattr('src.workflows.main_workflow.run_tool', fake_run_tool)
-    _install_step_branch_fakes(monkeypatch)
-
-    result = await _run_plan_steps(
-        plan=_plan_with_step('step-1'),
-        contract=_contract(TaskType.BUGFIX),
-        repo_index=RepoIndex(),
-        workspace_info=_workspace(),
-        reproduction=ReproductionContext(repro_command='pytest x', failure_evidence='boom'),
-    )
-
-    assert result.reproduction_passed_after is True
-    assert [worker_result.status for worker_result in result.worker_results] == [
-        WorkerStatus.SUCCESS
-    ]
-
-
-@pytest.mark.asyncio
-async def test_run_plan_steps_runs_all_steps_even_after_repro_green(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     executed_steps: list[str] = []
 
+    async def fake_run_replanner_child(
+        workspace_info: Workspace,
+        repo_index: RepoIndex,
+        max_planner_turns: int,
+        planner_state: PlannerState,
+    ) -> tuple[PlannerTurn, list[object], list[ContextPack], int, LLMUsage]:
+        planner_states.append(planner_state)
+        context_pack = ContextPack(
+            task_summary='Handler context',
+            snippets=[
+                PackedSnippet(
+                    file_path='src/handler.py',
+                    start_line=1,
+                    end_line=4,
+                    reason='handler',
+                    content='def handle(): ...',
+                )
+            ],
+            budget_remaining=0,
+        )
+        notes = []
+        packs = []
+        if not planner_state.context_notes:
+            request = ContextRequest(
+                id='ctx-1',
+                reason='Need file context',
+                queries=['Find handler'],
+            )
+            notes = [context_note_from_pack(request, context_pack)]
+            packs = [context_pack]
+        return next(turns), notes, packs, 1, _usage()
+
     async def fake_run_implementation_child(
         plan_step: PlanStep,
         plan_context: PlanContext,
+        context_pack: ContextPack,
         workspace_info: Workspace,
         contract: TaskContract,
         repo_index: RepoIndex,
     ) -> tuple[WorkerResult, LLMUsage]:
         executed_steps.append(plan_step.id)
-        return _worker_result(WorkerStatus.SUCCESS), _unit_usage()
+        assert plan_context.completed_step_summaries == []
+        assert context_pack.snippets[0].content == 'def handle(): ...'
+        return _worker_result(), _usage()
 
-    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
-        return _ok_result()
+    async def fake_get_full_diff(workspace_arg: Workspace) -> str:
+        return 'diff --git a/app.py b/app.py'
 
-    monkeypatch.setattr(
-        'src.workflows.main_workflow._run_implementation_child', fake_run_implementation_child
-    )
-    monkeypatch.setattr('src.workflows.main_workflow.run_tool', fake_run_tool)
+    monkeypatch.setattr(workflow_module, '_run_replanner_child', fake_run_replanner_child)
+    monkeypatch.setattr(workflow_module, '_run_implementation_child', fake_run_implementation_child)
+    monkeypatch.setattr(workflow_module, 'get_full_diff', fake_get_full_diff)
     _install_step_branch_fakes(monkeypatch)
 
-    fix_step = _plan_with_step('fix').steps[0]
-    cleanup_step = _plan_with_step('cleanup').steps[0]
-    plan = Plan(
-        summary='Fix then clean up',
-        steps=[fix_step, cleanup_step],
-        integration_tests=[],
-        definition_of_done=['diff reviewed'],
-    )
-
-    result = await _run_plan_steps(
-        plan=plan,
-        contract=_contract(TaskType.BUGFIX),
-        repo_index=RepoIndex(),
+    result = await _run_planner_loop(
         workspace_info=_workspace(),
-        reproduction=ReproductionContext(repro_command='pytest x', failure_evidence='boom'),
+        contract=_contract(),
+        repo_index=RepoIndex(),
+        reproduction=None,
     )
 
-    assert executed_steps == ['fix', 'cleanup']
-    assert result.reproduction_passed_after is True
+    assert executed_steps == ['step-1']
+    assert len(planner_states) == 2
+    assert planner_states[1].completed_steps[0].step_id == 'step-1'
+    assert result.worker_results[0].observations == ['observed behavior']
 
 
 @pytest.mark.asyncio
-async def test_run_plan_steps_replans_when_repro_still_failing(
+async def test_planner_loop_passes_relevant_context_pack_to_implementation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    feedbacks: list[str | None] = []
+    turns = iter([PlannerTurn(future_steps=[_step('step-1')]), PlannerTurn(done=True)])
+    captured_pack: list[ContextPack] = []
+
+    async def fake_run_replanner_child(
+        workspace_info: Workspace,
+        repo_index: RepoIndex,
+        max_planner_turns: int,
+        planner_state: PlannerState,
+    ) -> tuple[PlannerTurn, list[object], list[ContextPack], int, LLMUsage]:
+        return next(turns), [], [], 1, _usage()
 
     async def fake_run_implementation_child(
         plan_step: PlanStep,
         plan_context: PlanContext,
+        context_pack: ContextPack,
         workspace_info: Workspace,
         contract: TaskContract,
         repo_index: RepoIndex,
     ) -> tuple[WorkerResult, LLMUsage]:
-        return _worker_result(WorkerStatus.SUCCESS), _unit_usage()
-
-    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
-        return ToolResult(stdout='still red', stderr='', exit_code=1, truncated=False)
-
-    async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
-        feedbacks.append(request.revision_feedback)
-        return _plan_with_step('retry'), _unit_usage()
-
-    monkeypatch.setattr(
-        'src.workflows.main_workflow._run_implementation_child', fake_run_implementation_child
-    )
-    monkeypatch.setattr('src.workflows.main_workflow.run_tool', fake_run_tool)
-    monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
-    _install_step_branch_fakes(monkeypatch)
-
-    result = await _run_plan_steps(
-        plan=_plan_with_step('step-1'),
-        contract=_contract(TaskType.BUGFIX),
-        repo_index=RepoIndex(),
-        workspace_info=_workspace(),
-        reproduction=ReproductionContext(repro_command='pytest x', failure_evidence='boom'),
-    )
-
-    assert result.reproduction_passed_after is False
-    assert any('regression test still failing' in (feedback or '') for feedback in feedbacks)
-    assert result.worker_results[-1].status == WorkerStatus.BLOCKED
-
-
-def _context_pack() -> ContextPack:
-    return ContextPack(task_summary='gathered', snippets=[], budget_remaining=0)
-
-
-@pytest.mark.asyncio
-async def test_review_loop_revises_then_accepts_and_uses_revised_plan(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    decisions = iter([PlanReviewDecision.REVISE, PlanReviewDecision.ACCEPT])
-    build_plan_requests: list[PlanRequest] = []
-    gather_calls: list[str] = []
-
-    async def fake_review_plan(
-        request: PlanReviewRequest,
-    ) -> tuple[PlanReviewVerdict, LLMUsage]:
-        decision = next(decisions)
-        feedback = '' if decision == PlanReviewDecision.ACCEPT else 'inspect the auth callers'
-        return PlanReviewVerdict(decision=decision, feedback=feedback), _unit_usage()
-
-    async def fake_gather_context(request: object) -> tuple[ContextPack, LLMUsage]:
-        gather_calls.append('gathered')
-        return _context_pack(), _unit_usage()
-
-    async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
-        build_plan_requests.append(request)
-        return _plan_with_step('revised'), _unit_usage()
-
-    monkeypatch.setattr('src.workflows.main_workflow.review_plan', fake_review_plan)
-    monkeypatch.setattr('src.workflows.main_workflow.gather_context', fake_gather_context)
-    monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
-
-    plan, usage = await _review_and_revise_plan(
-        plan=_plan_with_step('initial'),
-        contract=_contract(TaskType.FEATURE),
-        repo_index=RepoIndex(),
-        workspace_info=_workspace(),
-        reproduction=None,
-    )
-
-    assert len(build_plan_requests) == 1
-    assert build_plan_requests[0].context is not None
-    assert build_plan_requests[0].revision_feedback == 'inspect the auth callers'
-    assert len(gather_calls) == 1
-    assert plan.steps[0].id == 'revised'
-    assert usage.call_count == 4
-
-
-@pytest.mark.asyncio
-async def test_review_loop_stops_at_cap_and_keeps_latest_plan(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    build_plan_count = 0
-
-    async def fake_review_plan(
-        request: PlanReviewRequest,
-    ) -> tuple[PlanReviewVerdict, LLMUsage]:
-        return PlanReviewVerdict(
-            decision=PlanReviewDecision.REVISE, feedback='again'
-        ), _unit_usage()
-
-    async def fake_gather_context(request: object) -> tuple[ContextPack, LLMUsage]:
-        return _context_pack(), _unit_usage()
-
-    async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
-        nonlocal build_plan_count
-        build_plan_count += 1
-        return _plan_with_step(f'revised-{build_plan_count}'), _unit_usage()
-
-    monkeypatch.setattr('src.workflows.main_workflow.review_plan', fake_review_plan)
-    monkeypatch.setattr('src.workflows.main_workflow.gather_context', fake_gather_context)
-    monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
-
-    plan, _ = await _review_and_revise_plan(
-        plan=_plan_with_step('initial'),
-        contract=_contract(TaskType.FEATURE),
-        repo_index=RepoIndex(),
-        workspace_info=_workspace(),
-        reproduction=None,
-    )
-
-    assert build_plan_count == CONFIG.max_plan_review_rounds
-    assert plan.steps[0].id == f'revised-{CONFIG.max_plan_review_rounds}'
-
-
-@pytest.mark.asyncio
-async def test_run_candidate_snapshots_candidate_result_before_review(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
-    candidate_workspace = _workspace().model_copy(
-        update={'current_branch': 'agentic/run-1/cand-0'}
-    )
-
-    async def fake_begin_candidate(workspace_arg: Workspace, candidate_index: int) -> Workspace:
-        events.append('begin')
-        return candidate_workspace
-
-    async def fake_run_plan_steps(
-        plan: Plan,
-        contract: TaskContract,
-        repo_index: RepoIndex,
-        workspace_info: Workspace,
-        reproduction: ReproductionContext | None,
-    ) -> PlanExecutionResult:
-        events.append('steps')
-        return PlanExecutionResult(
-            plan=plan,
-            worker_results=[_worker_result(WorkerStatus.SUCCESS)],
-            reproduction_passed_after=None,
-            llm_usage=_unit_usage(),
-            workspace_info=workspace_info,
-        )
+        captured_pack.append(context_pack)
+        return _worker_result(), _usage()
 
     async def fake_get_full_diff(workspace_arg: Workspace) -> str:
-        events.append('diff')
-        return 'diff --git a/app.py b/app.py\n'
+        return 'diff --git a/app.py b/app.py'
 
-    async def fake_snapshot_candidate_result(workspace_arg: Workspace) -> Workspace:
-        events.append('snapshot')
-        return workspace_arg
+    monkeypatch.setattr(workflow_module, '_run_replanner_child', fake_run_replanner_child)
+    monkeypatch.setattr(workflow_module, '_run_implementation_child', fake_run_implementation_child)
+    monkeypatch.setattr(workflow_module, 'get_full_diff', fake_get_full_diff)
+    _install_step_branch_fakes(monkeypatch)
 
-    async def fake_review_patch(request: ReviewRequest) -> tuple[ReviewVerdict, LLMUsage]:
-        events.append('review')
-        return ReviewVerdict(
-            verdict=ReviewDecision.ACCEPT,
-            evidence=[],
-            blocking_issues=[],
-            non_blocking_issues=[],
-            missing_tests=[],
-            regression_risks=[],
-            minimality_assessment='ok',
-            recommended_next_action='ship',
-        ), _unit_usage()
+    await _run_planner_loop(_workspace(), _contract(), RepoIndex(), None)
 
-    monkeypatch.setattr('src.workflows.main_workflow.begin_candidate', fake_begin_candidate)
-    monkeypatch.setattr('src.workflows.main_workflow._run_plan_steps', fake_run_plan_steps)
-    monkeypatch.setattr('src.workflows.main_workflow.get_full_diff', fake_get_full_diff)
-    monkeypatch.setattr(
-        'src.workflows.main_workflow.snapshot_candidate_result',
-        fake_snapshot_candidate_result,
-    )
-    monkeypatch.setattr('src.workflows.main_workflow.review_patch', fake_review_patch)
-
-    candidate, _ = await _run_candidate(
-        candidate_index=0,
-        workspace=_workspace(),
-        plan=_plan_with_step('step-1'),
-        contract=_contract(TaskType.FEATURE),
-        repo_index=RepoIndex(),
-        reproduction=None,
-    )
-
-    assert events == ['begin', 'steps', 'diff', 'snapshot', 'review']
-    assert candidate.branch == 'agentic/run-1/cand-0'
-
-
-def _install_common_workflow_fakes(
-    monkeypatch: pytest.MonkeyPatch,
-    contract: TaskContract,
-    workspace: Workspace,
-) -> None:
-    async def fake_build_contract(task_request: TaskRequest) -> tuple[TaskContract, LLMUsage]:
-        return contract, _unit_usage()
-
-    async def fake_setup_environment(origin: Origin, run_id: str) -> Workspace:
-        return workspace
-
-    async def fake_build_repo_index(workspace_arg: Workspace) -> RepoIndex:
-        return RepoIndex()
-
-    async def fake_begin_candidate(workspace_arg: Workspace, candidate_index: int) -> Workspace:
-        return workspace
-
-    async def fake_snapshot_candidate_base(workspace_arg: Workspace) -> Workspace:
-        return workspace_arg.model_copy(
-            update={'candidate_base_sha': f'base-after-{workspace_arg.current_branch}'}
-        )
-
-    async def fake_snapshot_candidate_result(workspace_arg: Workspace) -> Workspace:
-        return workspace_arg
-
-    async def fake_reset_to_base(workspace_arg: Workspace) -> ToolResult:
-        return _ok_result()
-
-    async def fake_assess_complexity(
-        task_contract: TaskContract,
-    ) -> tuple[ComplexityVerdict, LLMUsage]:
-        return ComplexityVerdict(requires_human_approval=False, reasoning='narrow'), _unit_usage()
-
-    async def fake_review_plan(
-        request: PlanReviewRequest,
-    ) -> tuple[PlanReviewVerdict, LLMUsage]:
-        return PlanReviewVerdict(decision=PlanReviewDecision.ACCEPT, feedback=''), _unit_usage()
-
-    async def fake_teardown_environment(workspace_arg: Workspace) -> ToolResult:
-        return _ok_result()
-
-    monkeypatch.setattr('src.workflows.main_workflow.build_contract', fake_build_contract)
-    monkeypatch.setattr('src.workflows.main_workflow.setup_environment', fake_setup_environment)
-    monkeypatch.setattr('src.workflows.main_workflow.build_repo_index', fake_build_repo_index)
-    monkeypatch.setattr('src.workflows.main_workflow.begin_candidate', fake_begin_candidate)
-    monkeypatch.setattr(
-        'src.workflows.main_workflow.snapshot_candidate_base', fake_snapshot_candidate_base
-    )
-    monkeypatch.setattr(
-        'src.workflows.main_workflow.snapshot_candidate_result', fake_snapshot_candidate_result
-    )
-    monkeypatch.setattr('src.workflows.main_workflow.reset_to_base', fake_reset_to_base)
-    monkeypatch.setattr('src.workflows.main_workflow.assess_complexity', fake_assess_complexity)
-    monkeypatch.setattr('src.workflows.main_workflow.review_plan', fake_review_plan)
-    monkeypatch.setattr(
-        'src.workflows.main_workflow.teardown_environment', fake_teardown_environment
-    )
-
-
-def _reproduction_payload(status: ReproductionStatus) -> dict[str, object]:
-    return {
-        'reproduction_result': ReproductionResult(
-            status=status,
-            repro_command='pytest tests/test_bug.py',
-            test_files=['tests/test_bug.py'],
-            failure_evidence='boom',
-        ).model_dump(mode='json'),
-        'llm_usage': _unit_usage().model_dump(mode='json'),
-    }
+    assert captured_pack[0].task_summary == 'Context for step-1'
 
 
 @pytest.mark.asyncio
-async def test_reproduction_child_uses_semantic_child_id(
+async def test_planner_loop_replans_after_one_step_and_does_not_run_stale_second_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    turns = iter(
+        [
+            PlannerTurn(future_steps=[_step('step-1'), _step('old-step-2')]),
+            PlannerTurn(future_steps=[_step('new-step-2')]),
+            PlannerTurn(done=True),
+        ]
+    )
+    executed_steps: list[str] = []
+
+    async def fake_run_replanner_child(
+        workspace_info: Workspace,
+        repo_index: RepoIndex,
+        max_planner_turns: int,
+        planner_state: PlannerState,
+    ) -> tuple[PlannerTurn, list[object], list[ContextPack], int, LLMUsage]:
+        return next(turns), [], [], 1, _usage()
+
+    async def fake_run_implementation_child(
+        plan_step: PlanStep,
+        plan_context: PlanContext,
+        context_pack: ContextPack,
+        workspace_info: Workspace,
+        contract: TaskContract,
+        repo_index: RepoIndex,
+    ) -> tuple[WorkerResult, LLMUsage]:
+        executed_steps.append(plan_step.id)
+        return _worker_result(), _usage()
+
+    async def fake_get_full_diff(workspace_arg: Workspace) -> str:
+        return 'diff --git a/app.py b/app.py'
+
+    monkeypatch.setattr(workflow_module, '_run_replanner_child', fake_run_replanner_child)
+    monkeypatch.setattr(workflow_module, '_run_implementation_child', fake_run_implementation_child)
+    monkeypatch.setattr(workflow_module, 'get_full_diff', fake_get_full_diff)
+    _install_step_branch_fakes(monkeypatch)
+
+    await _run_planner_loop(_workspace(), _contract(), RepoIndex(), None)
+
+    assert executed_steps == ['step-1', 'new-step-2']
+
+
+@pytest.mark.asyncio
+async def test_planner_turn_cap_produces_blocked_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    replanner_calls = 0
+
+    async def fake_run_replanner_child(
+        workspace_info: Workspace,
+        repo_index: RepoIndex,
+        max_planner_turns: int,
+        planner_state: PlannerState,
+    ) -> tuple[PlannerTurn, list[object], list[ContextPack], int, LLMUsage]:
+        nonlocal replanner_calls
+        replanner_calls += 1
+        assert max_planner_turns == 1
+        return PlannerTurn(context_requests=[]), [], [], 1, _usage()
+
+    monkeypatch.setattr(workflow_module, '_run_replanner_child', fake_run_replanner_child)
+    monkeypatch.setattr(
+        workflow_module,
+        'CONFIG',
+        CONFIG.model_copy(update={'max_planner_turns': 1}),
+    )
+
+    result = await _run_planner_loop(_workspace(), _contract(), RepoIndex(), None)
+
+    assert replanner_calls == 1
+    assert result.worker_results[-1].status == WorkerStatus.BLOCKED
+    assert result.worker_results[-1].diff_summary == 'Planner turn cap reached before done.'
+
+
+def test_select_relevant_test_history_keeps_last_pass_and_trailing_failures() -> None:
+    assert _select_relevant_test_history([_test_result(1, False), _test_result(2, False)]) == [
+        _test_result(1, False),
+        _test_result(2, False),
+    ]
+    assert _select_relevant_test_history([_test_result(1, False), _test_result(2, True)]) == [
+        _test_result(2, True)
+    ]
+    assert _select_relevant_test_history(
+        [_test_result(1, False), _test_result(2, True), _test_result(3, False)]
+    ) == [_test_result(2, True), _test_result(3, False)]
+    assert _select_relevant_test_history([_test_result(1, True), _test_result(2, True)]) == [
+        _test_result(2, True)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reproduction_failure_is_refreshed_as_planner_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_states: list[PlannerState] = []
+    turns = iter([PlannerTurn(future_steps=[_step('fix')]), PlannerTurn(done=True)])
+    repro_calls = 0
+
+    async def fake_run_replanner_child(
+        workspace_info: Workspace,
+        repo_index: RepoIndex,
+        max_planner_turns: int,
+        planner_state: PlannerState,
+    ) -> tuple[PlannerTurn, list[object], list[ContextPack], int, LLMUsage]:
+        planner_states.append(planner_state)
+        return next(turns), [], [], 1, _usage()
+
+    async def fake_run_implementation_child(
+        plan_step: PlanStep,
+        plan_context: PlanContext,
+        context_pack: ContextPack,
+        workspace_info: Workspace,
+        contract: TaskContract,
+        repo_index: RepoIndex,
+    ) -> tuple[WorkerResult, LLMUsage]:
+        return _worker_result(), _usage()
+
+    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+        nonlocal repro_calls
+        repro_calls += 1
+        return ToolResult(stdout='still red', stderr='', exit_code=1, truncated=False)
+
+    async def fake_get_full_diff(workspace_arg: Workspace) -> str:
+        return 'diff --git a/app.py b/app.py'
+
+    monkeypatch.setattr(workflow_module, '_run_replanner_child', fake_run_replanner_child)
+    monkeypatch.setattr(workflow_module, '_run_implementation_child', fake_run_implementation_child)
+    monkeypatch.setattr(workflow_module, 'run_tool', fake_run_tool)
+    monkeypatch.setattr(workflow_module, 'get_full_diff', fake_get_full_diff)
+    _install_step_branch_fakes(monkeypatch)
+
+    await _run_planner_loop(
+        _workspace(),
+        _contract(TaskType.BUGFIX),
+        RepoIndex(),
+        ReproductionContext(repro_command='pytest bug.py', failure_evidence='boom'),
+    )
+
+    assert repro_calls == 1
+    assert planner_states[1].evidence.reproduction_passed is False
+    assert planner_states[1].evidence.reproduction_stdout_summary == 'still red'
+
+
+@pytest.mark.asyncio
+async def test_reproduction_child_uses_semantic_child_id(monkeypatch: pytest.MonkeyPatch) -> None:
     spawned_kwargs: list[dict[str, object]] = []
 
     async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
@@ -712,10 +446,17 @@ async def test_reproduction_child_uses_semantic_child_id(
         return str(kwargs['child_id'])
 
     async def fake_wait_for_child(child_id: str) -> dict[str, object]:
-        return _reproduction_payload(ReproductionStatus.REPRODUCED)
+        return {
+            'reproduction_result': ReproductionResult(
+                status=ReproductionStatus.REPRODUCED,
+                repro_command='pytest bug.py',
+                failure_evidence='boom',
+            ).model_dump(mode='json'),
+            'llm_usage': _usage().model_dump(mode='json'),
+        }
 
-    monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
-    monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
+    monkeypatch.setattr(workflow_module, 'spawn_child', fake_spawn_child)
+    monkeypatch.setattr(workflow_module, 'wait_for_child', fake_wait_for_child)
 
     await _run_reproduction_child(_workspace(), _contract(TaskType.BUGFIX), RepoIndex())
 
@@ -724,46 +465,10 @@ async def test_reproduction_child_uses_semantic_child_id(
 
 
 @pytest.mark.asyncio
-async def test_reproduction_child_id_is_unique_per_environment_execution(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    spawned_child_ids: list[str] = []
-
-    async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
-        spawned_child_ids.append(str(kwargs['child_id']))
-        return str(kwargs['child_id'])
-
-    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
-        return _reproduction_payload(ReproductionStatus.REPRODUCED)
-
-    monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
-    monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
-
-    await _run_reproduction_child(
-        _workspace().model_copy(update={'execution_id': 'exec-1'}),
-        _contract(TaskType.BUGFIX),
-        RepoIndex(),
-    )
-    await _run_reproduction_child(
-        _workspace().model_copy(update={'execution_id': 'exec-2'}),
-        _contract(TaskType.BUGFIX),
-        RepoIndex(),
-    )
-
-    assert spawned_child_ids == [
-        'run-1:exec-1:reproduction',
-        'run-1:exec-2:reproduction',
-    ]
-
-
-@pytest.mark.asyncio
-async def test_implementation_child_uses_semantic_child_id(
+async def test_implementation_child_includes_rich_step_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spawned_kwargs: list[dict[str, object]] = []
-    workspace = _workspace().model_copy(
-        update={'current_branch': 'agentic/run-1/cand-0'}
-    )
 
     async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
         spawned_kwargs.append({'workflow_name': workflow_name, **kwargs})
@@ -771,23 +476,36 @@ async def test_implementation_child_uses_semantic_child_id(
 
     async def fake_wait_for_child(child_id: str) -> dict[str, object]:
         return {
-            'worker_result': _worker_result(WorkerStatus.SUCCESS).model_dump(mode='json'),
-            'llm_usage': _unit_usage().model_dump(mode='json'),
+            'worker_result': _worker_result().model_dump(mode='json'),
+            'llm_usage': _usage().model_dump(mode='json'),
         }
 
-    monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
-    monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
+    monkeypatch.setattr(workflow_module, 'spawn_child', fake_spawn_child)
+    monkeypatch.setattr(workflow_module, 'wait_for_child', fake_wait_for_child)
 
     await _run_implementation_child(
-        plan_step=_plan_with_step('implement/subtract').steps[0],
+        plan_step=_step('implement/subtract'),
         plan_context=PlanContext(
-            summary='Implement subtract',
+            summary='Planner-driven execution',
             current_step_id='implement/subtract',
             all_step_ids=['implement/subtract'],
-            completed_step_summaries=[],
+            completed_step_summaries=['prior: done'],
         ),
-        workspace_info=workspace,
-        contract=_contract(TaskType.FEATURE),
+        context_pack=ContextPack(
+            task_summary='Packed implementation context',
+            snippets=[
+                PackedSnippet(
+                    file_path='src/app.py',
+                    start_line=1,
+                    end_line=2,
+                    reason='target',
+                    content='def app(): ...',
+                )
+            ],
+            budget_remaining=3,
+        ),
+        workspace_info=_workspace().model_copy(update={'current_branch': 'agentic/run-1/cand-0'}),
+        contract=_contract(),
         repo_index=RepoIndex(),
     )
 
@@ -795,109 +513,151 @@ async def test_implementation_child_uses_semantic_child_id(
     assert spawned_kwargs[0]['child_id'] == (
         'run-1:exec-1:implementation:agentic-run-1-cand-0:implement-subtract'
     )
-    assert spawned_kwargs[0]['plan_context'] == {
-        'summary': 'Implement subtract',
-        'current_step_id': 'implement/subtract',
-        'all_step_ids': ['implement/subtract'],
-        'completed_step_summaries': [],
-    }
+    assert spawned_kwargs[0]['step']['context_summary'] == 'Context for implement/subtract'
+    assert spawned_kwargs[0]['step']['required_changes'] == ['Change implement/subtract']
+    assert spawned_kwargs[0]['plan_context']['completed_step_summaries'] == ['prior: done']
+    assert spawned_kwargs[0]['context_pack']['snippets'][0]['content'] == 'def app(): ...'
 
 
 @pytest.mark.asyncio
-async def test_main_workflow_blocks_when_bug_cannot_be_reproduced(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = _workspace()
-    spawned_workflows: list[str] = []
-    finalized = False
-    _install_common_workflow_fakes(monkeypatch, _contract(TaskType.BUGFIX), workspace)
+async def test_replanner_child_uses_semantic_child_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    spawned_kwargs: list[dict[str, object]] = []
+    planner_state = PlannerState(contract=_contract(), repo_index=RepoIndex())
+    planner_turn = PlannerTurn(future_steps=[_step('step-1')])
 
     async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
-        spawned_workflows.append(workflow_name)
-        return 'repro-1'
+        spawned_kwargs.append({'workflow_name': workflow_name, **kwargs})
+        return str(kwargs['child_id'])
 
     async def fake_wait_for_child(child_id: str) -> dict[str, object]:
-        return _reproduction_payload(ReproductionStatus.COULD_NOT_REPRODUCE)
-
-    async def fake_finalize_winner(workspace_arg: Workspace, winner_branch: str) -> ToolResult:
-        nonlocal finalized
-        finalized = True
-        return _ok_result()
-
-    monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
-    monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
-    monkeypatch.setattr('src.workflows.main_workflow.finalize_winner', fake_finalize_winner)
-
-    report = await main_workflow(
-        {'raw_request': 'fix bug', 'origin': {'kind': 'host', 'repo_path': 'C:/repo'}}
-    )
-
-    assert report['status'] == WorkerStatus.BLOCKED.value
-    assert 'could not reproduce' in report['blocked_reason']
-    assert spawned_workflows == ['reproduction_workflow']
-    assert finalized is False
-
-
-@pytest.mark.asyncio
-async def test_main_workflow_threads_reproduction_evidence_into_report(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = _workspace()
-    plan_requests: list[PlanRequest] = []
-    _install_common_workflow_fakes(monkeypatch, _contract(TaskType.BUGFIX), workspace)
-
-    async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
-        if workflow_name == 'reproduction_workflow':
-            return 'repro-1'
-        return 'impl-1'
-
-    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
-        if child_id == 'repro-1':
-            return _reproduction_payload(ReproductionStatus.REPRODUCED)
         return {
-            'worker_result': _worker_result(WorkerStatus.SUCCESS).model_dump(mode='json'),
-            'llm_usage': _unit_usage().model_dump(mode='json'),
+            'planner_turn': planner_turn.model_dump(mode='json'),
+            'context_notes': [],
+            'context_packs': [],
+            'planner_turn_count': 1,
+            'llm_usage': _usage().model_dump(mode='json'),
         }
 
-    async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
-        plan_requests.append(request)
-        return _plan_with_step('fix-step'), _unit_usage()
+    monkeypatch.setattr(workflow_module, 'spawn_child', fake_spawn_child)
+    monkeypatch.setattr(workflow_module, 'wait_for_child', fake_wait_for_child)
+
+    turn, notes, packs, turn_count, usage = await _run_replanner_child(
+        _workspace(),
+        RepoIndex(),
+        5,
+        planner_state,
+    )
+
+    assert turn == planner_turn
+    assert notes == []
+    assert packs == []
+    assert turn_count == 1
+    assert usage.call_count == 1
+    assert spawned_kwargs[0]['workflow_name'] == 'replanning_workflow'
+    assert spawned_kwargs[0]['child_id'] == 'run-1:exec-1:replanning'
+    assert spawned_kwargs[0]['workspace']['repo_path'] == 'workspace'
+    assert spawned_kwargs[0]['repo_index'] == RepoIndex().model_dump(mode='json')
+    assert spawned_kwargs[0]['max_planner_turns'] == 5
+    assert spawned_kwargs[0]['planner_state']['contract']['goal'] == 'Do the thing'
+
+
+def _install_common_workflow_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    contract: TaskContract,
+    workspace: Workspace,
+) -> None:
+    async def fake_build_contract(task_request: TaskRequest) -> tuple[TaskContract, LLMUsage]:
+        return contract, _usage()
+
+    async def fake_setup_environment(origin: Origin, run_id: str) -> Workspace:
+        return workspace
+
+    async def fake_build_repo_index(workspace_arg: Workspace) -> RepoIndex:
+        return RepoIndex()
+
+    async def fake_teardown_environment(workspace_arg: Workspace) -> ToolResult:
+        return _ok_tool()
+
+    monkeypatch.setattr(workflow_module, 'build_contract', fake_build_contract)
+    monkeypatch.setattr(workflow_module, 'setup_environment', fake_setup_environment)
+    monkeypatch.setattr(workflow_module, 'build_repo_index', fake_build_repo_index)
+    monkeypatch.setattr(workflow_module, 'teardown_environment', fake_teardown_environment)
+
+
+@pytest.mark.asyncio
+async def test_main_workflow_reports_final_reproduction_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace()
+    _install_common_workflow_fakes(monkeypatch, _contract(TaskType.BUGFIX), workspace)
+    _install_step_branch_fakes(monkeypatch)
+    turns = iter([PlannerTurn(future_steps=[_step('fix')]), PlannerTurn(done=True)])
+    run_tool_calls = 0
+
+    async def fake_run_reproduction_child(
+        workspace_info: Workspace,
+        contract: TaskContract,
+        repo_index: RepoIndex,
+    ) -> tuple[ReproductionResult, LLMUsage]:
+        return (
+            ReproductionResult(
+                status=ReproductionStatus.REPRODUCED,
+                repro_command='pytest bug.py',
+                failure_evidence='boom',
+            ),
+            _usage(),
+        )
+
+    async def fake_run_replanner_child(
+        workspace_info: Workspace,
+        repo_index: RepoIndex,
+        max_planner_turns: int,
+        planner_state: PlannerState,
+    ) -> tuple[PlannerTurn, list[object], list[ContextPack], int, LLMUsage]:
+        return next(turns), [], [], 1, _usage()
+
+    async def fake_run_implementation_child(
+        plan_step: PlanStep,
+        plan_context: PlanContext,
+        context_pack: ContextPack,
+        workspace_info: Workspace,
+        contract: TaskContract,
+        repo_index: RepoIndex,
+    ) -> tuple[WorkerResult, LLMUsage]:
+        return _worker_result(), _usage()
 
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
-        return _ok_result()
+        nonlocal run_tool_calls
+        run_tool_calls += 1
+        exit_code = 1 if run_tool_calls == 2 else 0
+        return ToolResult(
+            stdout='red' if exit_code else 'green',
+            stderr='',
+            exit_code=exit_code,
+            truncated=False,
+        )
 
     async def fake_get_full_diff(workspace_arg: Workspace) -> str:
         return 'diff --git a/app.py b/app.py'
 
-    async def fake_review_patch(request: ReviewRequest) -> tuple[ReviewVerdict, LLMUsage]:
-        return (
-            ReviewVerdict(
-                verdict=ReviewDecision.ACCEPT,
-                minimality_assessment='minimal',
-                recommended_next_action='accept',
-            ),
-            _unit_usage(),
-        )
-
     async def fake_finalize_winner(workspace_arg: Workspace, winner_branch: str) -> ToolResult:
-        return _ok_result()
+        return _ok_tool()
 
-    monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
-    monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
-    monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
-    monkeypatch.setattr('src.workflows.main_workflow.run_tool', fake_run_tool)
-    monkeypatch.setattr('src.workflows.main_workflow.get_full_diff', fake_get_full_diff)
-    monkeypatch.setattr('src.workflows.main_workflow.review_patch', fake_review_patch)
-    monkeypatch.setattr('src.workflows.main_workflow.finalize_winner', fake_finalize_winner)
+    monkeypatch.setattr(workflow_module, '_run_reproduction_child', fake_run_reproduction_child)
+    monkeypatch.setattr(workflow_module, '_run_replanner_child', fake_run_replanner_child)
+    monkeypatch.setattr(workflow_module, '_run_implementation_child', fake_run_implementation_child)
+    monkeypatch.setattr(workflow_module, 'run_tool', fake_run_tool)
+    monkeypatch.setattr(workflow_module, 'get_full_diff', fake_get_full_diff)
+    monkeypatch.setattr(workflow_module, 'finalize_winner', fake_finalize_winner)
 
     report = await main_workflow(
         {'raw_request': 'fix bug', 'origin': {'kind': 'host', 'repo_path': 'C:/repo'}}
     )
 
-    assert report['status'] == ReviewDecision.ACCEPT.value
-    evidence = report['reproduction_evidence']
-    assert evidence['passed_after'] is True
-    assert plan_requests[0].reproduction is not None
+    assert report['workflow_status'] == 'completed'
+    assert report['agent_verdict'] == ReviewDecision.REVISE.value
+    assert report['reproduction_passed'] is False
+    assert report['official_prediction_emitted'] is True
 
 
 @pytest.mark.asyncio
@@ -906,10 +666,7 @@ async def test_main_workflow_does_not_teardown_while_suspended_on_child(
 ) -> None:
     torn_down: list[Workspace] = []
     workspace = _workspace()
-    _install_common_workflow_fakes(monkeypatch, _contract(TaskType.FEATURE), workspace)
-
-    async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
-        return _plan_with_step('step-1'), _unit_usage()
+    _install_common_workflow_fakes(monkeypatch, _contract(), workspace)
 
     async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
         return 'child-1'
@@ -919,14 +676,12 @@ async def test_main_workflow_does_not_teardown_while_suspended_on_child(
 
     async def fake_teardown_environment(workspace_arg: Workspace) -> ToolResult:
         torn_down.append(workspace_arg)
-        return _ok_result()
+        return _ok_tool()
 
-    monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
-    monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
-    monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
-    monkeypatch.setattr(
-        'src.workflows.main_workflow.teardown_environment', fake_teardown_environment
-    )
+    monkeypatch.setattr(workflow_module, 'spawn_child', fake_spawn_child)
+    monkeypatch.setattr(workflow_module, 'wait_for_child', fake_wait_for_child)
+    monkeypatch.setattr(workflow_module, 'teardown_environment', fake_teardown_environment)
+    _install_step_branch_fakes(monkeypatch)
 
     with pytest.raises(WorkflowSuspended, match=r'Workflow waiting for child\.'):
         await main_workflow(
@@ -934,125 +689,3 @@ async def test_main_workflow_does_not_teardown_while_suspended_on_child(
         )
 
     assert torn_down == []
-
-
-def _review_verdict(decision: ReviewDecision) -> ReviewVerdict:
-    return ReviewVerdict(
-        verdict=decision,
-        minimality_assessment='minimal',
-        recommended_next_action='proceed',
-    )
-
-
-class _CandidateRunTracker:
-    def __init__(self) -> None:
-        self.begin_indices: list[int] = []
-        self.reset_count = 0
-        self.finalized_branch: str | None = None
-
-
-def _install_candidate_run_fakes(
-    monkeypatch: pytest.MonkeyPatch,
-    workspace: HostWorkspace,
-    worker_confidence: Confidence | list[Confidence],
-    verdicts: list[ReviewDecision],
-) -> _CandidateRunTracker:
-    tracker = _CandidateRunTracker()
-    verdict_iter = iter(verdicts)
-    confidence_iter = iter(
-        worker_confidence if isinstance(worker_confidence, list) else [worker_confidence]
-    )
-
-    async def fake_build_plan(request: PlanRequest) -> tuple[Plan, LLMUsage]:
-        return _plan_with_step('step-1'), _unit_usage()
-
-    async def fake_begin_candidate(workspace_arg: Workspace, candidate_index: int) -> Workspace:
-        tracker.begin_indices.append(candidate_index)
-        return workspace.model_copy(update={'current_branch': f'cand-{candidate_index}'})
-
-    async def fake_reset_to_base(workspace_arg: Workspace) -> ToolResult:
-        tracker.reset_count += 1
-        return _ok_result()
-
-    async def fake_spawn_child(workflow_name: str, **kwargs: object) -> str:
-        return 'impl-1'
-
-    async def fake_wait_for_child(child_id: str) -> dict[str, object]:
-        confidence = next(confidence_iter, worker_confidence)
-        if isinstance(confidence, list):
-            confidence = confidence[-1]
-        worker_result = _worker_result(WorkerStatus.SUCCESS).model_copy(
-            update={'confidence': confidence}
-        )
-        return {
-            'worker_result': worker_result.model_dump(mode='json'),
-            'llm_usage': _unit_usage().model_dump(mode='json'),
-        }
-
-    async def fake_get_full_diff(workspace_arg: Workspace) -> str:
-        return 'diff --git a/app.py b/app.py'
-
-    async def fake_review_patch(request: ReviewRequest) -> tuple[ReviewVerdict, LLMUsage]:
-        return _review_verdict(next(verdict_iter)), _unit_usage()
-
-    async def fake_finalize_winner(workspace_arg: Workspace, winner_branch: str) -> ToolResult:
-        tracker.finalized_branch = winner_branch
-        return _ok_result()
-
-    monkeypatch.setattr('src.workflows.main_workflow.build_plan', fake_build_plan)
-    monkeypatch.setattr('src.workflows.main_workflow.begin_candidate', fake_begin_candidate)
-    monkeypatch.setattr('src.workflows.main_workflow.reset_to_base', fake_reset_to_base)
-    monkeypatch.setattr('src.workflows.main_workflow.spawn_child', fake_spawn_child)
-    monkeypatch.setattr('src.workflows.main_workflow.wait_for_child', fake_wait_for_child)
-    monkeypatch.setattr('src.workflows.main_workflow.get_full_diff', fake_get_full_diff)
-    monkeypatch.setattr('src.workflows.main_workflow.review_patch', fake_review_patch)
-    monkeypatch.setattr('src.workflows.main_workflow.finalize_winner', fake_finalize_winner)
-    return tracker
-
-
-@pytest.mark.asyncio
-async def test_main_workflow_high_confidence_runs_single_candidate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = _workspace()
-    _install_common_workflow_fakes(monkeypatch, _contract(TaskType.FEATURE), workspace)
-    tracker = _install_candidate_run_fakes(
-        monkeypatch,
-        workspace,
-        worker_confidence=Confidence.HIGH,
-        verdicts=[ReviewDecision.ACCEPT],
-    )
-
-    report = await main_workflow(
-        {'raw_request': 'add feature', 'origin': {'kind': 'host', 'repo_path': 'C:/repo'}}
-    )
-
-    assert tracker.begin_indices == [0]
-    assert tracker.reset_count == 0
-    assert tracker.finalized_branch == 'cand-0'
-    assert report['status'] == ReviewDecision.ACCEPT.value
-
-
-@pytest.mark.asyncio
-async def test_main_workflow_low_confidence_escalates_and_finalizes_selected_branch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = _workspace()
-    _install_common_workflow_fakes(monkeypatch, _contract(TaskType.FEATURE), workspace)
-    tracker = _install_candidate_run_fakes(
-        monkeypatch,
-        workspace,
-        worker_confidence=[Confidence.LOW, Confidence.HIGH],
-        verdicts=[ReviewDecision.ACCEPT],
-    )
-
-    report = await main_workflow(
-        {'raw_request': 'add feature', 'origin': {'kind': 'host', 'repo_path': 'C:/repo'}}
-    )
-
-    expected_count = CONFIG.candidate_count_low_confidence
-    assert tracker.begin_indices == list(range(expected_count))
-    assert tracker.reset_count == expected_count - 1
-    assert tracker.finalized_branch == 'cand-1'
-    assert report['status'] == ReviewDecision.ACCEPT.value
-    assert report['chosen_candidate']['index'] == 0

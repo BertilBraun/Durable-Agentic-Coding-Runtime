@@ -15,7 +15,7 @@ from src.activities.workspace_manager import HostWorkspace, ToolExecutionRequest
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, StructuredCompletion
 from src.models.context import ContextPack, PackedSnippet
-from src.models.plan import PlanStep, Risk
+from src.models.plan import PlanContext, PlanStep, Risk
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerStatus
@@ -614,7 +614,7 @@ async def test_implementation_turn_user_message_excludes_repo_index(
     assert captured_user_payloads == [
             {
                 'plan_step': _implementation_request().plan_step.model_dump(mode='json'),
-                'plan_context': None,
+                'completed_step_summaries': [],
                 'context_pack': _implementation_request().context_pack.model_dump(mode='json'),
                 'task_contract': _implementation_request().task_contract.model_dump(mode='json'),
             'workspace_info': _implementation_request().workspace_info.model_dump(mode='json'),
@@ -622,6 +622,63 @@ async def test_implementation_turn_user_message_excludes_repo_index(
             'available_tools': list(IMPLEMENTATION_AVAILABLE_TOOLS),
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_implementation_turn_user_payload_includes_step_specific_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_payloads: list[dict[str, object]] = []
+
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        captured_payloads.append(json.loads(messages[1].content))
+        turn = output_type.model_validate(
+            {
+                'done': True,
+                'worker_result': {
+                    'status': 'blocked',
+                    'patch_id': None,
+                    'diff_summary': 'Prompt inspected.',
+                    'tests_run': [],
+                    'test_results': [],
+                    'discovered_issues': [],
+                    'confidence': 'low',
+                    'replan_suggestion': 'Continue.',
+                },
+            }
+        )
+        return _structured_completion(turn, context_utilization=0.0)
+
+    _patch_generate_structured(monkeypatch, handler)
+    request = _implementation_request().model_copy(
+        update={
+            'plan_step': _implementation_request().plan_step.model_copy(
+                update={
+                    'context_summary': 'Use app parser context.',
+                    'required_changes': ['Fix parser branch.'],
+                    'out_of_scope': ['Do not touch CLI.'],
+                    'tests_to_run': ['pytest tests/test_app.py -q'],
+                }
+            ),
+            'plan_context': PlanContext(
+                summary='Planner-driven execution',
+                current_step_id='step_1',
+                all_step_ids=['step_1'],
+                completed_step_summaries=['prior: done'],
+            ),
+        }
+    )
+
+    await run_implementation_turn(request)
+
+    plan_step = captured_payloads[0]['plan_step']
+    assert plan_step['context_summary'] == 'Use app parser context.'
+    assert plan_step['required_changes'] == ['Fix parser branch.']
+    assert plan_step['out_of_scope'] == ['Do not touch CLI.']
+    assert plan_step['target_files'] == ['src/app.py']
+    assert captured_payloads[0]['completed_step_summaries'] == ['prior: done']
 
 
 def _implementation_request() -> ImplementationTurnRequest:

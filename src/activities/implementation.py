@@ -34,19 +34,23 @@ from src.tools.definitions import (
 )
 
 IMPLEMENTATION_SYSTEM_PROMPT = (
-    'You are the implementation worker for one step of a larger coding plan. '
-    'The workspace already contains any accepted prior steps listed in the '
-    'plan context; preserve that work and do not redo it. Use the plan context '
-    'only for orientation, and execute the current plan step only. Inspect '
-    'before editing when context is insufficient, then use the smallest patch '
-    'that satisfies the current step. Edit with write_file or apply_patch and '
-    'run tests with run_tests; use run_shell for any other command (status, '
+    'You execute exactly one planner-selected step. '
+    'The workspace already contains accepted prior steps listed in '
+    'completed_step_summaries; preserve that work and do not redo it. '
+    'Use plan_step.target_files, plan_step.context_summary, '
+    'plan_step.required_changes, plan_step.tests_to_run, and plan_step.out_of_scope '
+    'as the contract for this turn. Inspect before editing when context is insufficient, '
+    'then use the smallest patch that satisfies the current step. Edit with write_file '
+    'or apply_patch and run tests with run_tests; use run_shell for any other command (status, '
     'diff, search, reading files), writing it for the environment described '
     'in the user payload. Keep changes inside allowed files unless blocked, '
     'and explain why any extra file is needed. Run relevant tests after edits; '
     'inspect failures before editing again. Return done=true with WorkerResult '
     'only for complete, blocked, failed, or needs_replan outcomes. Report '
-    'success only with an applied edit or observed test evidence. Confidence '
+    'success only with an applied edit or observed test evidence. Do not broaden scope. '
+    'Do not delete or rewrite existing tests unless the step explicitly requires it. '
+    'Return concise observations that help the outer planner decide the next future step. '
+    'Confidence '
     'means confidence in this step based on observed diff and tests, not how '
     'hard the task felt. Use needs_replan when partial progress exists but '
     'more work is required in the same workspace. Do not fabricate progress, '
@@ -195,13 +199,12 @@ async def run_implementation_turn(
 
 
 def _llm_user_payload(request: ImplementationTurnRequest) -> dict[str, object]:
+    completed_step_summaries: list[str] = []
+    if request.plan_context is not None:
+        completed_step_summaries = request.plan_context.completed_step_summaries
     return {
         'plan_step': request.plan_step.model_dump(mode='json'),
-        'plan_context': (
-            request.plan_context.model_dump(mode='json')
-            if request.plan_context is not None
-            else None
-        ),
+        'completed_step_summaries': completed_step_summaries,
         'context_pack': request.context_pack.model_dump(mode='json'),
         'task_contract': request.task_contract.model_dump(mode='json'),
         'workspace_info': request.workspace_info.model_dump(mode='json'),

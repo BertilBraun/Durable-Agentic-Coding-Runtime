@@ -60,23 +60,49 @@ def test_directory_tree_text_shows_files_for_small_repositories() -> None:
     assert repository_index.directory_tree_text() == 'app.py\ntests\n  test_app.py'
 
 
-def test_directory_tree_text_collapses_to_directories_for_large_repositories() -> None:
+def test_directory_tree_text_expands_by_level_until_entry_budget() -> None:
     repository_index = RepoIndex(
         file_tree=[
-            FileEntry(path=f'pkg/module_{index}.py', language=Language.PYTHON, size_bytes=0)
-            for index in range(51)
+            FileEntry(path='alpha/a.py', language=Language.PYTHON, size_bytes=0),
+            FileEntry(path='alpha/b.py', language=Language.PYTHON, size_bytes=0),
+            FileEntry(path='beta/c.py', language=Language.PYTHON, size_bytes=0),
+            FileEntry(path='docs/readme.md', language=Language.UNKNOWN, size_bytes=0),
         ]
-        + [FileEntry(path='tests/test_app.py', language=Language.PYTHON, size_bytes=0)]
     )
 
-    assert repository_index.directory_tree_text() == 'pkg\ntests'
+    assert repository_index.directory_tree_text() == (
+        'alpha\n'
+        '  a.py\n'
+        '  b.py\n'
+        'beta\n'
+        '  c.py\n'
+        'docs\n'
+        '  readme.md'
+    )
+
+
+def test_directory_tree_text_stops_expanding_before_entry_budget_is_exceeded() -> None:
+    repository_index = RepoIndex(
+        file_tree=[
+            FileEntry(
+                path=f'pkg_{package}/module_{index}.py',
+                language=Language.PYTHON,
+                size_bytes=0,
+            )
+            for package in range(10)
+            for index in range(10)
+        ]
+    )
+
+    lines = repository_index.directory_tree_text().splitlines()
+    assert lines == [f'pkg_{index}' for index in range(10)]
 
 
 @pytest.mark.asyncio
 async def test_repo_indexer_serializes_compact_overview_for_large_repositories() -> None:
     workspace = _recording_workspace().model_copy(
         update={
-            'tracked_files': [f'pkg/module_{index}.py' for index in range(51)]
+            'tracked_files': [f'pkg/module_{index}.py' for index in range(31)]
             + ['tests/test_app.py']
         }
     )
@@ -84,7 +110,7 @@ async def test_repo_indexer_serializes_compact_overview_for_large_repositories()
     repository_index = await build_repo_index(workspace)
     payload = repository_index.model_dump(mode='json')
 
-    assert repository_index.tracked_file_count == 52
+    assert repository_index.tracked_file_count == 32
     assert repository_index.file_tree == []
     assert repository_index.directory_tree_text() == 'pkg\ntests'
     assert 'module_0.py' not in str(payload)
@@ -93,7 +119,7 @@ async def test_repo_indexer_serializes_compact_overview_for_large_repositories()
         'symbols': [],
         'references': [],
         'overview_text': 'pkg\ntests',
-        'tracked_file_count': 52,
+        'tracked_file_count': 32,
     }
 
 
