@@ -101,7 +101,7 @@ def _fake_structured_content(response_format: type[BaseModel], messages: list[Me
                 '"goal":"Add a deterministic smoke patch","target_files":["app.py","test_app.py"],'
                 '"tests_to_run":["pytest -q"],'
                 '"expected_result":"Patch changes code and tests pass",'
-                '"risk":"low","requires_human_approval":false}],'
+                '"risk":"low"}],'
                 '"integration_tests":["pytest -q"],'
                 '"definition_of_done":["Diff is non-empty","Smoke test passes"]}'
             )

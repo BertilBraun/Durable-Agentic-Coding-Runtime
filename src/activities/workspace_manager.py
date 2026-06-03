@@ -331,10 +331,9 @@ def _swe_bench_container_name(run_id: str) -> str:
 
 
 def _docker_name_part(value: str) -> str:
-    return ''.join(
-        character.lower() if character.isalnum() else '-'
-        for character in value
-    ).strip('-')
+    return ''.join(character.lower() if character.isalnum() else '-' for character in value).strip(
+        '-'
+    )
 
 
 def _swe_bench_container_labels(run_id: str) -> dict[str, str]:
@@ -506,8 +505,7 @@ def _missing_snippet_artifact(run_id: str, snippet: ContextSnippet) -> ArtifactR
     return _write_context_overflow_artifact(
         run_id=run_id,
         summary=(
-            f'missing context snippet: '
-            f'{snippet.file_path}:{snippet.start_line}-{snippet.end_line}'
+            f'missing context snippet: {snippet.file_path}:{snippet.start_line}-{snippet.end_line}'
         ),
         content=(
             'Context snippet file was requested but was not present in the workspace.\n'

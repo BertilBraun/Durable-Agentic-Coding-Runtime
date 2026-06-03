@@ -50,9 +50,6 @@ class PlanStep(FrozenBaseModel):
     )
     expected_result: str = Field(description='Observable state that means this step is complete.')
     risk: Risk = Field(description='Risk of this step if implemented incorrectly.')
-    requires_human_approval: bool = Field(
-        description='Whether this step must pause for approval before implementation.'
-    )
 
 
 class Plan(FrozenBaseModel):

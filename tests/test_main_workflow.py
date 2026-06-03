@@ -69,7 +69,6 @@ def _step(step_id: str, confidence: Confidence = Confidence.HIGH) -> PlanStep:
         tests_to_run=[],
         expected_result=f'{step_id} complete',
         risk=Risk.LOW,
-        requires_human_approval=False,
     )
 
 

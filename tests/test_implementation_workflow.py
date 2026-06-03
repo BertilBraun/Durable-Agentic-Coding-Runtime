@@ -311,7 +311,6 @@ def _plan_step() -> PlanStep:
         tests_to_run=['pytest -q'],
         expected_result='Behavior works',
         risk=Risk.LOW,
-        requires_human_approval=False,
     )
 
 

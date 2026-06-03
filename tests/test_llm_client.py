@@ -4,7 +4,6 @@ import httpx
 import pytest
 from openai import RateLimitError
 from openai.types.chat import ChatCompletion, ParsedChatCompletion
-from src.activities.complexity_assessor import ComplexityVerdict
 from src.config import ModelRole
 from src.llm.client import (
     LLMClient,
@@ -14,7 +13,13 @@ from src.llm.client import (
     _rate_limit_retry_seconds,
     _structured_output_type,
 )
+from src.models.frozen_base_model import FrozenBaseModel
 from src.models.task import TaskContract
+
+
+class StructuredDummy(FrozenBaseModel):
+    accepted: bool
+    reasoning: str
 
 
 def _rate_limit_error(message: str) -> RateLimitError:
@@ -81,7 +86,7 @@ class FakeCompletions:
                         'finish_reason': 'stop',
                         'message': {
                             'role': 'assistant',
-                            'content': json.dumps({'requires_human_approval': False}),
+                            'content': json.dumps({'accepted': True, 'reasoning': 'Narrow.'}),
                         },
                     }
                 ],
@@ -95,11 +100,11 @@ class FakeCompletions:
 
     async def parse(
         self,
-        response_format: type[ComplexityVerdict],
+        response_format: type[StructuredDummy],
         **keyword_arguments: object,
-    ) -> ParsedChatCompletion[ComplexityVerdict]:
+    ) -> ParsedChatCompletion[StructuredDummy]:
         self.parse_calls.append({'response_format': response_format, **keyword_arguments})
-        return ParsedChatCompletion[ComplexityVerdict].model_validate(
+        return ParsedChatCompletion[StructuredDummy].model_validate(
             {
                 'id': 'chatcmpl-test',
                 'object': 'chat.completion',
@@ -113,13 +118,13 @@ class FakeCompletions:
                             'role': 'assistant',
                             'content': json.dumps(
                                 {
-                                    'requires_human_approval': False,
-                                    'reasoning': 'Narrow bugfix.',
+                                    'accepted': True,
+                                    'reasoning': 'Narrow.',
                                 }
                             ),
                             'parsed': {
-                                'requires_human_approval': False,
-                                'reasoning': 'Narrow bugfix.',
+                                'accepted': True,
+                                'reasoning': 'Narrow.',
                             },
                         },
                     }
@@ -161,18 +166,18 @@ async def test_structured_generation_returns_llm_result_with_usage() -> None:
 
     result = await llm_client.generate_structured(
         messages=[Message(role='user', content='Assess this task')],
-        output_type=ComplexityVerdict,
+        output_type=StructuredDummy,
         model='complexity-model',
         context_limit_tokens=100,
     )
 
-    assert async_openai_client.completions.parse_calls[0]['response_format'] == ComplexityVerdict
+    assert async_openai_client.completions.parse_calls[0]['response_format'] == StructuredDummy
     assert result.model == 'complexity-model'
     assert result.usage.call_count == 1
     assert result.usage.total_input_tokens == 10
     assert result.usage.total_output_tokens == 4
     assert result.context_utilization() == 0.1
-    assert ComplexityVerdict.model_validate_json(result.content).requires_human_approval is False
+    assert StructuredDummy.model_validate_json(result.content).accepted is True
 
 
 @pytest.mark.asyncio
@@ -182,7 +187,7 @@ async def test_reasoning_effort_attaches_to_structured_request() -> None:
 
     await llm_client.generate_structured(
         messages=[Message(role='user', content='Plan this task')],
-        output_type=ComplexityVerdict,
+        output_type=StructuredDummy,
         model='claude-opus-4-7',
         context_limit_tokens=200_000,
         reasoning_effort='high',
@@ -199,7 +204,7 @@ async def test_reasoning_effort_off_omits_the_param() -> None:
 
     await llm_client.generate_structured(
         messages=[Message(role='user', content='Review this patch')],
-        output_type=ComplexityVerdict,
+        output_type=StructuredDummy,
         model='claude-opus-4-7',
         context_limit_tokens=200_000,
         reasoning_effort='',
@@ -219,7 +224,7 @@ async def test_completion_returns_llm_result_with_usage() -> None:
         context_limit_tokens=100,
     )
 
-    assert result.content == '{"requires_human_approval": false}'
+    assert result.content == '{"accepted": true, "reasoning": "Narrow."}'
     assert result.model == 'completion-model'
     assert result.usage.call_count == 1
     assert result.usage.total_input_tokens == 10
@@ -244,8 +249,8 @@ async def test_structured_completion_activity_closes_owned_client(
 
     await llm_client_module.generate_structured_completion(
         messages=[Message(role='user', content='Assess this task')],
-        output_type_module='src.activities.complexity_assessor',
-        output_type_name='ComplexityVerdict',
+        output_type_module='tests.test_llm_client',
+        output_type_name='StructuredDummy',
         model='complexity-model',
         context_limit_tokens=100,
     )

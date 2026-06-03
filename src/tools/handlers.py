@@ -10,7 +10,6 @@ from src.tools.definitions import (
     FindCallees,
     FindCallers,
     FindDefinition,
-    RunLint,
     RunShell,
     RunTests,
     Tool,
@@ -38,8 +37,6 @@ def command_for_tool(tool: Tool, workspace: Workspace) -> list[str]:
         case RunTests(command=command, directory=directory):
             quoted_directory = shlex.quote(directory)
             return workspace.shell_invocation(f'cd {quoted_directory} && {command}')
-        case RunLint(path=path):
-            return ['ruff', 'check', path]
         case RunShell(command=command):
             return workspace.shell_invocation(command)
         case FindDefinition() | FindCallers() | FindCallees():
@@ -50,7 +47,7 @@ def command_for_tool(tool: Tool, workspace: Workspace) -> list[str]:
 
 def _validate_tool_paths(tool: Tool) -> None:
     match tool:
-        case RunLint(path=path) | WriteFile(file_path=path) | RunTests(directory=path):
+        case WriteFile(file_path=path) | RunTests(directory=path):
             _validate_workspace_relative_path(path)
         case _:
             return

@@ -612,11 +612,11 @@ async def test_implementation_turn_user_message_excludes_repo_index(
     await run_implementation_turn(_implementation_request())
 
     assert captured_user_payloads == [
-            {
-                'plan_step': _implementation_request().plan_step.model_dump(mode='json'),
-                'completed_step_summaries': [],
-                'context_pack': _implementation_request().context_pack.model_dump(mode='json'),
-                'task_contract': _implementation_request().task_contract.model_dump(mode='json'),
+        {
+            'plan_step': _implementation_request().plan_step.model_dump(mode='json'),
+            'completed_step_summaries': [],
+            'context_pack': _implementation_request().context_pack.model_dump(mode='json'),
+            'task_contract': _implementation_request().task_contract.model_dump(mode='json'),
             'workspace_info': _implementation_request().workspace_info.model_dump(mode='json'),
             'environment': _implementation_request().workspace_info.describe_environment(),
             'available_tools': list(IMPLEMENTATION_AVAILABLE_TOOLS),
@@ -690,7 +690,6 @@ def _implementation_request() -> ImplementationTurnRequest:
             tests_to_run=[],
             expected_result='File inspected',
             risk=Risk.LOW,
-            requires_human_approval=False,
         ),
         context_pack=ContextPack(
             task_summary='Inspect file',

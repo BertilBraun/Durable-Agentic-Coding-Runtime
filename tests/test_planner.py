@@ -1,13 +1,12 @@
 import pytest
 from pydantic import BaseModel
 from src.activities import planner as planner_module
-from src.activities.planner import PlanRequest, build_plan, plan_next_turn
+from src.activities.planner import plan_next_turn
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, StructuredCompletion
-from src.models.context import ContextPack, PackedSnippet
+from src.models.context import PackedSnippet
 from src.models.plan import (
     ContextNote,
-    Plan,
     PlannerState,
     PlannerTurn,
     PlanStep,
@@ -17,64 +16,6 @@ from src.models.plan import (
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerStatus
-
-
-def _plan() -> Plan:
-    return Plan(
-        summary='Plan',
-        steps=[],
-        integration_tests=[],
-        definition_of_done=['done'],
-    )
-
-
-@pytest.mark.asyncio
-async def test_supplied_context_snippets_appear_in_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured_messages: list[list[Message]] = []
-
-    async def fake_generate_structured(
-        role: ModelRole,
-        messages: list[Message],
-        output_type: type[BaseModel],
-    ) -> StructuredCompletion:
-        captured_messages.append(messages)
-        return StructuredCompletion(
-            output=_plan(),
-            content=_plan().model_dump_json(),
-            model='fake-model',
-            context_limit_tokens=100,
-            usage=LLMUsage(call_count=1),
-        )
-
-    monkeypatch.setattr(planner_module, 'generate_structured', fake_generate_structured)
-
-    context = ContextPack(
-        task_summary='Auth token handling',
-        snippets=[
-            PackedSnippet(
-                file_path='src/auth.py',
-                start_line=10,
-                end_line=20,
-                reason='token handler',
-                content='def validate_token(): ...',
-            )
-        ],
-        budget_remaining=0,
-    )
-
-    await build_plan(
-        PlanRequest(
-            contract=TaskContract(task_type=TaskType.FEATURE, goal='Add auth'),
-            repo_index=RepoIndex(),
-            worker_results=[],
-            context=context,
-        ),
-    )
-
-    user_message = captured_messages[0][-1].content
-    assert 'src/auth.py:10-20' in user_message
-    assert 'token handler' in user_message
-    assert 'def validate_token(): ...' in user_message
 
 
 def test_planner_state_serializes_normalized_history_and_future_steps() -> None:
@@ -116,7 +57,6 @@ def test_planner_state_serializes_normalized_history_and_future_steps() -> None:
                 tests_to_run=['pytest tests/test_auth.py -q'],
                 expected_result='Auth test passes.',
                 risk=Risk.LOW,
-                requires_human_approval=False,
             )
         ],
     )
@@ -126,9 +66,7 @@ def test_planner_state_serializes_normalized_history_and_future_steps() -> None:
     assert payload['context_notes'][0]['snippets'][0]['file_path'] == 'src/auth.py'
     assert 'content' not in payload['context_notes'][0]['snippets'][0]
     assert payload['completed_steps'][0]['outcome'] == WorkerStatus.SUCCESS.value
-    assert payload['previous_future_steps'][0]['required_changes'] == [
-        'Fix missing token case.'
-    ]
+    assert payload['previous_future_steps'][0]['required_changes'] == ['Fix missing token case.']
 
 
 @pytest.mark.asyncio

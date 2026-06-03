@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from temporal_light import activity
-
-from src.activities.reviewer import ReviewDecision, ReviewVerdict
+from src.activities.reviewer import ReviewVerdict
 from src.config import CONFIG
 from src.models.frozen_base_model import FrozenBaseModel
 from src.models.plan import Plan
@@ -28,10 +26,6 @@ class CandidateResult(FrozenBaseModel):
     reproduction_evidence: ReproductionEvidence | None = None
 
 
-class SelectionRequest(FrozenBaseModel):
-    candidates: list[CandidateResult]
-
-
 def aggregate_candidate_confidence(worker_results: list[WorkerResult]) -> Confidence:
     successful_results = [
         worker_result
@@ -45,12 +39,6 @@ def aggregate_candidate_confidence(worker_results: list[WorkerResult]) -> Confid
     )
 
 
-def derive_candidate_confidence(candidate: CandidateResult) -> Confidence:
-    if candidate.review_verdict.verdict != ReviewDecision.ACCEPT:
-        return Confidence.LOW
-    return candidate.confidence
-
-
 def candidate_count_for_confidence(confidence: Confidence) -> int:
     match confidence:
         case Confidence.HIGH:
@@ -59,29 +47,3 @@ def candidate_count_for_confidence(confidence: Confidence) -> int:
             return CONFIG.candidate_count_medium_confidence
         case Confidence.LOW:
             return CONFIG.candidate_count_low_confidence
-
-
-def _passing_test_count(candidate: CandidateResult) -> int:
-    return sum(1 for test_result in candidate.test_results if test_result.passed)
-
-
-def _preference_key(candidate: CandidateResult) -> tuple[int, int, int, int, int]:
-    return (
-        1 if candidate.review_verdict.verdict == ReviewDecision.ACCEPT else 0,
-        _passing_test_count(candidate),
-        -len(candidate.review_verdict.blocking_issues),
-        -len(candidate.diff),
-        -candidate.index,
-    )
-
-
-def select_best_candidate(candidates: list[CandidateResult]) -> CandidateResult:
-    if not candidates:
-        raise ValueError('cannot select a winner from an empty candidate list')
-    return max(candidates, key=_preference_key)
-
-
-@activity(retries=0, timeout=120)
-async def select_candidate(request: SelectionRequest) -> CandidateResult:
-    # Selection, not combination: a combiner must re-validate its merged diff (see PLAN.md).
-    return select_best_candidate(request.candidates)

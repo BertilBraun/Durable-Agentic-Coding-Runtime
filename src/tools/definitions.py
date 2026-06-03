@@ -12,7 +12,6 @@ class ToolName(StrEnum):
     WRITE_FILE = 'write_file'
     APPLY_PATCH = 'apply_patch'
     RUN_TESTS = 'run_tests'
-    RUN_LINT = 'run_lint'
     RUN_SHELL = 'run_shell'
     FIND_DEFINITION = 'find_definition'
     FIND_CALLERS = 'find_callers'
@@ -49,14 +48,6 @@ class RunTests(ToolBase):
     command: str = Field(description='Test command to run, including needed setup for this call.')
     timeout_seconds: int = Field(description='Maximum seconds to allow the test command to run.')
     directory: str = Field(description='Workspace-relative directory to run from, or ".".')
-
-
-class RunLint(ToolBase):
-    tool_name: Literal[ToolName.RUN_LINT] = Field(
-        default=ToolName.RUN_LINT,
-        description='Tool name tag.',
-    )
-    path: str = Field(description='Workspace-relative path to lint, or ".".')
 
 
 class RunShell(ToolBase):
@@ -106,7 +97,6 @@ Tool = (
     WriteFile
     | ApplyPatch
     | RunTests
-    | RunLint
     | RunShell
     | FindDefinition
     | FindCallers

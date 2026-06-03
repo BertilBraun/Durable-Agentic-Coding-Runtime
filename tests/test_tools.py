@@ -4,7 +4,6 @@ from src.activities.workspace_manager import DockerWorkspace, HostWorkspace
 from src.tools.definitions import (
     ApplyPatch,
     FindCallers,
-    RunLint,
     RunShell,
     RunTests,
     ToolName,
@@ -81,12 +80,6 @@ def test_tool_command_rejects_parent_traversal_directory() -> None:
             RunTests(command='pytest', timeout_seconds=60, directory='src/../..'),
             _host_workspace(),
         )
-
-
-def test_tool_command_allows_current_directory_path() -> None:
-    command = command_for_tool(RunLint(path='.'), _host_workspace())
-
-    assert command == ['ruff', 'check', '.']
 
 
 def test_run_tests_command_runs_from_requested_directory() -> None:

@@ -1,5 +1,4 @@
 from pydantic import ValidationError
-from src.models.approval import ApprovalDecision, HumanApprovalSignal
 from src.models.plan import PlanStep, Risk
 from src.models.task import HostOrigin, TaskContract, TaskRequest, TaskType
 
@@ -15,15 +14,6 @@ def test_task_request_is_frozen() -> None:
     raise AssertionError('TaskRequest should be immutable')
 
 
-def test_revision_signal_requires_feedback() -> None:
-    try:
-        HumanApprovalSignal(decision=ApprovalDecision.REVISE, feedback=None)
-    except ValidationError:
-        return
-
-    raise AssertionError('Revision approval should require feedback')
-
-
 def test_plan_step_uses_serializable_enums() -> None:
     plan_step = PlanStep(
         id='step_1',
@@ -32,7 +22,6 @@ def test_plan_step_uses_serializable_enums() -> None:
         tests_to_run=['pytest tests/test_parser.py'],
         expected_result='Regression test passes',
         risk=Risk.LOW,
-        requires_human_approval=False,
     )
 
     assert plan_step.model_dump(mode='json')['risk'] == 'low'

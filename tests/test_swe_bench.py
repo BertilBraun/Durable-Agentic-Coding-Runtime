@@ -216,8 +216,7 @@ async def test_generate_predictions_fails_before_workflow_when_image_is_missing(
     def fake_image_checker(docker_images: list[str]) -> None:
         assert docker_images == ['sweb.eval.x86_64.python__repo-1:latest']
         raise RuntimeError(
-            'Missing required SWE-bench Docker image. '
-            '--tag latest --env_image_tag latest'
+            'Missing required SWE-bench Docker image. --tag latest --env_image_tag latest'
         )
 
     with pytest.raises(RuntimeError, match='--tag latest --env_image_tag latest'):

@@ -4,10 +4,8 @@ import os
 
 from temporal_light import Worker
 
-from src.activities.human_approval import present_plan_to_human
 from src.activities.implementation import get_full_diff
 from src.activities.repo_indexer import build_repo_index
-from src.activities.selector import select_candidate
 from src.activities.workspace_manager import (
     begin_candidate,
     finalize_winner,
@@ -44,10 +42,8 @@ def main() -> None:
             generate_structured_completion,
             get_full_diff,
             pack_context,
-            present_plan_to_human,
             reset_to_base,
             run_tool,
-            select_candidate,
             setup_environment,
             snapshot_candidate_base,
             snapshot_candidate_result,

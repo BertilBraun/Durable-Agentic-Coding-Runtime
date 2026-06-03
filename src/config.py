@@ -17,13 +17,10 @@ load_dotenv()
 class ModelRole(StrEnum):
     CONTRACT_BUILDER = 'contract_builder'
     PLANNER = 'planner'
-    PLAN_REVIEWER = 'plan_reviewer'
-    COMPLEXITY_ASSESSOR = 'complexity_assessor'
     CONTEXT_GATHERER = 'context_gatherer'
     REPRODUCER = 'reproducer'
     IMPLEMENTATION = 'implementation'
     REVIEWER = 'reviewer'
-    SUMMARIZER = 'summarizer'
 
 
 class ReasoningEffort(StrEnum):
@@ -46,13 +43,10 @@ class Settings(FrozenBaseModel):
     llm_base_url: str | None
 
     artifacts_root: str
-    human_approval_enabled: bool
     cleanup_candidate_branches: bool
 
     implementation_max_tool_rounds: int
     reproducer_max_tool_rounds: int
-    max_replan_attempts: int
-    max_plan_review_rounds: int
     max_planner_turns: int
     candidate_count_medium_confidence: int
     candidate_count_low_confidence: int
@@ -94,14 +88,11 @@ def load_settings() -> Settings:
         llm_api_key=os.getenv('LLM_API_KEY'),
         llm_base_url=os.getenv('LLM_BASE_URL'),
         artifacts_root=os.getenv('ARTIFACTS_ROOT', '.agentic-artifacts'),
-        human_approval_enabled=_parse_bool(os.getenv('HUMAN_APPROVAL_ENABLED'), default=True),
         cleanup_candidate_branches=_parse_bool(
             os.getenv('CLEANUP_CANDIDATE_BRANCHES'), default=False
         ),
         implementation_max_tool_rounds=int(os.getenv('IMPLEMENTATION_MAX_TOOL_ROUNDS', '50')),
         reproducer_max_tool_rounds=int(os.getenv('REPRODUCER_MAX_TOOL_ROUNDS', '50')),
-        max_replan_attempts=int(os.getenv('MAX_REPLAN_ATTEMPTS', '10')),
-        max_plan_review_rounds=int(os.getenv('MAX_PLAN_REVIEW_ROUNDS', '2')),
         max_planner_turns=int(os.getenv('MAX_PLANNER_TURNS', '25')),
         candidate_count_medium_confidence=int(os.getenv('CANDIDATE_COUNT_MEDIUM_CONFIDENCE', '1')),
         candidate_count_low_confidence=int(os.getenv('CANDIDATE_COUNT_LOW_CONFIDENCE', '2')),
@@ -152,13 +143,10 @@ def _load_model_role_bindings(models_by_id: dict[str, ModelEntry]) -> dict[Model
     default_model_by_role: dict[ModelRole, str] = {
         ModelRole.CONTRACT_BUILDER: 'claude-opus-4-7',
         ModelRole.PLANNER: 'claude-opus-4-7',
-        ModelRole.PLAN_REVIEWER: 'claude-opus-4-7',
-        ModelRole.COMPLEXITY_ASSESSOR: 'claude-opus-4-7',
         ModelRole.CONTEXT_GATHERER: 'claude-haiku-4-5-20251001',
         ModelRole.REPRODUCER: 'claude-sonnet-4-6',
         ModelRole.IMPLEMENTATION: 'claude-sonnet-4-6',
         ModelRole.REVIEWER: 'claude-sonnet-4-6',
-        ModelRole.SUMMARIZER: 'claude-haiku-4-5-20251001',
     }
     resolved: dict[ModelRole, str] = {}
     for role in ModelRole:
@@ -207,7 +195,6 @@ def _load_reasoning_efforts() -> dict[ModelRole, ReasoningEffort | None]:
     default_effort_by_role: dict[ModelRole, ReasoningEffort] = {
         ModelRole.CONTRACT_BUILDER: ReasoningEffort.HIGH,
         ModelRole.PLANNER: ReasoningEffort.HIGH,
-        ModelRole.PLAN_REVIEWER: ReasoningEffort.HIGH,
     }
     efforts: dict[ModelRole, ReasoningEffort | None] = {}
     for role in ModelRole:

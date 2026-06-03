@@ -24,7 +24,6 @@ def _step() -> PlanStep:
         tests_to_run=['pytest tests/test_app.py'],
         expected_result='App works',
         risk=Risk.LOW,
-        requires_human_approval=False,
     )
 
 

@@ -71,13 +71,7 @@ def test_directory_tree_text_expands_by_level_until_entry_budget() -> None:
     )
 
     assert repository_index.directory_tree_text() == (
-        'alpha\n'
-        '  a.py\n'
-        '  b.py\n'
-        'beta\n'
-        '  c.py\n'
-        'docs\n'
-        '  readme.md'
+        'alpha\n  a.py\n  b.py\nbeta\n  c.py\ndocs\n  readme.md'
     )
 
 
