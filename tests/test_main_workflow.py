@@ -252,6 +252,7 @@ async def test_planner_loop_fulfills_context_then_runs_first_future_step(
     assert executed_steps == ['step-1']
     assert len(planner_states) == 2
     assert planner_states[1].completed_steps[0].step_id == 'step-1'
+    assert [step.id for step in planner_states[1].previous_future_steps] == ['stale-step-2']
     assert result.worker_results[0].observations == ['observed behavior']
 
 

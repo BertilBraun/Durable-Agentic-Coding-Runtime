@@ -281,6 +281,7 @@ async def _run_planner_loop(
 
 async def _run_next_step(state: PlannerLoopState, turn: PlannerTurn) -> PlannerLoopState:
     plan_step = turn.future_steps[0]
+    remaining_future_steps = turn.future_steps[1:]
     step_run, next_candidate_index = await _run_step_with_candidates(
         plan_step=plan_step,
         plan_context=PlanContext(
@@ -314,10 +315,10 @@ async def _run_next_step(state: PlannerLoopState, turn: PlannerTurn) -> PlannerL
             'planner_state': state.planner_state.model_copy(
                 update={
                     'completed_steps': [*state.planner_state.completed_steps, history],
-                    'previous_future_steps': turn.future_steps,
+                    'previous_future_steps': remaining_future_steps,
                 }
             ),
-            'latest_future_steps': turn.future_steps,
+            'latest_future_steps': remaining_future_steps,
             'worker_results': [*state.worker_results, *step_run.worker_results],
             'usage': state.usage + step_run.llm_usage,
             'next_candidate_index': next_candidate_index,
