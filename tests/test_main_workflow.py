@@ -340,7 +340,7 @@ async def test_planner_loop_replans_after_one_step_and_does_not_run_stale_second
 
 
 @pytest.mark.asyncio
-async def test_failed_step_does_not_advance_workspace_or_completed_step_summaries(
+async def test_needs_replan_advances_workspace_without_completed_step_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     planner_states: list[PlannerState] = []
@@ -389,11 +389,52 @@ async def test_failed_step_does_not_advance_workspace_or_completed_step_summarie
     monkeypatch.setattr(workflow_module, 'get_full_diff', fake_get_full_diff)
     _install_step_branch_fakes(monkeypatch)
 
-    await _run_planner_loop(_workspace(), _contract(), RepoIndex(), None)
+    result = await _run_planner_loop(_workspace(), _contract(), RepoIndex(), None)
 
-    assert diff_workspaces[0].current_branch == 'main'
+    assert diff_workspaces[0].current_branch == 'cand-0'
+    assert result.workspace_info.current_branch == 'cand-1'
     assert planner_states[1].completed_steps[0].outcome == WorkerStatus.NEEDS_REPLAN
     assert implementation_contexts[1].completed_step_summaries == []
+
+
+@pytest.mark.asyncio
+async def test_failed_step_does_not_advance_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    turns = iter([PlannerTurn(future_steps=[_step('failed-step')]), PlannerTurn(done=True)])
+    diff_workspaces: list[Workspace] = []
+
+    async def fake_run_replanner_child(
+        workspace_info: Workspace,
+        repo_index: RepoIndex,
+        max_planner_turns: int,
+        planner_state: PlannerState,
+    ) -> tuple[PlannerTurn, list[object], list[ContextPack], int, LLMUsage]:
+        return next(turns), [], [], 1, _usage()
+
+    async def fake_run_implementation_child(
+        plan_step: PlanStep,
+        plan_context: PlanContext,
+        context_pack: ContextPack,
+        workspace_info: Workspace,
+        contract: TaskContract,
+        repo_index: RepoIndex,
+    ) -> tuple[WorkerResult, LLMUsage]:
+        return _worker_result(status=WorkerStatus.FAILED, confidence=Confidence.LOW), _usage()
+
+    async def fake_get_full_diff(workspace_arg: Workspace) -> str:
+        diff_workspaces.append(workspace_arg)
+        return ''
+
+    monkeypatch.setattr(workflow_module, '_run_replanner_child', fake_run_replanner_child)
+    monkeypatch.setattr(workflow_module, '_run_implementation_child', fake_run_implementation_child)
+    monkeypatch.setattr(workflow_module, 'get_full_diff', fake_get_full_diff)
+    _install_step_branch_fakes(monkeypatch)
+
+    result = await _run_planner_loop(_workspace(), _contract(), RepoIndex(), None)
+
+    assert diff_workspaces[0].current_branch == 'main'
+    assert result.workspace_info.current_branch == 'main'
 
 
 @pytest.mark.asyncio

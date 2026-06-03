@@ -300,7 +300,11 @@ async def _run_next_step(state: PlannerLoopState, turn: PlannerTurn) -> PlannerL
         first_candidate_index=state.next_candidate_index,
     )
     selected_result = step_run.worker_results[-1]
-    workspace = state.workspace_info
+    workspace = (
+        step_run.workspace_info
+        if selected_result.status == WorkerStatus.NEEDS_REPLAN
+        else state.workspace_info
+    )
     if selected_result.status == WorkerStatus.SUCCESS:
         workspace = await snapshot_candidate_base(step_run.workspace_info)
     history = _record_step_history(plan_step, step_run)
