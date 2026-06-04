@@ -7,6 +7,7 @@ from src.llm.client import LLMUsage, Message, StructuredCompletion
 from src.models.context import PackedSnippet
 from src.models.plan import (
     ContextNote,
+    PlannerToolObservation,
     PlannerState,
     PlannerTurn,
     PlanStep,
@@ -16,6 +17,7 @@ from src.models.plan import (
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerStatus
+from src.tools.definitions import ToolName
 
 
 def test_planner_state_serializes_normalized_history_and_future_steps() -> None:
@@ -118,8 +120,57 @@ async def test_plan_next_turn_uses_normalized_state_prompt(
     assert result.done is True
     assert usage.call_count == 1
     user_message = captured_messages[0][-1].content
-    assert 'Normalized planner state' in user_message
+    assert 'Planner State' in user_message
+    assert 'Goal' in user_message
     assert 'Use src/auth.py' in user_message
-    assert 'Context notes' in user_message
-    assert 'src/auth.py' in user_message
+    assert 'Available Context' in user_message
+    assert 'src/auth.py:1-2 - auth entrypoint' in user_message
     assert 'secret snippet content should not repeat' not in user_message
+
+
+def test_planner_state_prompt_uses_readable_sections() -> None:
+    prompt = planner_module._render_planner_state(
+        PlannerState(
+            contract=TaskContract(
+                task_type=TaskType.FEATURE,
+                goal='Add auth',
+                acceptance_criteria=['Auth works'],
+            ),
+            repo_index=RepoIndex(overview_text='src/auth.py'),
+            context_notes=[
+                ContextNote(
+                    id='ctx-1',
+                    summary='Auth handler found.',
+                    request_reason='Need auth code',
+                    request_queries=['Read auth handler'],
+                    relevant_files=['src/auth.py'],
+                    snippets=[
+                        PackedSnippet(
+                            file_path='src/auth.py',
+                            start_line=1,
+                            end_line=4,
+                            reason='handler',
+                            content='def auth(): ...',
+                        )
+                    ],
+                )
+            ],
+            tool_observations=[
+                PlannerToolObservation(
+                    tool_name=ToolName.RUN_SHELL,
+                    stdout='class Auth: ...',
+                    stderr='',
+                    exit_code=0,
+                    truncated=False,
+                )
+            ],
+        )
+    )
+
+    assert prompt.startswith('Planner State')
+    assert 'Goal\nAdd auth' in prompt
+    assert 'Acceptance Criteria\n- Auth works' in prompt
+    assert 'Available Context\nctx-1: Need auth code' in prompt
+    assert '- src/auth.py:1-4 - handler' in prompt
+    assert 'Planner Tool Observations\nrun_shell exit_code=0' in prompt
+    assert 'def auth(): ...' not in prompt

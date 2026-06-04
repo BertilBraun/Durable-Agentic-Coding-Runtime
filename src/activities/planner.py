@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
-from src.models.plan import ContextNote, PlannerState, PlannerTurn
+from src.models.plan import ContextNote, PlannerState, PlannerToolObservation, PlannerTurn
 
 PLANNER_TURN_SYSTEM_PROMPT = (
     'You are the workflow coordinator. You do not edit code.\n'
@@ -54,36 +56,154 @@ async def plan_next_turn(state: PlannerState) -> tuple[PlannerTurn, LLMUsage]:
 
 
 def _render_planner_state(state: PlannerState) -> str:
-    context_notes_json = [_render_context_note(note) for note in state.context_notes]
-    completed_steps_json = [step.model_dump(mode='json') for step in state.completed_steps]
-    tool_observations_json = [
-        observation.model_dump(mode='json') for observation in state.tool_observations
-    ]
-    previous_future_steps = [
-        {
-            'id': step.id,
-            'goal': step.goal,
-            'target_files': step.target_files,
-            'expected_result': step.expected_result,
-        }
-        for step in state.previous_future_steps
-    ]
-    reproduction_payload = None
-    if state.reproduction is not None:
-        reproduction_payload = state.reproduction.model_dump(mode='json')
-    return (
-        'Normalized planner state.\n\n'
-        f'Contract:\n{state.contract.model_dump_json()}\n\n'
-        f'Reproduction:\n{reproduction_payload}\n\n'
-        f'Repository tree:\n{state.repo_index.directory_tree_text()}\n\n'
-        f'Context notes:\n{context_notes_json}\n\n'
-        f'Planner tool observations:\n{tool_observations_json}\n\n'
-        'Step attempt history. Entries with outcome=success are accepted immutable completed '
-        'steps; non-success entries are failed attempts for diagnosis, not completed work:\n'
-        f'{completed_steps_json}\n\n'
-        f'Previous future step summary:\n{previous_future_steps}\n\n'
-        f'Current evidence:\n{state.evidence.model_dump(mode="json")}'
+    return '\n\n'.join(
+        [
+            'Planner State',
+            _render_contract(state),
+            _section('Reproduction', _json_or_none(state.reproduction)),
+            _section('Repository Tree', state.repo_index.directory_tree_text() or '(empty)'),
+            _section('Available Context', _render_context_notes(state.context_notes)),
+            _section(
+                'Planner Tool Observations',
+                _render_tool_observations(state.tool_observations),
+            ),
+            _section('Step Attempt History', _render_completed_steps(state)),
+            _section('Previous Future Step Summary', _render_previous_future_steps(state)),
+            _section('Current Evidence', _json(state.evidence.model_dump(mode='json'))),
+            _section(
+                'Allowed Next Outputs',
+                '\n'.join(
+                    [
+                        '- read-only tool calls to inspect concrete code',
+                        '- context requests for missing relevant ranges',
+                        '- future implementation steps',
+                        '- done=true when no work remains',
+                    ]
+                ),
+            ),
+        ]
     )
+
+
+def _render_contract(state: PlannerState) -> str:
+    contract = state.contract
+    return '\n'.join(
+        [
+            'Goal',
+            contract.goal,
+            '',
+            'Task Type',
+            contract.task_type.value,
+            '',
+            _section('Acceptance Criteria', _bullet_list(contract.acceptance_criteria)),
+            _section('Non Goals', _bullet_list(contract.non_goals)),
+            _section('Affected Areas', _bullet_list(contract.affected_areas)),
+            _section('Risk Areas', _bullet_list(contract.risk_areas)),
+            _section('Tests Expected', _bullet_list(contract.tests_expected)),
+            _section('Open Questions', _bullet_list(contract.open_questions)),
+        ]
+    )
+
+
+def _render_context_notes(notes: list[ContextNote]) -> str:
+    if not notes:
+        return '(none)'
+    return '\n\n'.join(_render_context_note_text(note) for note in notes)
+
+
+def _render_context_note_text(note: ContextNote) -> str:
+    request_reason = note.request_reason or '(reason unavailable)'
+    lines = [f'{note.id}: {request_reason}']
+    if note.request_queries:
+        lines.append('queries:')
+        lines.extend(f'- {query}' for query in note.request_queries)
+    if note.relevant_files:
+        lines.append('relevant files:')
+        lines.extend(f'- {file_path}' for file_path in note.relevant_files)
+    if note.snippets:
+        lines.append('snippets:')
+        lines.extend(f'- {_snippet_reference(snippet)}' for snippet in note.snippets)
+    lines.append('summary:')
+    lines.append(note.summary)
+    return '\n'.join(lines)
+
+
+def _snippet_reference(snippet: object) -> str:
+    return (
+        f'{snippet.file_path}:{snippet.start_line}-{snippet.end_line} - {snippet.reason}'
+    )
+
+
+def _render_tool_observations(observations: list[PlannerToolObservation]) -> str:
+    if not observations:
+        return '(none)'
+    return '\n\n'.join(_render_tool_observation(observation) for observation in observations)
+
+
+def _render_tool_observation(observation: PlannerToolObservation) -> str:
+    lines = [
+        f'{observation.tool_name.value} exit_code={observation.exit_code}',
+        'stdout:',
+        observation.stdout or '(empty)',
+    ]
+    if observation.stderr:
+        lines.extend(['stderr:', observation.stderr])
+    if observation.truncated:
+        lines.append('output truncated: true')
+    return '\n'.join(lines)
+
+
+def _render_completed_steps(state: PlannerState) -> str:
+    if not state.completed_steps:
+        return '(none)'
+    lines = [
+        'Entries with outcome=success are accepted immutable completed steps; non-success '
+        'entries are failed attempts for diagnosis, not completed work.'
+    ]
+    for step in state.completed_steps:
+        lines.append(
+            f'- {step.step_id}: outcome={step.outcome.value}, '
+            f'confidence={step.confidence.value}, summary={step.summary}'
+        )
+        if step.observations:
+            lines.append(f'  observations: {_json(step.observations)}')
+        if step.tests:
+            lines.append(f'  tests: {_json([test.model_dump(mode="json") for test in step.tests])}')
+    return '\n'.join(lines)
+
+
+def _render_previous_future_steps(state: PlannerState) -> str:
+    if not state.previous_future_steps:
+        return '(none)'
+    lines = []
+    for step in state.previous_future_steps:
+        lines.append(
+            f'- {step.id}: {step.goal}; target_files={_json(step.target_files)}; '
+            f'expected_result={step.expected_result}'
+        )
+    return '\n'.join(lines)
+
+
+def _section(title: str, body: str) -> str:
+    return f'{title}\n{body}'
+
+
+def _bullet_list(items: list[str]) -> str:
+    if not items:
+        return '(none)'
+    return '\n'.join(f'- {item}' for item in items)
+
+
+def _json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=True)
+
+
+def _json_or_none(value: object | None) -> str:
+    if value is None:
+        return '(none)'
+    if hasattr(value, 'model_dump'):
+        return _json(value.model_dump(mode='json'))
+    return _json(value)
 
 
 def _render_context_note(note: ContextNote) -> dict[str, object]:
