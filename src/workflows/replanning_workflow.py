@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from temporal_light import workflow
+from temporal_light import run_child, workflow
 
-from src.activities.context_gatherer import fulfill_context_request
 from src.activities.planner import plan_next_turn
 from src.activities.workspace_manager import WorkspaceAdapter
 from src.llm.client import LLMUsage
 from src.models.context import ContextPack
 from src.models.plan import ContextNote, PlannerState, PlannerTurn
 from src.models.repo import RepoIndex
+from src.workflows.context_gathering_workflow import parse_context_gathering_result
 
 
 @workflow
@@ -35,11 +35,13 @@ async def replanning_workflow(
             break
         new_notes: list[ContextNote] = []
         for request in planner_turn.context_requests:
-            note, context_pack, context_usage = await fulfill_context_request(
-                workspace_info=workspace_info,
-                repo_index=repository_index,
-                request=request,
+            child_result = await run_child(
+                'context_gathering_workflow',
+                workspace=workspace_info.model_dump(mode='json'),
+                repo_index=repository_index.model_dump(mode='json'),
+                request=request.model_dump(mode='json'),
             )
+            note, context_pack, context_usage = parse_context_gathering_result(child_result)
             usage += context_usage
             context_notes.append(note)
             new_notes.append(note)

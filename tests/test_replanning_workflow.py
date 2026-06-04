@@ -1,6 +1,6 @@
 import pytest
 from src.activities.context_gatherer import context_note_from_pack
-from src.activities.workspace_manager import HostWorkspace, Workspace
+from src.activities.workspace_manager import HostWorkspace
 from src.llm.client import LLMUsage
 from src.models.context import ContextPack, PackedSnippet
 from src.models.plan import ContextRequest, PlannerState, PlannerTurn, PlanStep, Risk
@@ -94,11 +94,9 @@ async def test_replanning_workflow_fulfills_context_before_returning_ready_step(
         captured_states.append(state)
         return next(turns), LLMUsage(call_count=1, total_input_tokens=7)
 
-    async def fake_fulfill_context_request(
-        workspace_info: Workspace,
-        repo_index: RepoIndex,
-        request: ContextRequest,
-    ) -> tuple[object, ContextPack, LLMUsage]:
+    async def fake_run_child(workflow_name: str, **kwargs: object) -> dict[str, object]:
+        assert workflow_name == 'context_gathering_workflow'
+        request = ContextRequest.model_validate(kwargs['request'])
         context_pack = ContextPack(
             task_summary='Handler lives in src/app.py',
             snippets=[
@@ -112,14 +110,15 @@ async def test_replanning_workflow_fulfills_context_before_returning_ready_step(
             ],
             budget_remaining=0,
         )
-        return context_note_from_pack(request, context_pack), context_pack, LLMUsage(call_count=1)
+        note = context_note_from_pack(request, context_pack)
+        return {
+            'context_note': note.model_dump(mode='json'),
+            'context_pack': context_pack.model_dump(mode='json'),
+            'llm_usage': LLMUsage(call_count=1).model_dump(mode='json'),
+        }
 
     monkeypatch.setattr(workflow_module, 'plan_next_turn', fake_plan_next_turn)
-    monkeypatch.setattr(
-        workflow_module,
-        'fulfill_context_request',
-        fake_fulfill_context_request,
-    )
+    monkeypatch.setattr(workflow_module, 'run_child', fake_run_child)
 
     result = await replanning_workflow(
         workspace=_workspace().model_dump(mode='json'),
@@ -169,20 +168,19 @@ async def test_replanning_workflow_stops_at_planner_turn_budget(
             LLMUsage(call_count=1),
         )
 
-    async def fake_fulfill_context_request(
-        workspace_info: Workspace,
-        repo_index: RepoIndex,
-        request: ContextRequest,
-    ) -> tuple[object, ContextPack, LLMUsage]:
+    async def fake_run_child(workflow_name: str, **kwargs: object) -> dict[str, object]:
+        assert workflow_name == 'context_gathering_workflow'
+        request = ContextRequest.model_validate(kwargs['request'])
         context_pack = ContextPack(task_summary='Context', snippets=[], budget_remaining=0)
-        return context_note_from_pack(request, context_pack), context_pack, LLMUsage(call_count=1)
+        note = context_note_from_pack(request, context_pack)
+        return {
+            'context_note': note.model_dump(mode='json'),
+            'context_pack': context_pack.model_dump(mode='json'),
+            'llm_usage': LLMUsage(call_count=1).model_dump(mode='json'),
+        }
 
     monkeypatch.setattr(workflow_module, 'plan_next_turn', fake_plan_next_turn)
-    monkeypatch.setattr(
-        workflow_module,
-        'fulfill_context_request',
-        fake_fulfill_context_request,
-    )
+    monkeypatch.setattr(workflow_module, 'run_child', fake_run_child)
 
     result = await replanning_workflow(
         workspace=_workspace().model_dump(mode='json'),
