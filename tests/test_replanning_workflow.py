@@ -133,9 +133,15 @@ async def test_replanning_workflow_fulfills_context_before_returning_ready_step(
 
     assert len(captured_states) == 2
     assert captured_states[1].context_notes[0].summary == 'Handler lives in src/app.py'
-    assert 'Need code' not in captured_states[1].model_dump_json()
+    assert captured_states[1].context_notes[0].request_reason == 'Need code'
+    assert captured_states[1].context_notes[0].request_queries == ['Find app handler']
+    assert captured_states[1].model_dump(mode='json')['context_notes'][0]['request_reason'] == (
+        'Need code'
+    )
     assert result['planner_turn']['future_steps'][0]['id'] == 'step-1'
     assert result['context_notes'][0]['summary'] == 'Handler lives in src/app.py'
+    assert result['context_notes'][0]['request_reason'] == 'Need code'
+    assert result['context_notes'][0]['request_queries'] == ['Find app handler']
     assert result['context_packs'][0]['snippets'][0]['content'] == 'def handler(): ...'
     assert result['planner_turn_count'] == 2
     assert result['llm_usage']['call_count'] == 3

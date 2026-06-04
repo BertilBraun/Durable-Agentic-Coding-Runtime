@@ -9,6 +9,9 @@ PLANNER_TURN_SYSTEM_PROMPT = (
     'You receive normalized state, not a chat transcript.\n'
     'If relevant files/functions are not known well enough to create concrete implementation '
     'steps, request context instead of guessing.\n'
+    'Do not request context already covered by Context notes. Treat fulfilled request queries, '
+    'relevant files, and snippet references as available evidence; ask for more context only when '
+    'you need different concrete files, functions, or behavior.\n'
     'If you request context, make each request concrete and do not output implementation steps '
     'that depend on missing context.\n'
     'When enough context exists, output only future steps. Never repeat completed steps.\n'
@@ -16,6 +19,9 @@ PLANNER_TURN_SYSTEM_PROMPT = (
     'step-specific context, required changes, tests to run, expected result, and out-of-scope '
     'constraints.\n'
     'Prefer one substantial concrete step over artificial inspect/create-test/run-test splits.\n'
+    'Scope steps for a complete, consistent fix, not just the literal example: when the issue is '
+    'one instance of a general defect (one keyword, format, or direction of a symmetric '
+    'operation), require handling the sibling cases the corrected behavior implies.\n'
     'Very concrete test-first steps are allowed when useful, but the step must say exactly what '
     'behavior, file, and failure mode is expected.\n'
     'When a step specifies tests, require strong, self-validating ones: prefer round trips and '
@@ -78,6 +84,10 @@ def _render_context_note(note: ContextNote) -> dict[str, object]:
     return {
         'id': note.id,
         'summary': note.summary,
+        'fulfilled_request': {
+            'reason': note.request_reason,
+            'queries': note.request_queries,
+        },
         'relevant_files': note.relevant_files,
         'snippet_references': [
             {

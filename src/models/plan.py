@@ -103,6 +103,14 @@ class ContextRequest(FrozenBaseModel):
 class ContextNote(FrozenBaseModel):
     id: str = Field(description='Stable id tying this note to gathered evidence.')
     summary: str = Field(description='Concise evidence summary produced after gathering context.')
+    request_reason: str = Field(
+        default='',
+        description='Original planner reason for the fulfilled context request.',
+    )
+    request_queries: list[str] = Field(
+        default_factory=list,
+        description='Original planner queries fulfilled by this note.',
+    )
     relevant_files: list[str] = Field(
         default_factory=list,
         description='Files supported by the gathered evidence.',

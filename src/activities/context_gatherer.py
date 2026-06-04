@@ -167,6 +167,8 @@ def context_note_from_pack(
     return ContextNote(
         id=request.id,
         summary=context_pack.task_summary,
+        request_reason=request.reason,
+        request_queries=request.queries,
         relevant_files=relevant_files,
         snippets=[
             ContextSnippet(

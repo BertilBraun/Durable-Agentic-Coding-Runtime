@@ -14,6 +14,7 @@ def test_contract_builder_prompt_requires_detailed_contract_fields() -> None:
 def test_planner_turn_prompt_requires_normalized_future_step_contract() -> None:
     assert 'normalized state' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'request context instead of guessing' in PLANNER_TURN_SYSTEM_PROMPT
+    assert 'Do not request context already covered by Context notes' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'output only future steps' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'Never repeat completed steps' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'target files' in PLANNER_TURN_SYSTEM_PROMPT
@@ -32,6 +33,16 @@ def test_implementation_prompt_requires_self_checked_strong_tests() -> None:
     assert 'self-validating checks' in IMPLEMENTATION_SYSTEM_PROMPT
     assert 'round trips' in IMPLEMENTATION_SYSTEM_PROMPT
     assert 'trivially-wrong implementation' in IMPLEMENTATION_SYSTEM_PROMPT
+
+
+def test_implementation_prompt_requires_complete_consistent_fix() -> None:
+    assert 'complete and consistent across the affected component' in IMPLEMENTATION_SYSTEM_PROMPT
+    assert 'sibling keywords' in IMPLEMENTATION_SYSTEM_PROMPT
+
+
+def test_planner_prompt_scopes_complete_consistent_fix() -> None:
+    assert 'complete, consistent fix' in PLANNER_TURN_SYSTEM_PROMPT
+    assert 'sibling cases' in PLANNER_TURN_SYSTEM_PROMPT
 
 
 def test_planner_prompt_requires_strong_test_specs() -> None:
