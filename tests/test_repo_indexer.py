@@ -117,6 +117,23 @@ async def test_repo_indexer_serializes_compact_overview_for_large_repositories()
     }
 
 
+@pytest.mark.asyncio
+async def test_large_repository_overview_omits_top_level_file_names() -> None:
+    workspace = _recording_workspace().model_copy(
+        update={
+            'tracked_files': [f'root_file_{index}.py' for index in range(40)]
+            + ['pkg/service.py', 'tests/test_service.py']
+        }
+    )
+
+    repository_index = await build_repo_index(workspace)
+
+    assert repository_index.tracked_file_count == 42
+    assert repository_index.file_tree == []
+    assert repository_index.directory_tree_text() == 'pkg\ntests'
+    assert 'root_file_0.py' not in repository_index.model_dump_json()
+
+
 def test_build_repo_index_is_durable_activity() -> None:
     assert getattr(build_repo_index, '__is_activity__', False) is True
     activity_policy = build_repo_index.__activity_policy__

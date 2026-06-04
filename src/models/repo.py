@@ -75,7 +75,23 @@ class RepoIndex(FrozenBaseModel):
 
 
 def directory_overview_for_paths(paths: list[str]) -> str:
-    return _bounded_directory_tree_text(sorted(paths), FULL_FILE_TREE_LIMIT)
+    directory_paths = sorted(
+        {
+            directory_path
+            for path in paths
+            for directory_path in _directory_prefixes_for_path(path)
+        }
+    )
+    if not directory_paths:
+        return '(no tracked directories)'
+    return _bounded_directory_tree_text(directory_paths, FULL_FILE_TREE_LIMIT)
+
+
+def _directory_prefixes_for_path(path: str) -> list[str]:
+    parts = [part for part in path.split('/') if part]
+    if len(parts) <= 1:
+        return []
+    return ['/'.join(parts[:index]) for index in range(1, len(parts))]
 
 
 def _bounded_directory_tree_text(paths: list[str], max_entries: int) -> str:
