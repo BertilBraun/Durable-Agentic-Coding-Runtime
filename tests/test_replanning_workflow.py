@@ -199,6 +199,95 @@ async def test_replanning_workflow_executes_planner_tool_calls_before_next_turn(
 
 
 @pytest.mark.asyncio
+async def test_replanning_workflow_fulfills_context_then_executes_tools_in_same_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_states: list[PlannerState] = []
+    events: list[str] = []
+    turns = iter(
+        [
+            PlannerTurn(
+                context_requests=[
+                    ContextRequest(
+                        id='ctx-1',
+                        reason='Need app context',
+                        queries=['Find app handler'],
+                        relevant_files=['src/app.py'],
+                    )
+                ],
+                tool_calls=[
+                    RunShell(command='Get-Content src/app.py', timeout_seconds=10),
+                ],
+            ),
+            PlannerTurn(future_steps=[_step()]),
+        ]
+    )
+
+    async def fake_plan_next_turn(state: PlannerState) -> tuple[PlannerTurn, LLMUsage]:
+        captured_states.append(state)
+        events.append('plan')
+        return next(turns), LLMUsage(call_count=1, total_input_tokens=7)
+
+    async def fake_run_child(workflow_name: str, **kwargs: object) -> dict[str, object]:
+        events.append('context')
+        assert workflow_name == 'context_gathering_workflow'
+        request = ContextRequest.model_validate(kwargs['request'])
+        context_pack = ContextPack(
+            task_summary='Handler lives in src/app.py',
+            snippets=[
+                PackedSnippet(
+                    file_path='src/app.py',
+                    start_line=1,
+                    end_line=2,
+                    reason='handler',
+                    content='def handler(): ...',
+                )
+            ],
+            budget_remaining=0,
+        )
+        note = context_note_from_pack(request, context_pack)
+        return {
+            'context_note': note.model_dump(mode='json'),
+            'context_pack': context_pack.model_dump(mode='json'),
+            'llm_usage': LLMUsage(call_count=1).model_dump(mode='json'),
+        }
+
+    async def fake_run_tool(request: object) -> object:
+        events.append('tool')
+        assert request.tool.command == 'Get-Content src/app.py'
+        return workflow_module.ToolResult(
+            tool_name=request.tool.tool_name,
+            stdout='def handler(): ...',
+            stderr='',
+            exit_code=0,
+            truncated=False,
+        )
+
+    monkeypatch.setattr(workflow_module, 'plan_next_turn', fake_plan_next_turn)
+    monkeypatch.setattr(workflow_module, 'run_child', fake_run_child)
+    monkeypatch.setattr(workflow_module, 'run_tool', fake_run_tool)
+
+    result = await replanning_workflow(
+        workspace=_workspace().model_dump(mode='json'),
+        repo_index=RepoIndex().model_dump(mode='json'),
+        max_planner_turns=5,
+        planner_state=PlannerState(
+            contract=_contract(),
+            repo_index=RepoIndex(),
+        ).model_dump(mode='json'),
+    )
+
+    assert events == ['plan', 'context', 'tool', 'plan']
+    assert len(captured_states) == 2
+    assert captured_states[1].context_notes[0].summary == 'Handler lives in src/app.py'
+    assert captured_states[1].tool_observations[0].stdout == 'def handler(): ...'
+    assert result['planner_turn']['future_steps'][0]['id'] == 'step-1'
+    assert result['context_notes'][0]['id'] == 'ctx-1'
+    assert result['planner_turn_count'] == 2
+    assert result['llm_usage']['call_count'] == 3
+
+
+@pytest.mark.asyncio
 async def test_replanning_workflow_stops_at_planner_turn_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

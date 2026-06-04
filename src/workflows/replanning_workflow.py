@@ -34,6 +34,23 @@ async def replanning_workflow(
         planner_turn, turn_usage = await plan_next_turn(state)
         planner_turn_count += 1
         usage += turn_usage
+        state_changed = False
+        if planner_turn.context_requests:
+            new_notes: list[ContextNote] = []
+            for request in planner_turn.context_requests:
+                child_result = await run_child(
+                    'context_gathering_workflow',
+                    workspace=workspace_info.model_dump(mode='json'),
+                    repo_index=repository_index.model_dump(mode='json'),
+                    request=request.model_dump(mode='json'),
+                )
+                note, context_pack, context_usage = parse_context_gathering_result(child_result)
+                usage += context_usage
+                context_notes.append(note)
+                new_notes.append(note)
+                context_packs.append(context_pack)
+            state = state.model_copy(update={'context_notes': [*state.context_notes, *new_notes]})
+            state_changed = True
         if planner_turn.tool_calls:
             observations: list[PlannerToolObservation] = []
             for tool_call in planner_turn.tool_calls[:_MAX_PLANNER_TOOL_CALLS_PER_TURN]:
@@ -51,23 +68,10 @@ async def replanning_workflow(
                     ]
                 }
             )
+            state_changed = True
+        if state_changed:
             continue
-        if not planner_turn.context_requests:
-            break
-        new_notes: list[ContextNote] = []
-        for request in planner_turn.context_requests:
-            child_result = await run_child(
-                'context_gathering_workflow',
-                workspace=workspace_info.model_dump(mode='json'),
-                repo_index=repository_index.model_dump(mode='json'),
-                request=request.model_dump(mode='json'),
-            )
-            note, context_pack, context_usage = parse_context_gathering_result(child_result)
-            usage += context_usage
-            context_notes.append(note)
-            new_notes.append(note)
-            context_packs.append(context_pack)
-        state = state.model_copy(update={'context_notes': [*state.context_notes, *new_notes]})
+        break
     return {
         'planner_turn': planner_turn.model_dump(mode='json'),
         'context_notes': [note.model_dump(mode='json') for note in context_notes],
