@@ -13,6 +13,7 @@ class ToolName(StrEnum):
     APPLY_PATCH = 'apply_patch'
     RUN_TESTS = 'run_tests'
     RUN_SHELL = 'run_shell'
+    READ_FILE = 'read_file'
     FIND_DEFINITION = 'find_definition'
     FIND_CALLERS = 'find_callers'
     FIND_CALLEES = 'find_callees'
@@ -64,6 +65,17 @@ class RunShell(ToolBase):
     timeout_seconds: int = Field(description='Maximum seconds to allow the command to run.')
 
 
+class ReadFile(ToolBase):
+    tool_name: Literal[ToolName.READ_FILE] = Field(
+        default=ToolName.READ_FILE,
+        description='Tool name tag.',
+    )
+    file_path: str = Field(description='Workspace-relative file path to read.')
+    start_line: int = Field(default=1, description='First 1-based line number to read.')
+    end_line: int | None = Field(default=None, description='Last 1-based line number to read.')
+    timeout_seconds: int = Field(default=30, description='Maximum seconds to allow the read.')
+
+
 class FindDefinition(ToolBase):
     tool_name: Literal[ToolName.FIND_DEFINITION] = Field(
         default=ToolName.FIND_DEFINITION,
@@ -103,6 +115,7 @@ Tool = (
     | ApplyPatch
     | RunTests
     | RunShell
+    | ReadFile
     | FindDefinition
     | FindCallers
     | FindCallees
@@ -112,7 +125,7 @@ Tool = (
 ImplementationToolCall: TypeAlias = Tool
 
 ContextGathererToolCall: TypeAlias = RunShell | FindDefinition | FindCallers | FindCallees
-PlannerToolCall: TypeAlias = RunShell | FindDefinition | FindCallers | FindCallees
+PlannerToolCall: TypeAlias = RunShell | ReadFile | FindDefinition | FindCallers | FindCallees
 
 ImplementationToolCallAdapter: TypeAdapter[ImplementationToolCall] = TypeAdapter(
     ImplementationToolCall

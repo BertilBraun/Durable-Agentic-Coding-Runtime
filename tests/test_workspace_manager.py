@@ -18,6 +18,7 @@ from src.models.repo import RepoIndex
 from src.tools.definitions import (
     FindCallers,
     FindDefinition,
+    ReadFile,
     RunShell,
     RunTests,
     ToolName,
@@ -274,6 +275,27 @@ async def test_run_shell_dispatches_through_shell_invocation_with_timeout(
     assert result.tool_name == ToolName.RUN_SHELL
     assert captured['command'] == _host_workspace().shell_invocation('ls -la')
     assert captured['timeout'] == 23
+
+
+@pytest.mark.asyncio
+async def test_run_tool_reads_file_line_range(tmp_path: Path) -> None:
+    repository_path = tmp_path / 'repo'
+    repository_path.mkdir()
+    (repository_path / 'app.py').write_text(
+        'line 1\nline 2\nline 3\nline 4\n',
+        encoding='utf-8',
+    )
+
+    result = await run_tool(
+        ToolExecutionRequest(
+            workspace=_host_workspace(repo_path=str(repository_path)),
+            tool=ReadFile(file_path='app.py', start_line=2, end_line=3),
+        )
+    )
+
+    assert result.exit_code == 0
+    assert result.tool_name == ToolName.READ_FILE
+    assert result.stdout == 'line 2\nline 3\n'
 
 
 @pytest.mark.asyncio

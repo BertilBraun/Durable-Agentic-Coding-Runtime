@@ -1,7 +1,7 @@
 from pydantic import ValidationError
 from src.models.plan import PlannerTurn, PlanStep, Risk
 from src.models.task import HostOrigin, TaskContract, TaskRequest, TaskType
-from src.tools.definitions import RunShell, WriteFile
+from src.tools.definitions import FindDefinition, ReadFile, RunShell, WriteFile
 
 
 def test_task_request_is_frozen() -> None:
@@ -47,6 +47,37 @@ def test_planner_turn_accepts_only_read_only_tool_calls() -> None:
         return
 
     raise AssertionError('PlannerTurn should reject mutating tool calls')
+
+
+def test_planner_turn_normalizes_common_read_only_tool_aliases() -> None:
+    turn = PlannerTurn.model_validate(
+        {
+            'tool_calls': [
+                {
+                    'tool_name': 'run_shell_command',
+                    'command': 'Get-Content src/app.py',
+                    'timeout_seconds': 10,
+                },
+                {
+                    'tool_name': 'read_file',
+                    'file_path': 'src/app.py',
+                    'start_line': 1,
+                    'end_line': 20,
+                },
+                {
+                    'tool_name': 'read_file',
+                    'symbol_name': 'Parser',
+                },
+            ]
+        }
+    )
+
+    assert isinstance(turn.tool_calls[0], RunShell)
+    assert turn.tool_calls[0].tool_name == 'run_shell'
+    assert isinstance(turn.tool_calls[1], ReadFile)
+    assert turn.tool_calls[1].file_path == 'src/app.py'
+    assert isinstance(turn.tool_calls[2], FindDefinition)
+    assert turn.tool_calls[2].name == 'Parser'
 
 
 def test_task_contract_accepts_complete_contract() -> None:

@@ -14,6 +14,8 @@ def test_contract_builder_prompt_requires_detailed_contract_fields() -> None:
 def test_planner_turn_prompt_requires_normalized_future_step_contract() -> None:
     assert 'normalized state' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'request context instead of guessing' in PLANNER_TURN_SYSTEM_PROMPT
+    assert 'read_file' in PLANNER_TURN_SYSTEM_PROMPT
+    assert 'run_shell' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'Do not request context already covered by Context notes' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'output only future steps' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'Never repeat completed steps' in PLANNER_TURN_SYSTEM_PROMPT

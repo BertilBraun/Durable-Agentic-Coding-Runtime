@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from src.models.context import ContextSnippet
 from src.models.frozen_base_model import FrozenBaseModel
@@ -165,3 +165,35 @@ class PlannerTurn(FrozenBaseModel):
     future_steps: list[PlanStep] = Field(default_factory=list)
     done: bool = False
     done_reason: str | None = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_planner_tool_aliases(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        tool_calls = value.get('tool_calls')
+        if not isinstance(tool_calls, list):
+            return value
+        return {
+            **value,
+            'tool_calls': [_normalize_planner_tool_call(tool_call) for tool_call in tool_calls],
+        }
+
+
+def _normalize_planner_tool_call(tool_call: object) -> object:
+    if not isinstance(tool_call, dict):
+        return tool_call
+    tool_name = tool_call.get('tool_name')
+    if tool_name == 'run_shell_command':
+        return {**tool_call, 'tool_name': ToolName.RUN_SHELL.value}
+    if tool_name != 'read_file':
+        return tool_call
+    if 'symbol_name' in tool_call and 'file_path' not in tool_call:
+        return {
+            'tool_name': ToolName.FIND_DEFINITION.value,
+            'name': tool_call['symbol_name'],
+            'language': tool_call.get('language', 'python'),
+        }
+    if 'path' in tool_call and 'file_path' not in tool_call:
+        return {**tool_call, 'file_path': tool_call['path']}
+    return tool_call

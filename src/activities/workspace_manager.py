@@ -26,6 +26,7 @@ from src.tools.definitions import (
     FindCallees,
     FindCallers,
     FindDefinition,
+    ReadFile,
     RunShell,
     RunTests,
     Tool,
@@ -481,6 +482,15 @@ def _host_tool_result(request: ToolExecutionRequest) -> ToolResult | None:
             return ToolResult(
                 tool_name=ToolName.WRITE_FILE,
                 stdout='',
+                stderr='',
+                exit_code=0,
+                truncated=False,
+            )
+        case ReadFile(file_path=file_path, start_line=start_line, end_line=end_line):
+            end = end_line if end_line is not None else 1_000_000_000
+            return ToolResult(
+                tool_name=ToolName.READ_FILE,
+                stdout=_read_host_snippet_lines(request.workspace, file_path, start_line, end),
                 stderr='',
                 exit_code=0,
                 truncated=False,
