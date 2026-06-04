@@ -112,6 +112,7 @@ Tool = (
 ImplementationToolCall: TypeAlias = Tool
 
 ContextGathererToolCall: TypeAlias = RunShell | FindDefinition | FindCallers | FindCallees
+PlannerToolCall: TypeAlias = RunShell | FindDefinition | FindCallers | FindCallees
 
 ImplementationToolCallAdapter: TypeAdapter[ImplementationToolCall] = TypeAdapter(
     ImplementationToolCall
@@ -119,3 +120,4 @@ ImplementationToolCallAdapter: TypeAdapter[ImplementationToolCall] = TypeAdapter
 ContextGathererToolCallAdapter: TypeAdapter[ContextGathererToolCall] = TypeAdapter(
     ContextGathererToolCall
 )
+PlannerToolCallAdapter: TypeAdapter[PlannerToolCall] = TypeAdapter(PlannerToolCall)

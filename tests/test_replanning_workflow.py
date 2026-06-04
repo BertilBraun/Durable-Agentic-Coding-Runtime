@@ -6,6 +6,7 @@ from src.models.context import ContextPack, PackedSnippet
 from src.models.plan import ContextRequest, PlannerState, PlannerTurn, PlanStep, Risk
 from src.models.repo import RepoIndex
 from src.models.task import TaskContract, TaskType
+from src.tools.definitions import RunShell
 from src.workflows import replanning_workflow as workflow_module
 from src.workflows.replanning_workflow import replanning_workflow
 
@@ -144,6 +145,57 @@ async def test_replanning_workflow_fulfills_context_before_returning_ready_step(
     assert result['context_packs'][0]['snippets'][0]['content'] == 'def handler(): ...'
     assert result['planner_turn_count'] == 2
     assert result['llm_usage']['call_count'] == 3
+
+
+@pytest.mark.asyncio
+async def test_replanning_workflow_executes_planner_tool_calls_before_next_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_states: list[PlannerState] = []
+    turns = iter(
+        [
+            PlannerTurn(
+                tool_calls=[
+                    RunShell(command='Get-Content src/app.py', timeout_seconds=10),
+                ]
+            ),
+            PlannerTurn(future_steps=[_step()]),
+        ]
+    )
+
+    async def fake_plan_next_turn(state: PlannerState) -> tuple[PlannerTurn, LLMUsage]:
+        captured_states.append(state)
+        return next(turns), LLMUsage(call_count=1, total_input_tokens=7)
+
+    async def fake_run_tool(request: object) -> object:
+        assert request.tool.command == 'Get-Content src/app.py'
+        return workflow_module.ToolResult(
+            tool_name=request.tool.tool_name,
+            stdout='def handler(): ...',
+            stderr='',
+            exit_code=0,
+            truncated=False,
+        )
+
+    monkeypatch.setattr(workflow_module, 'plan_next_turn', fake_plan_next_turn)
+    monkeypatch.setattr(workflow_module, 'run_tool', fake_run_tool)
+
+    result = await replanning_workflow(
+        workspace=_workspace().model_dump(mode='json'),
+        repo_index=RepoIndex().model_dump(mode='json'),
+        max_planner_turns=5,
+        planner_state=PlannerState(
+            contract=_contract(),
+            repo_index=RepoIndex(),
+        ).model_dump(mode='json'),
+    )
+
+    assert len(captured_states) == 2
+    assert captured_states[1].tool_observations[0].tool_name == 'run_shell'
+    assert captured_states[1].tool_observations[0].stdout == 'def handler(): ...'
+    assert result['planner_turn']['future_steps'][0]['id'] == 'step-1'
+    assert result['planner_turn_count'] == 2
+    assert result['llm_usage']['call_count'] == 2
 
 
 @pytest.mark.asyncio

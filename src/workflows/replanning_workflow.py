@@ -3,12 +3,15 @@ from __future__ import annotations
 from temporal_light import run_child, workflow
 
 from src.activities.planner import plan_next_turn
-from src.activities.workspace_manager import WorkspaceAdapter
+from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceAdapter, run_tool
 from src.llm.client import LLMUsage
 from src.models.context import ContextPack
-from src.models.plan import ContextNote, PlannerState, PlannerTurn
+from src.models.plan import ContextNote, PlannerState, PlannerToolObservation, PlannerTurn
 from src.models.repo import RepoIndex
+from src.tools.definitions import PlannerToolCall
 from src.workflows.context_gathering_workflow import parse_context_gathering_result
+
+_MAX_PLANNER_TOOL_CALLS_PER_TURN = 2
 
 
 @workflow
@@ -31,6 +34,24 @@ async def replanning_workflow(
         planner_turn, turn_usage = await plan_next_turn(state)
         planner_turn_count += 1
         usage += turn_usage
+        if planner_turn.tool_calls:
+            observations: list[PlannerToolObservation] = []
+            for tool_call in planner_turn.tool_calls[:_MAX_PLANNER_TOOL_CALLS_PER_TURN]:
+                tool_result = await _run_planner_tool(
+                    workspace_info=workspace_info,
+                    repo_index=repository_index,
+                    tool_call=tool_call,
+                )
+                observations.append(_observation_from_tool_result(tool_result))
+            state = state.model_copy(
+                update={
+                    'tool_observations': [
+                        *state.tool_observations,
+                        *observations,
+                    ]
+                }
+            )
+            continue
         if not planner_turn.context_requests:
             break
         new_notes: list[ContextNote] = []
@@ -54,3 +75,29 @@ async def replanning_workflow(
         'planner_turn_count': planner_turn_count,
         'llm_usage': usage.model_dump(mode='json'),
     }
+
+
+async def _run_planner_tool(
+    workspace_info: object,
+    repo_index: RepoIndex,
+    tool_call: PlannerToolCall,
+) -> ToolResult:
+    return await run_tool(
+        ToolExecutionRequest(
+            workspace=workspace_info,
+            tool=tool_call,
+            repo_index=repo_index,
+        )
+    )
+
+
+def _observation_from_tool_result(tool_result: ToolResult) -> PlannerToolObservation:
+    if tool_result.tool_name is None:
+        raise ValueError('Planner tool result did not include a tool name.')
+    return PlannerToolObservation(
+        tool_name=tool_result.tool_name,
+        stdout=tool_result.stdout,
+        stderr=tool_result.stderr,
+        exit_code=tool_result.exit_code,
+        truncated=tool_result.truncated,
+    )

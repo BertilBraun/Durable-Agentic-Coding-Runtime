@@ -9,6 +9,8 @@ PLANNER_TURN_SYSTEM_PROMPT = (
     'You receive normalized state, not a chat transcript.\n'
     'If relevant files/functions are not known well enough to create concrete implementation '
     'steps, request context instead of guessing.\n'
+    'You may request read-only tool calls to inspect concrete code before planning. Tool calls '
+    'must never mutate files, run tests, or write patches.\n'
     'Do not request context already covered by Context notes. Treat fulfilled request queries, '
     'relevant files, and snippet references as available evidence; ask for more context only when '
     'you need different concrete files, functions, or behavior.\n'
@@ -54,6 +56,9 @@ async def plan_next_turn(state: PlannerState) -> tuple[PlannerTurn, LLMUsage]:
 def _render_planner_state(state: PlannerState) -> str:
     context_notes_json = [_render_context_note(note) for note in state.context_notes]
     completed_steps_json = [step.model_dump(mode='json') for step in state.completed_steps]
+    tool_observations_json = [
+        observation.model_dump(mode='json') for observation in state.tool_observations
+    ]
     previous_future_steps = [
         {
             'id': step.id,
@@ -72,6 +77,7 @@ def _render_planner_state(state: PlannerState) -> str:
         f'Reproduction:\n{reproduction_payload}\n\n'
         f'Repository tree:\n{state.repo_index.directory_tree_text()}\n\n'
         f'Context notes:\n{context_notes_json}\n\n'
+        f'Planner tool observations:\n{tool_observations_json}\n\n'
         'Step attempt history. Entries with outcome=success are accepted immutable completed '
         'steps; non-success entries are failed attempts for diagnosis, not completed work:\n'
         f'{completed_steps_json}\n\n'

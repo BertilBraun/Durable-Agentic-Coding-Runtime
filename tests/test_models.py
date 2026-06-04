@@ -1,6 +1,7 @@
 from pydantic import ValidationError
-from src.models.plan import PlanStep, Risk
+from src.models.plan import PlannerTurn, PlanStep, Risk
 from src.models.task import HostOrigin, TaskContract, TaskRequest, TaskType
+from src.tools.definitions import RunShell, WriteFile
 
 
 def test_task_request_is_frozen() -> None:
@@ -25,6 +26,27 @@ def test_plan_step_uses_serializable_enums() -> None:
     )
 
     assert plan_step.model_dump(mode='json')['risk'] == 'low'
+
+
+def test_planner_turn_accepts_only_read_only_tool_calls() -> None:
+    turn = PlannerTurn(
+        tool_calls=[
+            RunShell(command='Get-Content src/app.py', timeout_seconds=10),
+        ]
+    )
+
+    assert turn.model_dump(mode='json')['tool_calls'][0]['tool_name'] == 'run_shell'
+
+    try:
+        PlannerTurn(
+            tool_calls=[
+                WriteFile(file_path='src/app.py', content='mutating writes are not allowed'),
+            ]
+        )
+    except ValidationError:
+        return
+
+    raise AssertionError('PlannerTurn should reject mutating tool calls')
 
 
 def test_task_contract_accepts_complete_contract() -> None:

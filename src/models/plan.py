@@ -9,6 +9,7 @@ from src.models.reproduction import ReproductionContext
 from src.models.task import TaskContract
 from src.models.worker import Confidence, TestResult, WorkerStatus
 from src.runtime_enums import StrEnum
+from src.tools.definitions import PlannerToolCall, ToolName
 
 
 class Risk(StrEnum):
@@ -139,11 +140,20 @@ class PlanningEvidence(FrozenBaseModel):
     reproduction_stderr_summary: str | None = None
 
 
+class PlannerToolObservation(FrozenBaseModel):
+    tool_name: ToolName
+    stdout: str
+    stderr: str
+    exit_code: int
+    truncated: bool = False
+
+
 class PlannerState(FrozenBaseModel):
     contract: TaskContract
     repo_index: RepoIndex
     reproduction: ReproductionContext | None = None
     context_notes: list[ContextNote] = Field(default_factory=list)
+    tool_observations: list[PlannerToolObservation] = Field(default_factory=list)
     completed_steps: list[StepHistoryEntry] = Field(default_factory=list)
     previous_future_steps: list[PlanStep] = Field(default_factory=list)
     evidence: PlanningEvidence = Field(default_factory=PlanningEvidence)
@@ -151,6 +161,7 @@ class PlannerState(FrozenBaseModel):
 
 class PlannerTurn(FrozenBaseModel):
     context_requests: list[ContextRequest] = Field(default_factory=list)
+    tool_calls: list[PlannerToolCall] = Field(default_factory=list)
     future_steps: list[PlanStep] = Field(default_factory=list)
     done: bool = False
     done_reason: str | None = None
