@@ -60,7 +60,7 @@ async def plan_next_turn(state: PlannerState) -> tuple[PlannerTurn, LLMUsage]:
 def _render_planner_state(state: PlannerState) -> str:
     return '\n\n'.join(
         [
-            'Planner State',
+            '# Planner State',
             _render_contract(state),
             _section('Reproduction', _json_or_none(state.reproduction)),
             _section('Repository Tree', state.repo_index.directory_tree_text() or '(empty)'),
@@ -89,14 +89,10 @@ def _render_planner_state(state: PlannerState) -> str:
 
 def _render_contract(state: PlannerState) -> str:
     contract = state.contract
-    return '\n'.join(
+    return '\n\n'.join(
         [
-            'Goal',
-            contract.goal,
-            '',
-            'Task Type',
-            contract.task_type.value,
-            '',
+            _section('Goal', contract.goal),
+            _section('Task Type', contract.task_type.value),
             _section('Acceptance Criteria', _bullet_list(contract.acceptance_criteria)),
             _section('Non Goals', _bullet_list(contract.non_goals)),
             _section('Affected Areas', _bullet_list(contract.affected_areas)),
@@ -115,19 +111,20 @@ def _render_context_notes(notes: list[ContextNote]) -> str:
 
 def _render_context_note_text(note: ContextNote) -> str:
     request_reason = note.request_reason or '(reason unavailable)'
-    lines = [f'{note.id}: {request_reason}']
+    blocks = [f'### {note.id}: {request_reason}']
     if note.request_queries:
-        lines.append('queries:')
-        lines.extend(f'- {query}' for query in note.request_queries)
+        blocks.append(_subsection('queries', _bullet_list(note.request_queries)))
     if note.relevant_files:
-        lines.append('relevant files:')
-        lines.extend(f'- {file_path}' for file_path in note.relevant_files)
+        blocks.append(_subsection('relevant files', _bullet_list(note.relevant_files)))
     if note.snippets:
-        lines.append('snippets:')
-        lines.extend(f'- {_snippet_reference(snippet)}' for snippet in note.snippets)
-    lines.append('summary:')
-    lines.append(note.summary)
-    return '\n'.join(lines)
+        blocks.append(
+            _subsection(
+                'snippets',
+                '\n'.join(f'- {_snippet_reference(snippet)}' for snippet in note.snippets),
+            )
+        )
+    blocks.append(_subsection('summary', note.summary))
+    return '\n\n'.join(blocks)
 
 
 def _snippet_reference(snippet: object) -> str:
@@ -143,16 +140,15 @@ def _render_tool_observations(observations: list[PlannerToolObservation]) -> str
 
 
 def _render_tool_observation(observation: PlannerToolObservation) -> str:
-    lines = [
-        f'{observation.tool_name.value} exit_code={observation.exit_code}',
-        'stdout:',
-        observation.stdout or '(empty)',
+    blocks = [
+        f'### {observation.tool_name.value} exit_code={observation.exit_code}',
+        _subsection('stdout', observation.stdout or '(empty)'),
     ]
     if observation.stderr:
-        lines.extend(['stderr:', observation.stderr])
+        blocks.append(_subsection('stderr', observation.stderr))
     if observation.truncated:
-        lines.append('output truncated: true')
-    return '\n'.join(lines)
+        blocks.append('output truncated: true')
+    return '\n\n'.join(blocks)
 
 
 def _render_completed_steps(state: PlannerState) -> str:
@@ -187,7 +183,11 @@ def _render_previous_future_steps(state: PlannerState) -> str:
 
 
 def _section(title: str, body: str) -> str:
-    return f'{title}\n{body}'
+    return f'## {title}\n\n{body}'
+
+
+def _subsection(title: str, body: str) -> str:
+    return f'{title}:\n{body}'
 
 
 def _bullet_list(items: list[str]) -> str:

@@ -167,10 +167,10 @@ def test_planner_state_prompt_uses_readable_sections() -> None:
         )
     )
 
-    assert prompt.startswith('Planner State')
-    assert 'Goal\nAdd auth' in prompt
-    assert 'Acceptance Criteria\n- Auth works' in prompt
-    assert 'Available Context\nctx-1: Need auth code' in prompt
+    assert prompt.startswith('# Planner State')
+    assert '## Goal\n\nAdd auth' in prompt
+    assert '## Acceptance Criteria\n\n- Auth works' in prompt
+    assert '## Available Context\n\n### ctx-1: Need auth code' in prompt
     assert '- src/auth.py:1-4 - handler' in prompt
-    assert 'Planner Tool Observations\nrun_shell exit_code=0' in prompt
+    assert '## Planner Tool Observations\n\n### run_shell exit_code=0' in prompt
     assert 'def auth(): ...' not in prompt
