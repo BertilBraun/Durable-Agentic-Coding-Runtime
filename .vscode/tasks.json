@@ -7,6 +7,11 @@
             "label": "restart temporal",
             "type": "shell",
             "command": "cd Temporal-Light && git pull && docker compose down && docker compose build --pull && docker compose up -d",
+        },
+        {
+            "label": "clear temporal db",
+            "type": "shell",
+            "command": "docker exec temporal-light-postgres-1 psql -U tl -d temporal_light -c \"TRUNCATE events, workflows, workers RESTART IDENTITY CASCADE;\"",
         }
     ]
 }
