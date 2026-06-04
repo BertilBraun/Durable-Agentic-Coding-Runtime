@@ -167,6 +167,45 @@ async def test_generate_predictions_writes_sidecar_and_official_jsonl(tmp_path: 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('invalidate_stale_evaluation', 'stale_report_survives'),
+    [(True, False), (False, True)],
+)
+async def test_generate_predictions_invalidates_stale_evaluation_for_fresh_prediction(
+    tmp_path: Path,
+    invalidate_stale_evaluation: bool,
+    stale_report_survives: bool,
+) -> None:
+    async def fake_compare_patch_to_gold(**keyword_arguments: object) -> PatchComparison:
+        return PatchComparison(summary='compared', likely_equivalent=False)
+
+    evaluation_logs_root = tmp_path / 'logs'
+    stale_report_dir = evaluation_logs_root / 'run-1' / 'agentic-runtime' / 'python__repo-1'
+    stale_report_dir.mkdir(parents=True)
+    (stale_report_dir / 'report.json').write_text('{"resolved": true}', encoding='utf-8')
+    FakeClient.started_requests = []
+
+    await generate_predictions(
+        dataset_name='princeton-nlp/SWE-bench_Lite',
+        split='test',
+        subset=1,
+        temporal_api_url='http://temporal',
+        predictions_dir=tmp_path,
+        run_id='run-1',
+        model_name_or_path='agentic-runtime',
+        workflow_timeout_seconds=30,
+        invalidate_stale_evaluation=invalidate_stale_evaluation,
+        evaluation_logs_root=evaluation_logs_root,
+        dataset_loader=_fake_dataset_loader,
+        client_factory=FakeClient,
+        docker_image_checker=lambda docker_images: None,
+        patch_comparator=fake_compare_patch_to_gold,
+    )
+
+    assert stale_report_dir.exists() is stale_report_survives
+
+
+@pytest.mark.asyncio
 async def test_generate_predictions_reuses_existing_sidecar_without_force(tmp_path: Path) -> None:
     run_dir = tmp_path / 'run-1'
     run_dir.mkdir()

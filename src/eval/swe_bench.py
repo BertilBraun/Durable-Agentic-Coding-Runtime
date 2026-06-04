@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ DEFAULT_DATASET_NAME = 'princeton-nlp/SWE-bench_Lite'
 DEFAULT_SPLIT = 'test'
 DEFAULT_MODEL_NAME = 'agentic-coding-runtime'
 DEFAULT_PREDICTIONS_ROOT = Path('predictions')
+DEFAULT_EVALUATION_LOGS_ROOT = Path('logs/run_evaluation')
 DEFAULT_TEMPORAL_API_URL = 'http://localhost:8080'
 DEFAULT_TEMPORAL_DATABASE_URL = 'postgresql://tl:changeme@localhost:5432/temporal_light'
 DEFAULT_CONTAINER_REPO_PATH = '/testbed'
@@ -195,6 +197,8 @@ async def generate_predictions(
     model_name_or_path: str,
     workflow_timeout_seconds: int,
     force: bool = False,
+    invalidate_stale_evaluation: bool = True,
+    evaluation_logs_root: Path = DEFAULT_EVALUATION_LOGS_ROOT,
     dataset_loader: DatasetLoader | None = None,
     client_factory: ClientFactory = Client,
     docker_image_checker: DockerImageChecker | None = None,
@@ -247,8 +251,26 @@ async def generate_predictions(
                 }
             )
         _write_prediction(prediction_path, prediction)
+        if invalidate_stale_evaluation:
+            _invalidate_stale_evaluation_report(
+                evaluation_logs_root=evaluation_logs_root,
+                run_id=run_id,
+                model_name_or_path=model_name_or_path,
+                instance_id=instance.instance_id,
+            )
         prediction_records.append(prediction)
     return write_predictions_jsonl(run_predictions_dir, prediction_records)
+
+
+def _invalidate_stale_evaluation_report(
+    evaluation_logs_root: Path,
+    run_id: str,
+    model_name_or_path: str,
+    instance_id: str,
+) -> None:
+    report_dir = evaluation_logs_root / run_id / model_name_or_path.replace('/', '__') / instance_id
+    if report_dir.exists():
+        shutil.rmtree(report_dir)
 
 
 def ensure_docker_images_available(docker_images: list[str]) -> None:
@@ -568,6 +590,7 @@ async def _main_async(arguments: argparse.Namespace) -> None:
                 model_name_or_path=arguments.model_name_or_path,
                 workflow_timeout_seconds=arguments.workflow_timeout_seconds,
                 force=arguments.force,
+                invalidate_stale_evaluation=not arguments.generate_only,
             )
         finally:
             if worker_process is not None:
