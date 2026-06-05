@@ -155,14 +155,15 @@ class LLMClient:
                 **_reasoning_request_kwargs(reasoning_effort),
             )
         )
-        return _llm_result_from_response(
+        result = _llm_result_from_response(
             model=model,
             context_limit_tokens=context_limit_tokens,
             response=response,
         )
+        return result.model_copy(update={'content': _extract_parsed_content(response)})
 
 
-@activity(retries=2, timeout=120, backoff_seconds=10)
+@activity(retries=5, timeout=600, backoff_seconds=10)
 async def generate_completion(
     messages: list[Message],
     model: str,
@@ -181,7 +182,7 @@ async def generate_completion(
         await client.close()
 
 
-@activity(retries=2, timeout=180, backoff_seconds=10)
+@activity(retries=5, timeout=600, backoff_seconds=10)
 async def generate_structured_completion(
     messages: list[Message],
     output_type_module: str,
@@ -303,6 +304,15 @@ def _extract_content(response: ChatCompletion) -> str:
     if content is None:
         raise ValueError('LLM response did not include content')
     return content
+
+
+def _extract_parsed_content(response: ParsedChatCompletion[StructuredOutput]) -> str:
+    parsed = response.choices[0].message.parsed
+    if parsed is None:
+        raise ValueError('Structured LLM response did not include parsed content')
+    if isinstance(parsed, BaseModel):
+        return parsed.model_dump_json()
+    raise TypeError(f'Parsed structured output is not a Pydantic model: {type(parsed).__name__}')
 
 
 def _llm_result_from_response(

@@ -3,7 +3,13 @@ from __future__ import annotations
 from temporal_light import run_child, workflow
 
 from src.activities.planner import plan_next_turn
-from src.activities.workspace_manager import ToolExecutionRequest, ToolResult, WorkspaceAdapter, run_tool
+from src.activities.workspace_manager import (
+    ToolExecutionRequest,
+    ToolResult,
+    Workspace,
+    WorkspaceAdapter,
+    run_tool,
+)
 from src.llm.client import LLMUsage
 from src.models.context import ContextPack
 from src.models.plan import ContextNote, PlannerState, PlannerToolObservation, PlannerTurn
@@ -34,44 +40,41 @@ async def replanning_workflow(
         planner_turn, turn_usage = await plan_next_turn(state)
         planner_turn_count += 1
         usage += turn_usage
-        state_changed = False
-        if planner_turn.context_requests:
-            new_notes: list[ContextNote] = []
-            for request in planner_turn.context_requests:
-                child_result = await run_child(
-                    'context_gathering_workflow',
-                    workspace=workspace_info.model_dump(mode='json'),
-                    repo_index=repository_index.model_dump(mode='json'),
-                    request=request.model_dump(mode='json'),
-                )
-                note, context_pack, context_usage = parse_context_gathering_result(child_result)
-                usage += context_usage
-                context_notes.append(note)
-                new_notes.append(note)
-                context_packs.append(context_pack)
-            state = state.model_copy(update={'context_notes': [*state.context_notes, *new_notes]})
-            state_changed = True
-        if planner_turn.tool_calls:
-            observations: list[PlannerToolObservation] = []
-            for tool_call in planner_turn.tool_calls[:_MAX_PLANNER_TOOL_CALLS_PER_TURN]:
-                tool_result = await _run_planner_tool(
-                    workspace_info=workspace_info,
-                    repo_index=repository_index,
-                    tool_call=tool_call,
-                )
-                observations.append(_observation_from_tool_result(tool_result))
-            state = state.model_copy(
-                update={
-                    'tool_observations': [
-                        *state.tool_observations,
-                        *observations,
-                    ]
-                }
+
+        new_notes: list[ContextNote] = []
+        for request in planner_turn.context_requests:
+            child_result = await run_child(
+                'context_gathering_workflow',
+                workspace=workspace_info.model_dump(mode='json'),
+                repo_index=repository_index.model_dump(mode='json'),
+                request=request.model_dump(mode='json'),
             )
-            state_changed = True
-        if state_changed:
-            continue
-        break
+            note, context_pack, context_usage = parse_context_gathering_result(child_result)
+            usage += context_usage
+            context_notes.append(note)
+            new_notes.append(note)
+            context_packs.append(context_pack)
+
+        observations: list[PlannerToolObservation] = []
+        for tool_call in planner_turn.tool_calls[:_MAX_PLANNER_TOOL_CALLS_PER_TURN]:
+            tool_result = await _run_planner_tool(
+                workspace_info=workspace_info,
+                repo_index=repository_index,
+                tool_call=tool_call,
+            )
+            observations.append(_observation_from_tool_result(tool_result))
+        state = state.model_copy(
+            update={
+                'tool_observations': [
+                    *state.tool_observations,
+                    *observations,
+                ],
+                'context_notes': [*state.context_notes, *new_notes],
+            }
+        )
+
+        if not planner_turn.context_requests and not planner_turn.tool_calls:
+            break
     return {
         'planner_turn': planner_turn.model_dump(mode='json'),
         'context_notes': [note.model_dump(mode='json') for note in context_notes],
@@ -82,7 +85,7 @@ async def replanning_workflow(
 
 
 async def _run_planner_tool(
-    workspace_info: object,
+    workspace_info: Workspace,
     repo_index: RepoIndex,
     tool_call: PlannerToolCall,
 ) -> ToolResult:

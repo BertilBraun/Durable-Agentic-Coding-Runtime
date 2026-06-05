@@ -72,6 +72,8 @@ async def test_generate_structured_passes_importable_output_type_path(
 class FakeCompletions:
     def __init__(self) -> None:
         self.parse_calls: list[dict[str, object]] = []
+        self.structured_content = json.dumps({'accepted': True, 'reasoning': 'Narrow.'})
+        self.parsed_payload = {'accepted': True, 'reasoning': 'Narrow.'}
 
     async def create(self, **keyword_arguments: object) -> ChatCompletion:
         return ChatCompletion.model_validate(
@@ -116,16 +118,8 @@ class FakeCompletions:
                         'finish_reason': 'stop',
                         'message': {
                             'role': 'assistant',
-                            'content': json.dumps(
-                                {
-                                    'accepted': True,
-                                    'reasoning': 'Narrow.',
-                                }
-                            ),
-                            'parsed': {
-                                'accepted': True,
-                                'reasoning': 'Narrow.',
-                            },
+                            'content': self.structured_content,
+                            'parsed': self.parsed_payload,
                         },
                     }
                 ],
@@ -178,6 +172,30 @@ async def test_structured_generation_returns_llm_result_with_usage() -> None:
     assert result.usage.total_output_tokens == 4
     assert result.context_utilization() == 0.1
     assert StructuredDummy.model_validate_json(result.content).accepted is True
+
+
+@pytest.mark.asyncio
+async def test_structured_generation_uses_parsed_message_as_canonical_content() -> None:
+    async_openai_client = FakeAsyncOpenAI()
+    async_openai_client.completions.structured_content = json.dumps(
+        {'accepted': False, 'reasoning': 'raw content should not be trusted'}
+    )
+    async_openai_client.completions.parsed_payload = {
+        'accepted': True,
+        'reasoning': 'parsed object is authoritative',
+    }
+    llm_client = LLMClient(async_openai_client=async_openai_client)
+
+    result = await llm_client.generate_structured(
+        messages=[Message(role='user', content='Assess this task')],
+        output_type=StructuredDummy,
+        model='complexity-model',
+        context_limit_tokens=100,
+    )
+
+    parsed_result = StructuredDummy.model_validate_json(result.content)
+    assert parsed_result.accepted is True
+    assert parsed_result.reasoning == 'parsed object is authoritative'
 
 
 @pytest.mark.asyncio
