@@ -3,7 +3,6 @@ from src.activities.context_gatherer import context_note_from_pack
 from src.activities.reviewer import ReviewDecision
 from src.activities.workspace_manager import (
     HostWorkspace,
-    ToolExecutionRequest,
     ToolResult,
     Workspace,
 )
@@ -159,7 +158,7 @@ def test_planner_loop_state_appends_context_notes_immutably() -> None:
         workspace_info=_workspace(),
         planner_state=PlannerState(contract=_contract(), repo_index=RepoIndex()),
         context_packs=[],
-        latest_future_steps=[],
+        executed_steps=[],
         worker_results=[],
         usage=LLMUsage(),
     )
@@ -182,7 +181,7 @@ async def test_planner_loop_fulfills_context_then_runs_first_future_step(
     planner_states: list[PlannerState] = []
     turns = iter(
         [
-            PlannerTurn(future_steps=[_step('step-1'), _step('stale-step-2')]),
+            PlannerTurn(next_step=_step('step-1'), remaining_work=['handle stale-step-2']),
             PlannerTurn(done=True, done_reason='ready'),
         ]
     )
@@ -227,6 +226,7 @@ async def test_planner_loop_fulfills_context_then_runs_first_future_step(
         workspace_info: Workspace,
         contract: TaskContract,
         repo_index: RepoIndex,
+        reproduction: ReproductionContext | None = None,
     ) -> tuple[WorkerResult, LLMUsage]:
         executed_steps.append(plan_step.id)
         assert plan_context.completed_step_summaries == []
@@ -251,7 +251,7 @@ async def test_planner_loop_fulfills_context_then_runs_first_future_step(
     assert executed_steps == ['step-1']
     assert len(planner_states) == 2
     assert planner_states[1].completed_steps[0].step_id == 'step-1'
-    assert [step.id for step in planner_states[1].previous_future_steps] == ['stale-step-2']
+    assert planner_states[1].remaining_work == ['handle stale-step-2']
     assert result.worker_results[0].observations == ['observed behavior']
 
 
@@ -259,7 +259,7 @@ async def test_planner_loop_fulfills_context_then_runs_first_future_step(
 async def test_planner_loop_passes_relevant_context_pack_to_implementation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    turns = iter([PlannerTurn(future_steps=[_step('step-1')]), PlannerTurn(done=True)])
+    turns = iter([PlannerTurn(next_step=_step('step-1')), PlannerTurn(done=True)])
     captured_pack: list[ContextPack] = []
 
     async def fake_run_replanner_child(
@@ -277,6 +277,7 @@ async def test_planner_loop_passes_relevant_context_pack_to_implementation(
         workspace_info: Workspace,
         contract: TaskContract,
         repo_index: RepoIndex,
+        reproduction: ReproductionContext | None = None,
     ) -> tuple[WorkerResult, LLMUsage]:
         captured_pack.append(context_pack)
         return _worker_result(), _usage()
@@ -300,8 +301,8 @@ async def test_planner_loop_replans_after_one_step_and_does_not_run_stale_second
 ) -> None:
     turns = iter(
         [
-            PlannerTurn(future_steps=[_step('step-1'), _step('old-step-2')]),
-            PlannerTurn(future_steps=[_step('new-step-2')]),
+            PlannerTurn(next_step=_step('step-1'), remaining_work=['do old-step-2']),
+            PlannerTurn(next_step=_step('new-step-2')),
             PlannerTurn(done=True),
         ]
     )
@@ -322,6 +323,7 @@ async def test_planner_loop_replans_after_one_step_and_does_not_run_stale_second
         workspace_info: Workspace,
         contract: TaskContract,
         repo_index: RepoIndex,
+        reproduction: ReproductionContext | None = None,
     ) -> tuple[WorkerResult, LLMUsage]:
         executed_steps.append(plan_step.id)
         return _worker_result(), _usage()
@@ -340,14 +342,60 @@ async def test_planner_loop_replans_after_one_step_and_does_not_run_stale_second
 
 
 @pytest.mark.asyncio
+async def test_planner_done_with_outstanding_backlog_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    turns = iter(
+        [
+            PlannerTurn(next_step=_step('step-1'), remaining_work=['finish the read side']),
+            PlannerTurn(done=True),
+        ]
+    )
+
+    async def fake_run_replanner_child(
+        workspace_info: Workspace,
+        repo_index: RepoIndex,
+        max_planner_turns: int,
+        planner_state: PlannerState,
+    ) -> tuple[PlannerTurn, list[object], list[ContextPack], int, LLMUsage]:
+        return next(turns), [], [], 1, _usage()
+
+    async def fake_run_implementation_child(
+        plan_step: PlanStep,
+        plan_context: PlanContext,
+        context_pack: ContextPack,
+        workspace_info: Workspace,
+        contract: TaskContract,
+        repo_index: RepoIndex,
+        reproduction: ReproductionContext | None = None,
+    ) -> tuple[WorkerResult, LLMUsage]:
+        return _worker_result(), _usage()
+
+    async def fake_get_full_diff(workspace_arg: Workspace) -> str:
+        return 'diff --git a/app.py b/app.py'
+
+    monkeypatch.setattr(workflow_module, '_run_replanner_child', fake_run_replanner_child)
+    monkeypatch.setattr(workflow_module, '_run_implementation_child', fake_run_implementation_child)
+    monkeypatch.setattr(workflow_module, 'get_full_diff', fake_get_full_diff)
+    _install_step_branch_fakes(monkeypatch)
+
+    result = await _run_planner_loop(_workspace(), _contract(), RepoIndex(), None)
+
+    assert result.worker_results[-1].status == WorkerStatus.BLOCKED
+    assert result.worker_results[-1].discovered_issues == [
+        'remaining work not completed: finish the read side'
+    ]
+
+
+@pytest.mark.asyncio
 async def test_needs_replan_advances_workspace_without_completed_step_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     planner_states: list[PlannerState] = []
     turns = iter(
         [
-            PlannerTurn(future_steps=[_step('failed-restore')]),
-            PlannerTurn(future_steps=[_step('retry-restore')]),
+            PlannerTurn(next_step=_step('failed-restore')),
+            PlannerTurn(next_step=_step('retry-restore')),
             PlannerTurn(done=True),
         ]
     )
@@ -376,6 +424,7 @@ async def test_needs_replan_advances_workspace_without_completed_step_summary(
         workspace_info: Workspace,
         contract: TaskContract,
         repo_index: RepoIndex,
+        reproduction: ReproductionContext | None = None,
     ) -> tuple[WorkerResult, LLMUsage]:
         implementation_contexts.append(plan_context)
         return next(worker_results), _usage()
@@ -401,7 +450,7 @@ async def test_needs_replan_advances_workspace_without_completed_step_summary(
 async def test_failed_step_does_not_advance_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    turns = iter([PlannerTurn(future_steps=[_step('failed-step')]), PlannerTurn(done=True)])
+    turns = iter([PlannerTurn(next_step=_step('failed-step')), PlannerTurn(done=True)])
     diff_workspaces: list[Workspace] = []
 
     async def fake_run_replanner_child(
@@ -419,6 +468,7 @@ async def test_failed_step_does_not_advance_workspace(
         workspace_info: Workspace,
         contract: TaskContract,
         repo_index: RepoIndex,
+        reproduction: ReproductionContext | None = None,
     ) -> tuple[WorkerResult, LLMUsage]:
         return _worker_result(status=WorkerStatus.FAILED, confidence=Confidence.LOW), _usage()
 
@@ -487,8 +537,8 @@ async def test_reproduction_failure_is_refreshed_as_planner_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     planner_states: list[PlannerState] = []
-    turns = iter([PlannerTurn(future_steps=[_step('fix')]), PlannerTurn(done=True)])
-    repro_calls = 0
+    turns = iter([PlannerTurn(next_step=_step('fix')), PlannerTurn(done=True)])
+    anchor_calls = 0
 
     async def fake_run_replanner_child(
         workspace_info: Workspace,
@@ -506,20 +556,35 @@ async def test_reproduction_failure_is_refreshed_as_planner_evidence(
         workspace_info: Workspace,
         contract: TaskContract,
         repo_index: RepoIndex,
+        reproduction: ReproductionContext | None = None,
     ) -> tuple[WorkerResult, LLMUsage]:
         return _worker_result(), _usage()
 
-    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
-        nonlocal repro_calls
-        repro_calls += 1
-        return ToolResult(stdout='still red', stderr='', exit_code=1, truncated=False)
+    async def fake_run_anchor_tests(
+        workspace_arg: Workspace,
+        repo_index_arg: RepoIndex,
+        reproduction_arg: ReproductionContext,
+        restore_regression_files: bool = True,
+    ) -> list[TestResult]:
+        nonlocal anchor_calls
+        anchor_calls += 1
+        return [
+            TestResult(
+                sequence=1,
+                command='bug.py',
+                exit_code=1,
+                stdout_summary='still red',
+                stderr_summary='',
+                passed=False,
+            )
+        ]
 
     async def fake_get_full_diff(workspace_arg: Workspace) -> str:
         return 'diff --git a/app.py b/app.py'
 
     monkeypatch.setattr(workflow_module, '_run_replanner_child', fake_run_replanner_child)
     monkeypatch.setattr(workflow_module, '_run_implementation_child', fake_run_implementation_child)
-    monkeypatch.setattr(workflow_module, 'run_tool', fake_run_tool)
+    monkeypatch.setattr(workflow_module, 'run_anchor_tests', fake_run_anchor_tests)
     monkeypatch.setattr(workflow_module, 'get_full_diff', fake_get_full_diff)
     _install_step_branch_fakes(monkeypatch)
 
@@ -530,7 +595,7 @@ async def test_reproduction_failure_is_refreshed_as_planner_evidence(
         ReproductionContext(repro_target='bug.py', failure_evidence='boom'),
     )
 
-    assert repro_calls == 1
+    assert anchor_calls == 1
     assert planner_states[1].evidence.reproduction_passed is False
     assert planner_states[1].evidence.reproduction_stdout_summary == 'still red'
 
@@ -598,6 +663,7 @@ async def test_implementation_child_includes_rich_step_payload(
         workspace_info=_workspace().model_copy(update={'current_branch': 'agentic/run-1/cand-0'}),
         contract=_contract(),
         repo_index=RepoIndex(),
+        reproduction=None,
     )
 
     assert spawned_kwargs[0]['workflow_name'] == 'implementation_workflow'
@@ -611,7 +677,7 @@ async def test_implementation_child_includes_rich_step_payload(
 async def test_replanner_child_passes_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     spawned_kwargs: list[dict[str, object]] = []
     planner_state = PlannerState(contract=_contract(), repo_index=RepoIndex())
-    planner_turn = PlannerTurn(future_steps=[_step('step-1')])
+    planner_turn = PlannerTurn(next_step=_step('step-1'))
 
     async def fake_run_child(workflow_name: str, **kwargs: object) -> dict[str, object]:
         spawned_kwargs.append({'workflow_name': workflow_name, **kwargs})
@@ -674,7 +740,7 @@ async def test_main_workflow_reports_final_reproduction_failure(
     workspace = _workspace()
     _install_common_workflow_fakes(monkeypatch, _contract(TaskType.BUGFIX), workspace)
     _install_step_branch_fakes(monkeypatch)
-    turns = iter([PlannerTurn(future_steps=[_step('fix')]), PlannerTurn(done=True)])
+    turns = iter([PlannerTurn(next_step=_step('fix')), PlannerTurn(done=True)])
     run_tool_calls = 0
 
     async def fake_run_reproduction_child(
@@ -706,19 +772,28 @@ async def test_main_workflow_reports_final_reproduction_failure(
         workspace_info: Workspace,
         contract: TaskContract,
         repo_index: RepoIndex,
+        reproduction: ReproductionContext | None = None,
     ) -> tuple[WorkerResult, LLMUsage]:
         return _worker_result(), _usage()
 
-    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+    async def fake_run_anchor_tests(
+        workspace_arg: Workspace,
+        repo_index_arg: RepoIndex,
+        reproduction_arg: ReproductionContext,
+        restore_regression_files: bool = True,
+    ) -> list[TestResult]:
         nonlocal run_tool_calls
         run_tool_calls += 1
-        exit_code = 1 if run_tool_calls == 2 else 0
-        return ToolResult(
-            stdout='red' if exit_code else 'green',
-            stderr='',
-            exit_code=exit_code,
-            truncated=False,
-        )
+        return [
+            TestResult(
+                sequence=1,
+                command='bug.py',
+                exit_code=1,
+                stdout_summary='red',
+                stderr_summary='',
+                passed=False,
+            )
+        ]
 
     async def fake_get_full_diff(workspace_arg: Workspace) -> str:
         return 'diff --git a/app.py b/app.py'
@@ -729,7 +804,7 @@ async def test_main_workflow_reports_final_reproduction_failure(
     monkeypatch.setattr(workflow_module, '_run_reproduction_child', fake_run_reproduction_child)
     monkeypatch.setattr(workflow_module, '_run_replanner_child', fake_run_replanner_child)
     monkeypatch.setattr(workflow_module, '_run_implementation_child', fake_run_implementation_child)
-    monkeypatch.setattr(workflow_module, 'run_tool', fake_run_tool)
+    monkeypatch.setattr(workflow_module, 'run_anchor_tests', fake_run_anchor_tests)
     monkeypatch.setattr(workflow_module, 'get_full_diff', fake_get_full_diff)
     monkeypatch.setattr(workflow_module, 'finalize_winner', fake_finalize_winner)
 

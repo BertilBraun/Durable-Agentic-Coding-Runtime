@@ -7,11 +7,9 @@ from src.llm.client import LLMUsage, Message, StructuredCompletion
 from src.models.context import PackedSnippet
 from src.models.plan import (
     ContextNote,
-    PlannerToolObservation,
     PlannerState,
+    PlannerToolObservation,
     PlannerTurn,
-    PlanStep,
-    Risk,
     StepHistoryEntry,
 )
 from src.models.repo import RepoIndex
@@ -20,7 +18,7 @@ from src.models.worker import Confidence, WorkerStatus
 from src.tools.definitions import ToolName
 
 
-def test_planner_state_serializes_normalized_history_and_future_steps() -> None:
+def test_planner_state_serializes_normalized_history_and_remaining_work() -> None:
     state = PlannerState(
         contract=TaskContract(task_type=TaskType.BUGFIX, goal='Fix auth'),
         repo_index=RepoIndex(),
@@ -48,19 +46,7 @@ def test_planner_state_serializes_normalized_history_and_future_steps() -> None:
                 summary='Updated parser.',
             )
         ],
-        previous_future_steps=[
-            PlanStep(
-                id='step-2',
-                goal='Finish auth fix',
-                target_files=['src/auth.py'],
-                context_summary='Use gathered auth handler evidence.',
-                required_changes=['Fix missing token case.'],
-                out_of_scope=['Do not change unrelated middleware.'],
-                tests_to_run=['pytest tests/test_auth.py -q'],
-                expected_result='Auth test passes.',
-                risk=Risk.LOW,
-            )
-        ],
+        remaining_work=['Fix missing token case in src/auth.py.'],
     )
 
     payload = state.model_dump(mode='json')
@@ -68,7 +54,7 @@ def test_planner_state_serializes_normalized_history_and_future_steps() -> None:
     assert payload['context_notes'][0]['snippets'][0]['file_path'] == 'src/auth.py'
     assert 'content' not in payload['context_notes'][0]['snippets'][0]
     assert payload['completed_steps'][0]['outcome'] == WorkerStatus.SUCCESS.value
-    assert payload['previous_future_steps'][0]['required_changes'] == ['Fix missing token case.']
+    assert payload['remaining_work'] == ['Fix missing token case in src/auth.py.']
 
 
 @pytest.mark.asyncio

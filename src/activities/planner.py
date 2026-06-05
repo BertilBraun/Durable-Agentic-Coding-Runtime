@@ -20,19 +20,35 @@ PLANNER_TURN_SYSTEM_PROMPT = (
     'you need different concrete files, functions, or behavior.\n'
     'If you request context, make each request concrete and do not output implementation steps '
     'that depend on missing context.\n'
-    'When enough context exists, output only future steps. Never repeat completed steps.\n'
-    'Each future step must be independently executable and must include target files, '
-    'step-specific context, required changes, tests to run, expected result, and out-of-scope '
-    'constraints.\n'
+    'Plan incrementally: when enough context exists, output exactly one next_step planned in '
+    'full detail, plus a remaining_work backlog listing every other outstanding behavior as a '
+    'concrete item. Do not pre-plan later steps in detail; they are re-planned once this '
+    "step's results are known. The backlog is where you keep outstanding scope so it cannot be "
+    'silently dropped. Never repeat completed steps. Set next_step=null with done=true only when '
+    'no implementation work remains and current evidence supports final verification.\n'
+    'The next_step must be independently executable and must include target files, step-specific '
+    'context, required changes, tests to run, expected result, and out-of-scope constraints. Make '
+    'required_changes concrete enough to implement without re-deriving them: name the functions, '
+    'call sites, and the exact behavior change.\n'
     'Prefer one substantial concrete step over artificial inspect/create-test/run-test splits.\n'
-    'Scope steps for a complete, consistent fix, not just the literal example: when the issue is '
-    'one instance of a general defect (one keyword, format, or direction of a symmetric '
-    'operation), require handling the sibling cases the corrected behavior implies.\n'
-    'Very concrete test-first steps are allowed when useful, but the step must say exactly what '
-    'behavior, file, and failure mode is expected.\n'
-    'When a step specifies tests, require strong, self-validating ones: prefer round trips and '
-    'invariants over literal values, ground any literal expectation in the issue or spec rather '
-    'than guessing it, and cover multiple inputs and input counts instead of a single example.\n'
+    'Scope the whole feature or fix, not just the literal example: when the issue is one instance '
+    'of a general defect (one keyword, format, or direction of a symmetric operation), the '
+    'corrected behavior implies sibling cases. Put the current direction in next_step and the '
+    'matching sibling directions in remaining_work so none are lost.\n'
+    'Worked example of scope and rolling output. Issue: Settings.to_query_string() drops '
+    'list-valued params. Encoding a list is one direction of a symmetric encode/decode pair. '
+    'Good output: next_step = make to_query_string encode list params as repeated keys '
+    '(required_changes name the encoder function and the exact change; expected_result asserts '
+    'parse_query_string(settings.to_query_string()) round-trips a Settings with scalar, empty, '
+    'and multi-value list params and reproduces the input). remaining_work = ["decode repeated '
+    'keys back into a list in parse_query_string (the matching read direction)", "raise a clear '
+    'error on a malformed repeated key"]. The decode direction stays in remaining_work so the '
+    'round trip is not half-implemented.\n'
+    'When a step specifies tests, require strong, self-validating ones, and make the test part of '
+    'required_changes concrete: state the setup, the exact assertion (prefer round trips and '
+    'invariants over literal values, ground any literal in the issue or spec), and the multiple '
+    'inputs and input counts to cover instead of a single example. "Write a failing test" is too '
+    'vague; say what behavior it asserts.\n'
     'A red test is ambiguous: the fault may be the test, not the code. If an implemented step '
     'keeps a self-authored test red, request the test and implementation as context and judge '
     'whether the test is unrepresentative or encodes a misunderstanding; if so, schedule a step '
@@ -70,7 +86,7 @@ def _render_planner_state(state: PlannerState) -> str:
                 _render_tool_observations(state.tool_observations),
             ),
             _section('Step Attempt History', _render_completed_steps(state)),
-            _section('Previous Future Step Summary', _render_previous_future_steps(state)),
+            _section('Remaining Work Backlog', _render_remaining_work(state)),
             _section('Current Evidence', _json(state.evidence.model_dump(mode='json'))),
             _section(
                 'Allowed Next Outputs',
@@ -78,7 +94,7 @@ def _render_planner_state(state: PlannerState) -> str:
                     [
                         '- read-only tool calls to inspect concrete code',
                         '- context requests for missing relevant ranges',
-                        '- future implementation steps',
+                        '- one fully detailed next_step plus a remaining_work backlog',
                         '- done=true when no work remains',
                     ]
                 ),
@@ -128,9 +144,7 @@ def _render_context_note_text(note: ContextNote) -> str:
 
 
 def _snippet_reference(snippet: object) -> str:
-    return (
-        f'{snippet.file_path}:{snippet.start_line}-{snippet.end_line} - {snippet.reason}'
-    )
+    return f'{snippet.file_path}:{snippet.start_line}-{snippet.end_line} - {snippet.reason}'
 
 
 def _render_tool_observations(observations: list[PlannerToolObservation]) -> str:
@@ -170,16 +184,10 @@ def _render_completed_steps(state: PlannerState) -> str:
     return '\n'.join(lines)
 
 
-def _render_previous_future_steps(state: PlannerState) -> str:
-    if not state.previous_future_steps:
+def _render_remaining_work(state: PlannerState) -> str:
+    if not state.remaining_work:
         return '(none)'
-    lines = []
-    for step in state.previous_future_steps:
-        lines.append(
-            f'- {step.id}: {step.goal}; target_files={_json(step.target_files)}; '
-            f'expected_result={step.expected_result}'
-        )
-    return '\n'.join(lines)
+    return '\n'.join(f'- {item}' for item in state.remaining_work)
 
 
 def _section(title: str, body: str) -> str:

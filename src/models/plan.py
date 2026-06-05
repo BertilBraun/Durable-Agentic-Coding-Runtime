@@ -155,14 +155,27 @@ class PlannerState(FrozenBaseModel):
     context_notes: list[ContextNote] = Field(default_factory=list)
     tool_observations: list[PlannerToolObservation] = Field(default_factory=list)
     completed_steps: list[StepHistoryEntry] = Field(default_factory=list)
-    previous_future_steps: list[PlanStep] = Field(default_factory=list)
+    remaining_work: list[str] = Field(
+        default_factory=list,
+        description='Carried-forward backlog of outstanding work not yet planned into a step.',
+    )
     evidence: PlanningEvidence = Field(default_factory=PlanningEvidence)
 
 
 class PlannerTurn(FrozenBaseModel):
     context_requests: list[ContextRequest] = Field(default_factory=list)
     tool_calls: list[PlannerToolCall] = Field(default_factory=list)
-    future_steps: list[PlanStep] = Field(default_factory=list)
+    next_step: PlanStep | None = Field(
+        default=None,
+        description='The single concrete step to execute now, planned in full detail.',
+    )
+    remaining_work: list[str] = Field(
+        default_factory=list,
+        description=(
+            'Outstanding work after this step, as a backlog of concrete behaviors to plan '
+            'and implement later; each entry names a behavior, not a vague area.'
+        ),
+    )
     done: bool = False
     done_reason: str | None = None
 

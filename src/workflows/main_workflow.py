@@ -15,6 +15,7 @@ from src.activities.selector import (
     aggregate_candidate_confidence,
     candidate_count_for_confidence,
 )
+from src.activities.verifier import run_anchor_tests
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
     ToolResult,
@@ -60,6 +61,11 @@ _CONFIDENCE_RANK: dict[Confidence, int] = {
     Confidence.HIGH: 2,
 }
 
+# Reproduction is a red->green anchor test, which only fits tasks that add or correct
+# behavior. Refactors preserve behavior (nothing to turn green) and docs/frontend have no
+# pytest-observable contract.
+_REPRODUCIBLE_TASK_TYPES: frozenset[TaskType] = frozenset({TaskType.BUGFIX, TaskType.FEATURE})
+
 
 @dataclass(frozen=True)
 class StepCandidateRun:
@@ -73,7 +79,7 @@ class PlannerLoopState(FrozenBaseModel):
     workspace_info: Workspace
     planner_state: PlannerState
     context_packs: list[ContextPack]
-    latest_future_steps: list[PlanStep]
+    executed_steps: list[PlanStep]
     worker_results: list[WorkerResult]
     usage: LLMUsage
     next_candidate_index: int = 0
@@ -98,11 +104,11 @@ class PlannerLoopState(FrozenBaseModel):
     def with_worker_result(self, worker_result: WorkerResult) -> PlannerLoopState:
         return self.model_copy(update={'worker_results': [*self.worker_results, worker_result]})
 
-    def with_previous_future_steps(self, steps: list[PlanStep]) -> PlannerLoopState:
+    def with_remaining_work(self, remaining_work: list[str]) -> PlannerLoopState:
         return self.model_copy(
             update={
                 'planner_state': self.planner_state.model_copy(
-                    update={'previous_future_steps': steps}
+                    update={'remaining_work': remaining_work}
                 )
             }
         )
@@ -203,7 +209,7 @@ async def _bootstrap_workflow_state(
     workspace = await setup_environment(task_request.origin, run_id)
     repo_index = await build_repo_index(workspace)
     reproduction_context: ReproductionContext | None = None
-    if contract.task_type == TaskType.BUGFIX:
+    if contract.task_type in _REPRODUCIBLE_TASK_TYPES:
         reproduction_result, reproduction_usage = await _run_reproduction_child(
             workspace_info=workspace,
             contract=contract,
@@ -222,6 +228,7 @@ async def _bootstrap_workflow_state(
         reproduction_context = ReproductionContext(
             repro_target=reproduction_result.repro_target,
             failure_evidence=reproduction_result.failure_evidence,
+            regression_test_files=reproduction_result.regression_test_files,
         )
         workspace = await snapshot_candidate_base(workspace)
     return contract, workspace, repo_index, reproduction_context, None, usage
@@ -241,7 +248,7 @@ async def _run_planner_loop(
             reproduction=reproduction,
         ),
         context_packs=[],
-        latest_future_steps=[],
+        executed_steps=[],
         worker_results=[],
         usage=LLMUsage(),
     )
@@ -257,14 +264,19 @@ async def _run_planner_loop(
         assert not turn.context_requests, 'replanning_workflow should not return context requests'
         planner_turns_remaining -= planner_turn_count
         state = state.with_usage(turn_usage).with_context(notes, context_packs)
-        if turn.done and not turn.future_steps:
-            state = state.with_previous_future_steps([])
-            hit_cap = False
-            break
-        if not turn.future_steps:
+        if turn.next_step is None:
+            if turn.done:
+                outstanding = turn.remaining_work or state.planner_state.remaining_work
+                if outstanding:
+                    state = state.with_worker_result(_outstanding_backlog_blocker(outstanding))
+                    hit_cap = False
+                    break
+                state = state.with_remaining_work([])
+                hit_cap = False
+                break
             continue
-        state = state.with_previous_future_steps(turn.future_steps)
-        state = await _run_next_step(state, turn)
+        state = state.with_remaining_work(turn.remaining_work)
+        state = await _run_next_step(state, turn, reproduction)
         state = await _refresh_planning_evidence(state, repo_index, reproduction)
     if hit_cap:
         blocked = WorkerResult(
@@ -279,15 +291,31 @@ async def _run_planner_loop(
     return _plan_execution_result_from_state(state)
 
 
-async def _run_next_step(state: PlannerLoopState, turn: PlannerTurn) -> PlannerLoopState:
-    plan_step = turn.future_steps[0]
-    remaining_future_steps = turn.future_steps[1:]
+def _outstanding_backlog_blocker(outstanding: list[str]) -> WorkerResult:
+    return WorkerResult(
+        status=WorkerStatus.BLOCKED,
+        patch_id=None,
+        diff_summary='Planner declared done with outstanding backlog.',
+        discovered_issues=[f'remaining work not completed: {item}' for item in outstanding],
+        confidence=Confidence.LOW,
+        replan_suggestion=None,
+    )
+
+
+async def _run_next_step(
+    state: PlannerLoopState,
+    turn: PlannerTurn,
+    reproduction: ReproductionContext | None,
+) -> PlannerLoopState:
+    plan_step = turn.next_step
+    assert plan_step is not None, '_run_next_step requires a next_step'
+    completed_step_ids = [entry.step_id for entry in state.planner_state.completed_steps]
     step_run, next_candidate_index = await _run_step_with_candidates(
         plan_step=plan_step,
         plan_context=PlanContext(
             summary='Planner-driven execution',
             current_step_id=plan_step.id,
-            all_step_ids=[step.id for step in turn.future_steps],
+            all_step_ids=[*completed_step_ids, plan_step.id],
             completed_step_summaries=[
                 f'{entry.step_id}: {entry.summary}'
                 for entry in state.planner_state.completed_steps
@@ -299,6 +327,7 @@ async def _run_next_step(state: PlannerLoopState, turn: PlannerTurn) -> PlannerL
         repo_index=state.planner_state.repo_index,
         workspace_info=state.workspace_info,
         first_candidate_index=state.next_candidate_index,
+        reproduction=reproduction,
     )
     selected_result = step_run.worker_results[-1]
     workspace = (
@@ -315,10 +344,10 @@ async def _run_next_step(state: PlannerLoopState, turn: PlannerTurn) -> PlannerL
             'planner_state': state.planner_state.model_copy(
                 update={
                     'completed_steps': [*state.planner_state.completed_steps, history],
-                    'previous_future_steps': remaining_future_steps,
+                    'remaining_work': turn.remaining_work,
                 }
             ),
-            'latest_future_steps': remaining_future_steps,
+            'executed_steps': [*state.executed_steps, plan_step],
             'worker_results': [*state.worker_results, *step_run.worker_results],
             'usage': state.usage + step_run.llm_usage,
             'next_candidate_index': next_candidate_index,
@@ -383,17 +412,20 @@ async def _refresh_planning_evidence(
         selected_test_results=latest_tests,
     )
     if reproduction is not None:
-        repro_result = await _run_repro_target(
+        anchor_results = await run_anchor_tests(
             state.workspace_info,
             repo_index,
-            reproduction.repro_target,
+            reproduction,
+            restore_regression_files=False,
         )
+        repro_result = anchor_results[0]
         evidence = evidence.model_copy(
             update={
                 'reproduction_target': reproduction.repro_target,
-                'reproduction_passed': repro_result.exit_code == 0,
-                'reproduction_stdout_summary': repro_result.stdout,
-                'reproduction_stderr_summary': repro_result.stderr,
+                'reproduction_passed': repro_result.passed,
+                'reproduction_stdout_summary': repro_result.stdout_summary,
+                'reproduction_stderr_summary': repro_result.stderr_summary,
+                'selected_test_results': [*latest_tests, *anchor_results],
             }
         )
     return state.with_evidence(evidence)
@@ -420,28 +452,37 @@ async def _finalize_or_block(
     integration_tests: list[str],
 ) -> tuple[ReproductionEvidence | None, list[TestResult], WorkerResult | None]:
     reproduction_evidence: ReproductionEvidence | None = None
+    anchor_results: list[TestResult] = []
     if reproduction is not None:
-        repro_result = await _run_repro_target(workspace, repo_index, reproduction.repro_target)
-        reproduction_passed = repro_result.exit_code == 0
+        anchor_results = await run_anchor_tests(
+            workspace,
+            repo_index,
+            reproduction,
+            restore_regression_files=True,
+        )
+        reproduction_passed = anchor_results[0].passed
         reproduction_evidence = build_reproduction_evidence(
             repro_target=reproduction.repro_target,
             passed_after=reproduction_passed,
         )
-        if not reproduction_passed:
+        failed_anchor = [result for result in anchor_results if not result.passed]
+        if failed_anchor:
             return (
                 reproduction_evidence,
-                [],
+                anchor_results,
                 WorkerResult(
                     status=WorkerStatus.BLOCKED,
                     patch_id=None,
-                    diff_summary='Final reproduction command failed.',
-                    discovered_issues=[_tool_result_summary(repro_result)],
+                    diff_summary='Final reproduction or regression tests failed.',
+                    test_results=anchor_results,
+                    tests_run=[result.command for result in anchor_results],
+                    discovered_issues=[_test_result_summary(result) for result in failed_anchor],
                     confidence=Confidence.LOW,
                     replan_suggestion=None,
                 ),
             )
-    integration_results: list[TestResult] = []
-    for index, command in enumerate(integration_tests, start=1):
+    integration_results: list[TestResult] = list(anchor_results)
+    for index, command in enumerate(integration_tests, start=len(anchor_results) + 1):
         suite_result = await _run_repro_target(workspace, repo_index, command)
         integration_results.append(_test_result_from_tool_result(command, suite_result, index))
         if suite_result.exit_code != 0:
@@ -544,6 +585,7 @@ async def _run_step_with_candidates(
     repo_index: RepoIndex,
     workspace_info: Workspace,
     first_candidate_index: int,
+    reproduction: ReproductionContext | None,
 ) -> tuple[StepCandidateRun, int]:
     candidates: list[StepCandidateRun] = []
     next_candidate_index = first_candidate_index
@@ -559,6 +601,7 @@ async def _run_step_with_candidates(
             repo_index=repo_index,
             workspace_info=workspace_info,
             candidate_index=next_candidate_index,
+            reproduction=reproduction,
         )
         next_candidate_index += 1
         candidates.append(step_candidate)
@@ -575,6 +618,7 @@ async def _run_step_candidate(
     repo_index: RepoIndex,
     workspace_info: Workspace,
     candidate_index: int,
+    reproduction: ReproductionContext | None,
 ) -> StepCandidateRun:
     candidate_workspace = await begin_candidate(workspace_info, candidate_index)
     worker_result, child_usage = await _run_implementation_child(
@@ -584,6 +628,7 @@ async def _run_step_candidate(
         workspace_info=candidate_workspace,
         contract=contract,
         repo_index=repo_index,
+        reproduction=reproduction,
     )
     candidate_workspace = await snapshot_candidate_result(candidate_workspace)
     return StepCandidateRun(
@@ -686,6 +731,7 @@ async def _run_implementation_child(
     workspace_info: Workspace,
     contract: TaskContract,
     repo_index: RepoIndex,
+    reproduction: ReproductionContext | None,
 ) -> tuple[WorkerResult, LLMUsage]:
     child_result = await run_child(
         'implementation_workflow',
@@ -695,6 +741,7 @@ async def _run_implementation_child(
         workspace=workspace_info.model_dump(mode='json'),
         contract=contract.model_dump(mode='json'),
         repo_index=repo_index.model_dump(mode='json'),
+        reproduction=reproduction.model_dump(mode='json') if reproduction is not None else None,
     )
     return (
         WorkerResult.model_validate(child_result['worker_result']),
@@ -705,8 +752,8 @@ async def _run_implementation_child(
 def _plan_execution_result_from_state(state: PlannerLoopState) -> PlanExecutionResult:
     plan = Plan(
         summary='Planner-driven execution',
-        steps=state.latest_future_steps,
-        integration_tests=_integration_tests_from_steps(state.latest_future_steps),
+        steps=state.executed_steps,
+        integration_tests=_integration_tests_from_steps(state.executed_steps),
         definition_of_done=['planner done', 'final review complete'],
     )
     return PlanExecutionResult(
@@ -726,6 +773,13 @@ def _integration_tests_from_steps(steps: list[PlanStep]) -> list[str]:
 
 def _tool_result_summary(result: ToolResult) -> str:
     return f'exit_code={result.exit_code}\nstdout={result.stdout}\nstderr={result.stderr}'.strip()
+
+
+def _test_result_summary(result: TestResult) -> str:
+    return (
+        f'command={result.command}\nexit_code={result.exit_code}\n'
+        f'stdout={result.stdout_summary}\nstderr={result.stderr_summary}'
+    ).strip()
 
 
 def _test_result_from_tool_result(

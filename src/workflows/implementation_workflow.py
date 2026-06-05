@@ -9,13 +9,15 @@ from src.activities.implementation import (
     run_implementation_turn,
 )
 from src.activities.reviewer import ReviewDecision, ReviewRequest, ReviewVerdict, review_patch
+from src.activities.verifier import run_anchor_tests
 from src.activities.workspace_manager import Workspace, WorkspaceAdapter
 from src.llm.client import LLMUsage
 from src.models.context import ContextPack
 from src.models.plan import PlanContext, PlanStep
 from src.models.repo import RepoIndex
+from src.models.reproduction import ReproductionContext
 from src.models.task import TaskContract
-from src.models.worker import Confidence, WorkerResult, WorkerStatus
+from src.models.worker import Confidence, TestResult, WorkerResult, WorkerStatus
 
 
 @workflow
@@ -26,6 +28,7 @@ async def implementation_workflow(
     repo_index: dict[str, object],
     plan_context: dict[str, object] | None = None,
     context_pack: dict[str, object] | None = None,
+    reproduction: dict[str, object] | None = None,
 ) -> dict[str, object]:
     plan_step = PlanStep.model_validate(step)
     step_plan_context = (
@@ -34,6 +37,9 @@ async def implementation_workflow(
     workspace_info = WorkspaceAdapter.validate_python(workspace)
     task_contract = TaskContract.model_validate(contract)
     repository_index = RepoIndex.model_validate(repo_index)
+    reproduction_context = (
+        ReproductionContext.model_validate(reproduction) if reproduction is not None else None
+    )
     step_context_pack = (
         ContextPack.model_validate(context_pack)
         if context_pack is not None
@@ -49,6 +55,7 @@ async def implementation_workflow(
             task_contract=task_contract,
             workspace_info=workspace_info,
             repo_index=repository_index,
+            reproduction_test_file=_reproduction_test_file(reproduction_context),
         ),
     )
     usage += turn_usage
@@ -58,10 +65,18 @@ async def implementation_workflow(
             workspace_info=workspace_info,
             task_contract=task_contract,
             worker_result=worker_result,
+            repo_index=repository_index,
+            reproduction=reproduction_context,
         )
         usage += review_usage
         return _packaged_result(reviewed_result, usage)
     return _packaged_result(worker_result, usage)
+
+
+def _reproduction_test_file(reproduction: ReproductionContext | None) -> str | None:
+    if reproduction is None:
+        return None
+    return reproduction.repro_target.split('::', 1)[0]
 
 
 def _context_pack_from_plan_step(plan_step: PlanStep) -> ContextPack:
@@ -85,19 +100,43 @@ async def _review_successful_step(
     workspace_info: Workspace,
     task_contract: TaskContract,
     worker_result: WorkerResult,
+    repo_index: RepoIndex,
+    reproduction: ReproductionContext | None,
 ) -> tuple[WorkerResult, LLMUsage]:
     diff = await get_full_diff(workspace_info)
+    review_test_results = await _review_test_results(
+        workspace_info=workspace_info,
+        repo_index=repo_index,
+        reproduction=reproduction,
+        worker_result=worker_result,
+    )
     review_verdict, review_usage = await review_patch(
         ReviewRequest(
             contract=task_contract,
             plan_step=plan_step,
             diff=diff,
-            test_results=worker_result.test_results,
+            test_results=review_test_results,
             worker_results=[worker_result],
             workspace_info=workspace_info,
         )
     )
     return _worker_result_from_review(worker_result, review_verdict), review_usage
+
+
+async def _review_test_results(
+    workspace_info: Workspace,
+    repo_index: RepoIndex,
+    reproduction: ReproductionContext | None,
+    worker_result: WorkerResult,
+) -> list[TestResult]:
+    if reproduction is None:
+        return worker_result.test_results
+    return await run_anchor_tests(
+        workspace_info,
+        repo_index,
+        reproduction,
+        restore_regression_files=False,
+    )
 
 
 def _worker_result_from_review(

@@ -14,12 +14,17 @@ class ReproductionStatus(StrEnum):
 class ReproductionContext(FrozenBaseModel):
     repro_target: str
     failure_evidence: str
+    regression_test_files: list[str] = Field(default_factory=list)
 
 
 class ReproductionResult(FrozenBaseModel):
     status: ReproductionStatus
     repro_target: str
     test_files: list[str] = Field(default_factory=list)
+    regression_test_files: list[str] = Field(
+        default_factory=list,
+        description='Existing repo test files (whole files, not node ids) to run for regressions.',
+    )
     failure_evidence: str
 
 

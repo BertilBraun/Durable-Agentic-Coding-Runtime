@@ -16,7 +16,7 @@ from src.llm.client import LLMUsage, Message, StructuredCompletion
 from src.models.repo import RepoIndex
 from src.models.reproduction import ReproductionResult, ReproductionStatus
 from src.models.task import TaskContract, TaskType
-from src.tools.definitions import RunShell, WriteFile
+from src.tools.definitions import RunShell, WriteRegression
 
 
 def _workspace() -> HostWorkspace:
@@ -153,7 +153,7 @@ async def test_reproduce_bug_executes_tool_calls_returned_with_done_before_verif
         turn = _done_turn(ReproductionStatus.REPRODUCED).model_copy(
             update={
                 'tool_calls': [
-                    WriteFile(file_path='tests/test_bug.py', content='def test_bug(): pass'),
+                    WriteRegression(file_path='tests/test_bug.py', content='def test_bug(): pass'),
                     RunShell(command='pytest tests/test_bug.py', timeout_seconds=10),
                 ]
             }
@@ -161,16 +161,20 @@ async def test_reproduce_bug_executes_tool_calls_returned_with_done_before_verif
         return _completion(turn)
 
     async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
-        calls.append(request.tool.tool_name.value)
+        tool = request.tool
+        if isinstance(tool, RunShell) and tool.command.startswith('git '):
+            return ToolResult(stdout='', stderr='', exit_code=0, truncated=False)
+        calls.append(tool.tool_name.value)
         return ToolResult(stdout='assert 4 == 5', stderr='', exit_code=1, truncated=False)
 
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(reproduction_module, 'run_tool', fake_run_tool)
+    monkeypatch.setattr('src.activities.test_protection.run_tool', fake_run_tool)
 
     result, _ = await reproduce_bug(_request())
 
     assert result.status == ReproductionStatus.REPRODUCED
-    assert calls == ['write_file', 'run_shell', 'run_tests']
+    assert calls == ['write_regression', 'run_shell', 'run_tests']
 
 
 @pytest.mark.asyncio

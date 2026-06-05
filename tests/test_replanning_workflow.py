@@ -44,7 +44,7 @@ async def test_replanning_workflow_returns_planner_turn_and_usage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_state: list[PlannerState] = []
-    planner_turn = PlannerTurn(future_steps=[_step()])
+    planner_turn = PlannerTurn(next_step=_step())
 
     async def fake_plan_next_turn(state: PlannerState) -> tuple[PlannerTurn, LLMUsage]:
         captured_state.append(state)
@@ -87,7 +87,7 @@ async def test_replanning_workflow_fulfills_context_before_returning_ready_step(
                     )
                 ]
             ),
-            PlannerTurn(future_steps=[_step()]),
+            PlannerTurn(next_step=_step()),
         ]
     )
 
@@ -138,7 +138,7 @@ async def test_replanning_workflow_fulfills_context_before_returning_ready_step(
     assert captured_states[1].model_dump(mode='json')['context_notes'][0]['request_reason'] == (
         'Need code'
     )
-    assert result['planner_turn']['future_steps'][0]['id'] == 'step-1'
+    assert result['planner_turn']['next_step']['id'] == 'step-1'
     assert result['context_notes'][0]['summary'] == 'Handler lives in src/app.py'
     assert result['context_notes'][0]['request_reason'] == 'Need code'
     assert result['context_notes'][0]['request_queries'] == ['Find app handler']
@@ -159,7 +159,7 @@ async def test_replanning_workflow_executes_planner_tool_calls_before_next_turn(
                     RunShell(command='Get-Content src/app.py', timeout_seconds=10),
                 ]
             ),
-            PlannerTurn(future_steps=[_step()]),
+            PlannerTurn(next_step=_step()),
         ]
     )
 
@@ -193,7 +193,7 @@ async def test_replanning_workflow_executes_planner_tool_calls_before_next_turn(
     assert len(captured_states) == 2
     assert captured_states[1].tool_observations[0].tool_name == 'run_shell'
     assert captured_states[1].tool_observations[0].stdout == 'def handler(): ...'
-    assert result['planner_turn']['future_steps'][0]['id'] == 'step-1'
+    assert result['planner_turn']['next_step']['id'] == 'step-1'
     assert result['planner_turn_count'] == 2
     assert result['llm_usage']['call_count'] == 2
 
@@ -219,7 +219,7 @@ async def test_replanning_workflow_fulfills_context_then_executes_tools_in_same_
                     RunShell(command='Get-Content src/app.py', timeout_seconds=10),
                 ],
             ),
-            PlannerTurn(future_steps=[_step()]),
+            PlannerTurn(next_step=_step()),
         ]
     )
 
@@ -281,7 +281,7 @@ async def test_replanning_workflow_fulfills_context_then_executes_tools_in_same_
     assert len(captured_states) == 2
     assert captured_states[1].context_notes[0].summary == 'Handler lives in src/app.py'
     assert captured_states[1].tool_observations[0].stdout == 'def handler(): ...'
-    assert result['planner_turn']['future_steps'][0]['id'] == 'step-1'
+    assert result['planner_turn']['next_step']['id'] == 'step-1'
     assert result['context_notes'][0]['id'] == 'ctx-1'
     assert result['planner_turn_count'] == 2
     assert result['llm_usage']['call_count'] == 3

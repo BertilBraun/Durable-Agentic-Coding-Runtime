@@ -17,7 +17,8 @@ def test_planner_turn_prompt_requires_normalized_future_step_contract() -> None:
     assert 'read_file' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'run_shell' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'Do not request context already covered by Context notes' in PLANNER_TURN_SYSTEM_PROMPT
-    assert 'output only future steps' in PLANNER_TURN_SYSTEM_PROMPT
+    assert 'output exactly one next_step' in PLANNER_TURN_SYSTEM_PROMPT
+    assert 'remaining_work backlog' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'Never repeat completed steps' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'target files' in PLANNER_TURN_SYSTEM_PROMPT
     assert 'out-of-scope' in PLANNER_TURN_SYSTEM_PROMPT
@@ -43,8 +44,14 @@ def test_implementation_prompt_requires_complete_consistent_fix() -> None:
 
 
 def test_planner_prompt_scopes_complete_consistent_fix() -> None:
-    assert 'complete, consistent fix' in PLANNER_TURN_SYSTEM_PROMPT
-    assert 'sibling cases' in PLANNER_TURN_SYSTEM_PROMPT
+    assert 'Scope the whole feature or fix' in PLANNER_TURN_SYSTEM_PROMPT
+    assert 'matching sibling directions in remaining_work' in PLANNER_TURN_SYSTEM_PROMPT
+
+
+def test_planner_prompt_plans_incrementally_with_backlog() -> None:
+    assert 'Plan incrementally' in PLANNER_TURN_SYSTEM_PROMPT
+    assert 'remaining_work' in PLANNER_TURN_SYSTEM_PROMPT
+    assert 'next_step=null with done=true' in PLANNER_TURN_SYSTEM_PROMPT
 
 
 def test_planner_prompt_requires_strong_test_specs() -> None:
@@ -59,9 +66,15 @@ def test_planner_prompt_allows_rechecking_a_faulty_test() -> None:
 
 
 def test_reproduction_prompt_requires_strong_pytest_tests() -> None:
-    assert 'self-validating checks' in REPRODUCTION_SYSTEM_PROMPT
+    assert 'FULL round trip' in REPRODUCTION_SYSTEM_PROMPT
     assert 'never invent' in REPRODUCTION_SYSTEM_PROMPT
     assert 'pytest.main' in REPRODUCTION_SYSTEM_PROMPT
+
+
+def test_reproduction_prompt_uses_write_regression_and_collects_regression_files() -> None:
+    assert 'write_regression' in REPRODUCTION_SYSTEM_PROMPT
+    assert 'regression_test_files' in REPRODUCTION_SYSTEM_PROMPT
+    assert 'never modify an existing test file' in REPRODUCTION_SYSTEM_PROMPT
 
 
 def test_reviewer_prompt_flags_weak_tests_and_capitulation() -> None:

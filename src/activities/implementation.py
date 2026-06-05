@@ -11,6 +11,7 @@ from src.activities.context_gatherer import (
     ContextGatherRequest,
     gather_context,
 )
+from src.activities.test_protection import revert_unauthorized_test_edits, tool_mutates_workspace
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
     ToolResult,
@@ -31,6 +32,7 @@ from src.tools.definitions import (
     ImplementationToolCall,
     RunTests,
     WriteFile,
+    WriteRegression,
 )
 from src.tools.handlers import pytest_command
 
@@ -60,7 +62,8 @@ IMPLEMENTATION_SYSTEM_PROMPT = (
     'expected value only when the issue or spec states it, and cover multiple inputs and '
     'input counts; before reporting success confirm the tests would fail a trivially-wrong '
     'implementation, not merely that they ran green. '
-    'Do not delete or rewrite existing tests unless the step explicitly requires it. '
+    'You cannot modify or delete existing test files: such edits are detected and '
+    'automatically reverted each turn, so make the production code satisfy the tests instead. '
     'Return concise observations that help the outer planner decide the next future step. '
     'Confidence '
     'means confidence in this step based on observed diff and tests, not how '
@@ -87,6 +90,7 @@ class ImplementationTurnRequest(FrozenBaseModel):
     task_contract: TaskContract
     workspace_info: Workspace
     repo_index: RepoIndex
+    reproduction_test_file: str | None = None
 
 
 class ImplementationAgentTurn(FrozenBaseModel):
@@ -111,7 +115,7 @@ async def run_implementation_turn(
             content=IMPLEMENTATION_SYSTEM_PROMPT,
             cacheable=True,
         ),
-        Message(role='user', content=json.dumps(_llm_user_payload(request))),
+        Message(role='user', content=_render_implementation_user_payload(request)),
     ]
     max_tool_rounds = CONFIG.implementation_max_tool_rounds
     stop_threshold = CONFIG.context_utilization_stop_threshold
@@ -191,10 +195,19 @@ async def run_implementation_turn(
                                     sequence=len(test_results) + 1,
                                 )
                             )
-                        case WriteFile() | ApplyPatch():
+                        case WriteFile() | WriteRegression() | ApplyPatch():
                             saw_diff = saw_diff or tool_result.exit_code == 0
                         case _:
                             pass
+                    if request.reproduction_test_file is not None and tool_mutates_workspace(tool):
+                        protection_note = await revert_unauthorized_test_edits(
+                            workspace=request.workspace_info,
+                            repo_index=request.repo_index,
+                            allowed_test_files={request.reproduction_test_file},
+                            revert_untracked=True,
+                        )
+                        if protection_note is not None:
+                            observations.append(protection_note)
         messages.append(Message(role='assistant', content=agent_turn.model_dump_json()))
         messages.append(Message(role='user', content='\n\n'.join(observations)))
 
@@ -211,19 +224,40 @@ async def run_implementation_turn(
     )
 
 
-def _llm_user_payload(request: ImplementationTurnRequest) -> dict[str, object]:
+def _render_implementation_user_payload(request: ImplementationTurnRequest) -> str:
     completed_step_summaries: list[str] = []
     if request.plan_context is not None:
         completed_step_summaries = request.plan_context.completed_step_summaries
-    return {
-        'plan_step': request.plan_step.model_dump(mode='json'),
-        'completed_step_summaries': completed_step_summaries,
-        'context_pack': request.context_pack.model_dump(mode='json'),
-        'task_contract': request.task_contract.model_dump(mode='json'),
-        'workspace_info': request.workspace_info.model_dump(mode='json'),
-        'environment': request.workspace_info.describe_environment(),
-        'available_tools': list(IMPLEMENTATION_AVAILABLE_TOOLS),
-    }
+    plan_step = request.plan_step
+    return '\n\n'.join(
+        [
+            '# Implementation Task',
+            _impl_section('Goal', plan_step.goal),
+            _impl_section('Target Files', _impl_bullets(plan_step.target_files)),
+            _impl_section('Required Changes', _impl_bullets(plan_step.required_changes)),
+            _impl_section('Expected Result', plan_step.expected_result),
+            _impl_section('Out Of Scope', _impl_bullets(plan_step.out_of_scope)),
+            _impl_section('Tests To Run', _impl_bullets(plan_step.tests_to_run)),
+            _impl_section('Step Context', plan_step.context_summary or '(none)'),
+            _impl_section('Completed Steps', _impl_bullets(completed_step_summaries)),
+            _impl_section('Context Pack', json.dumps(request.context_pack.model_dump(mode='json'))),
+            _impl_section(
+                'Task Contract', json.dumps(request.task_contract.model_dump(mode='json'))
+            ),
+            _impl_section('Environment', request.workspace_info.describe_environment()),
+            _impl_section('Available Tools', _impl_bullets(list(IMPLEMENTATION_AVAILABLE_TOOLS))),
+        ]
+    )
+
+
+def _impl_section(title: str, body: str) -> str:
+    return f'## {title}\n\n{body}'
+
+
+def _impl_bullets(items: list[str]) -> str:
+    if not items:
+        return '(none)'
+    return '\n'.join(f'- {item}' for item in items)
 
 
 def _context_budget_blocked_worker_result(

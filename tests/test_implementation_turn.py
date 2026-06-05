@@ -1,4 +1,3 @@
-import json
 from collections.abc import Awaitable, Callable
 
 import pytest
@@ -6,7 +5,6 @@ from pydantic import BaseModel, ValidationError
 from src.activities import implementation as implementation_module
 from src.activities.context_gatherer import ContextGatherRequest
 from src.activities.implementation import (
-    IMPLEMENTATION_AVAILABLE_TOOLS,
     ImplementationAgentTurn,
     ImplementationTurnRequest,
     run_implementation_turn,
@@ -21,6 +19,7 @@ from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerStatus
 from src.tools.definitions import (
     ImplementationToolCallAdapter,
+    RunShell,
     RunTests,
     ToolName,
     WriteFile,
@@ -110,6 +109,80 @@ async def test_implementation_turn_executes_tool_calls(monkeypatch: pytest.Monke
     assert worker_result.confidence == Confidence.LOW
     assert tool_names == ['RunShell']
     assert repo_indexes == [RepoIndex()]
+
+
+@pytest.mark.asyncio
+async def test_implementation_turn_reverts_unauthorized_test_edit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shell_commands: list[str] = []
+    captured_messages: list[list[Message]] = []
+
+    async def fake_run_tool(request: ToolExecutionRequest) -> ToolResult:
+        if isinstance(request.tool, RunShell):
+            shell_commands.append(request.tool.command)
+            if request.tool.command == 'git status --porcelain':
+                return ToolResult(
+                    stdout=' M pkg/tests/test_existing.py\n M src/app.py\n',
+                    stderr='',
+                    exit_code=0,
+                    truncated=False,
+                )
+        return ToolResult(stdout='', stderr='', exit_code=0, truncated=False)
+
+    call_count = 0
+
+    async def handler(
+        messages: list[Message], output_type: type[BaseModel]
+    ) -> StructuredCompletion:
+        nonlocal call_count
+        call_count += 1
+        captured_messages.append(messages)
+        if call_count == 1:
+            turn = output_type.model_validate(
+                {
+                    'done': False,
+                    'tool_calls': [
+                        {
+                            'tool_name': 'run_shell',
+                            'command': 'echo broken > pkg/tests/test_existing.py',
+                            'timeout_seconds': 10,
+                        }
+                    ],
+                }
+            )
+        else:
+            turn = output_type.model_validate(
+                {
+                    'done': True,
+                    'worker_result': {
+                        'status': 'blocked',
+                        'patch_id': None,
+                        'diff_summary': 'done',
+                        'tests_run': [],
+                        'test_results': [],
+                        'discovered_issues': [],
+                        'confidence': 'low',
+                        'replan_suggestion': 'x',
+                    },
+                }
+            )
+        return _structured_completion(turn, context_utilization=0.0)
+
+    _patch_generate_structured(monkeypatch, handler)
+    monkeypatch.setattr(implementation_module, 'run_tool', fake_run_tool)
+    monkeypatch.setattr('src.activities.test_protection.run_tool', fake_run_tool)
+
+    request = _implementation_request().model_copy(
+        update={'reproduction_test_file': 'pkg/tests/test_repro.py'}
+    )
+    await run_implementation_turn(request)
+
+    assert 'git status --porcelain' in shell_commands
+    assert 'git checkout -- pkg/tests/test_existing.py' in shell_commands
+    feedback = captured_messages[1][-1].content
+    assert 'reverted unauthorized changes' in feedback
+    assert 'pkg/tests/test_existing.py' in feedback
 
 
 @pytest.mark.asyncio
@@ -579,12 +652,12 @@ async def test_implementation_turn_requests_replan_when_tool_rounds_are_exhauste
 async def test_implementation_turn_user_message_excludes_repo_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured_user_payloads: list[dict[str, object]] = []
+    captured_user_messages: list[str] = []
 
     async def handler(
         messages: list[Message], output_type: type[BaseModel]
     ) -> StructuredCompletion:
-        captured_user_payloads.append(json.loads(messages[1].content))
+        captured_user_messages.append(messages[1].content)
         turn = output_type.model_validate(
             {
                 'done': True,
@@ -606,29 +679,24 @@ async def test_implementation_turn_user_message_excludes_repo_index(
 
     await run_implementation_turn(_implementation_request())
 
-    assert captured_user_payloads == [
-        {
-            'plan_step': _implementation_request().plan_step.model_dump(mode='json'),
-            'completed_step_summaries': [],
-            'context_pack': _implementation_request().context_pack.model_dump(mode='json'),
-            'task_contract': _implementation_request().task_contract.model_dump(mode='json'),
-            'workspace_info': _implementation_request().workspace_info.model_dump(mode='json'),
-            'environment': _implementation_request().workspace_info.describe_environment(),
-            'available_tools': list(IMPLEMENTATION_AVAILABLE_TOOLS),
-        }
-    ]
+    user_message = captured_user_messages[0]
+    assert user_message.startswith('# Implementation Task')
+    assert '## Required Changes' in user_message
+    assert '## Available Tools' in user_message
+    assert 'directory_tree' not in user_message
+    assert 'Repository Tree' not in user_message
 
 
 @pytest.mark.asyncio
 async def test_implementation_turn_user_payload_includes_step_specific_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured_payloads: list[dict[str, object]] = []
+    captured_messages: list[str] = []
 
     async def handler(
         messages: list[Message], output_type: type[BaseModel]
     ) -> StructuredCompletion:
-        captured_payloads.append(json.loads(messages[1].content))
+        captured_messages.append(messages[1].content)
         turn = output_type.model_validate(
             {
                 'done': True,
@@ -668,12 +736,12 @@ async def test_implementation_turn_user_payload_includes_step_specific_context(
 
     await run_implementation_turn(request)
 
-    plan_step = captured_payloads[0]['plan_step']
-    assert plan_step['context_summary'] == 'Use app parser context.'
-    assert plan_step['required_changes'] == ['Fix parser branch.']
-    assert plan_step['out_of_scope'] == ['Do not touch CLI.']
-    assert plan_step['target_files'] == ['src/app.py']
-    assert captured_payloads[0]['completed_step_summaries'] == ['prior: done']
+    user_message = captured_messages[0]
+    assert '## Step Context\n\nUse app parser context.' in user_message
+    assert '## Required Changes\n\n- Fix parser branch.' in user_message
+    assert '## Out Of Scope\n\n- Do not touch CLI.' in user_message
+    assert '## Target Files\n\n- src/app.py' in user_message
+    assert '## Completed Steps\n\n- prior: done' in user_message
 
 
 def _implementation_request() -> ImplementationTurnRequest:

@@ -6,6 +6,7 @@ from typing import get_args
 from pydantic import Field
 
 from src.activities.context_gatherer import ContextGatherRequest, gather_context
+from src.activities.test_protection import revert_unauthorized_test_edits, tool_mutates_workspace
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
     ToolResult,
@@ -18,35 +19,44 @@ from src.models.frozen_base_model import FrozenBaseModel
 from src.models.repo import RepoIndex
 from src.models.reproduction import ReproductionResult, ReproductionStatus
 from src.models.task import TaskContract
-from src.tools.definitions import GatherContext, ImplementationToolCall, RunTests
+from src.tools.definitions import GatherContext, ReproductionToolCall, RunTests
 
 REPRODUCTION_COMMAND_TIMEOUT_SECONDS = 600
 
 REPRODUCTION_SYSTEM_PROMPT = (
-    'You are the reproduction agent for a bugfix task. Your only job is to '
-    'demonstrate the bug with a test, never to fix it. Locate the buggy '
+    'You are the reproduction agent for a bugfix or feature task. Your only job is to '
+    'demonstrate the reported defect or missing behavior with a test, never to '
+    'implement or fix it. Locate the relevant '
     'behavior using run_shell, find_definition / find_callers / find_callees, '
     'and gather_context, then write a focused pytest regression test '
-    'that fails on the current (unfixed) code and isolates exactly the reported '
-    'defect. Prefer self-validating checks over guessed values: for symmetric '
-    'behavior (read/write, encode/decode, serialize/parse) assert the round trip, '
-    'and otherwise assert invariants the correct behavior must satisfy, rather '
-    'than substring or membership presence. Use a literal expected output or '
-    'value only when the issue or spec states it explicitly; never invent the '
-    'exact bytes or lines yourself, since a guessed expectation makes a correct '
-    'fix fail. Write several tests over different inputs and input counts (for '
-    'example one, two, and three header rows) so a single example cannot pass a '
-    'trivial or partial fix. Write '
+    'that fails on the current code and isolates exactly the reported '
+    'gap (a wrong result for a bug, or the absent capability for a feature). '
+    'This test is the project-wide success anchor, so it must cover the WHOLE '
+    'requested behavior, not one convenient half: for symmetric behavior '
+    '(read/write, encode/decode, serialize/parse) assert the FULL round trip in '
+    'both directions, and otherwise assert the invariants the correct behavior '
+    'must satisfy, rather than substring or membership presence. Use a literal '
+    'expected output or value only when the issue or spec states it explicitly; '
+    'never invent the exact bytes or lines yourself, since a guessed expectation '
+    'makes a correct fix fail. Write several tests over different inputs and input '
+    'counts (for example one, two, and three header rows) so a single example '
+    'cannot pass a trivial or partial fix. Write '
     'plain pytest test functions (top-level test_* with assert statements); never '
     'add an "if __name__" / pytest.main / sys.exit block, since run_tests already '
-    'runs the file under "python -m pytest". Add the test with write_file or '
-    'apply_patch and confirm it fails with run_tests; a failure from an assertion '
-    'on the buggy behavior is a real reproduction, while a syntax, import, or '
+    'runs the file under "python -m pytest". Add the test with the write_regression '
+    'tool (it refuses to overwrite an existing file, so pick a NEW path next to the '
+    "package's tests so imports resolve); never modify an existing test file. "
+    'Confirm it fails with run_tests; a failure from an assertion '
+    'on the wrong/missing behavior is a real reproduction, while a syntax, import, or '
     'collection error is not. Do not edit production code or weaken any existing '
-    'test. Return done=true with a ReproductionResult: '
+    'test. Also identify the existing repository test files most relevant to the '
+    'changed area and return them as regression_test_files (whole file paths, not '
+    'node ids) so later edits can be checked for regressions. Return done=true with '
+    'a ReproductionResult: '
     'set status=reproduced only once you have seen the new test fail, giving '
     'repro_target as the pytest node id that selects just that test '
-    '(e.g. "pkg/tests/test_mod.py::test_case"), the files you added, and the '
+    '(e.g. "pkg/tests/test_mod.py::test_case"), the files you added in test_files, '
+    'the relevant existing test files in regression_test_files, and the '
     'observed failing output. If the contract is too vague to pin down, or the '
     'failure is flaky or environmental, return status=could_not_reproduce '
     'instead of guessing.'
@@ -55,7 +65,7 @@ REPRODUCTION_SYSTEM_PROMPT = (
 
 REPRODUCTION_AVAILABLE_TOOLS: tuple[str, ...] = tuple(
     tool_type.model_fields['tool_name'].default.value
-    for tool_type in get_args(ImplementationToolCall)
+    for tool_type in get_args(ReproductionToolCall)
 )
 
 
@@ -68,7 +78,7 @@ class ReproductionTurnRequest(FrozenBaseModel):
 class ReproductionAgentTurn(FrozenBaseModel):
     done: bool
     reproduction_result: ReproductionResult | None = None
-    tool_calls: list[ImplementationToolCall] = Field(default_factory=list)
+    tool_calls: list[ReproductionToolCall] = Field(default_factory=list)
 
 
 def repro_run_tests(repro_target: str) -> RunTests:
@@ -148,7 +158,7 @@ async def _verify_reproduction(
 
 async def _run_reproduction_tool_calls(
     request: ReproductionTurnRequest,
-    tool_calls: list[ImplementationToolCall],
+    tool_calls: list[ReproductionToolCall],
 ) -> tuple[list[str], LLMUsage]:
     observations: list[str] = []
     usage = LLMUsage()
@@ -176,6 +186,15 @@ async def _run_reproduction_tool_calls(
                     )
                 )
                 observations.append(f'tool_result:\n{tool_result.model_dump_json()}')
+                if tool_mutates_workspace(tool):
+                    protection_note = await revert_unauthorized_test_edits(
+                        workspace=request.workspace_info,
+                        repo_index=request.repo_index,
+                        allowed_test_files=set(),
+                        revert_untracked=False,
+                    )
+                    if protection_note is not None:
+                        observations.append(protection_note)
     return observations, usage
 
 
