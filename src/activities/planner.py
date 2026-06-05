@@ -4,6 +4,7 @@ import json
 
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
+from src.models.context import ContextSnippet
 from src.models.plan import ContextNote, PlannerState, PlannerToolObservation, PlannerTurn
 
 PLANNER_TURN_SYSTEM_PROMPT = (
@@ -143,7 +144,7 @@ def _render_context_note_text(note: ContextNote) -> str:
     return '\n\n'.join(blocks)
 
 
-def _snippet_reference(snippet: object) -> str:
+def _snippet_reference(snippet: ContextSnippet) -> str:
     return f'{snippet.file_path}:{snippet.start_line}-{snippet.end_line} - {snippet.reason}'
 
 

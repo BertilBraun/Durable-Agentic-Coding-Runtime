@@ -1,5 +1,4 @@
 import pytest
-
 from src.activities.context_gatherer import context_note_from_pack
 from src.llm.client import LLMUsage
 from src.models.context import ContextPack, PackedSnippet
