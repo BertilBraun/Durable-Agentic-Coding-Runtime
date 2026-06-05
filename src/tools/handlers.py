@@ -15,6 +15,7 @@ from src.tools.definitions import (
     RunTests,
     Tool,
     WriteFile,
+    WriteRegression,
 )
 
 if TYPE_CHECKING:
@@ -28,6 +29,16 @@ def command_for_tool(tool: Tool, workspace: Workspace) -> list[str]:
             encoded_content = base64.b64encode(content.encode('utf-8')).decode('ascii')
             quoted_path = shlex.quote(file_path)
             write_command = (
+                f'mkdir -p $(dirname {quoted_path}) && '
+                f'printf %s {encoded_content} | base64 -d > {quoted_path}'
+            )
+            return ['sh', '-lc', write_command]
+        case WriteRegression(file_path=file_path, content=content):
+            encoded_content = base64.b64encode(content.encode('utf-8')).decode('ascii')
+            quoted_path = shlex.quote(file_path)
+            write_command = (
+                f'if [ -e {quoted_path} ]; then '
+                'echo "regression test file already exists" >&2; exit 1; fi; '
                 f'mkdir -p $(dirname {quoted_path}) && '
                 f'printf %s {encoded_content} | base64 -d > {quoted_path}'
             )
@@ -71,6 +82,8 @@ def _read_file_command(file_path: str, start_line: int, end_line: int | None) ->
 def _validate_tool_paths(tool: Tool) -> None:
     match tool:
         case WriteFile(file_path=path):
+            _validate_workspace_relative_path(path)
+        case WriteRegression(file_path=path):
             _validate_workspace_relative_path(path)
         case ReadFile(file_path=path):
             _validate_workspace_relative_path(path)

@@ -32,6 +32,7 @@ from src.tools.definitions import (
     Tool,
     ToolName,
     WriteFile,
+    WriteRegression,
 )
 from src.tools.handlers import command_for_tool
 
@@ -481,6 +482,25 @@ def _host_tool_result(request: ToolExecutionRequest) -> ToolResult | None:
             target_path.write_text(content, encoding='utf-8')
             return ToolResult(
                 tool_name=ToolName.WRITE_FILE,
+                stdout='',
+                stderr='',
+                exit_code=0,
+                truncated=False,
+            )
+        case WriteRegression(file_path=file_path, content=content):
+            target_path = _host_workspace_file_path(request.workspace, file_path)
+            if target_path.exists():
+                return ToolResult(
+                    tool_name=ToolName.WRITE_REGRESSION,
+                    stdout='',
+                    stderr=f'regression test file already exists: {file_path}',
+                    exit_code=1,
+                    truncated=False,
+                )
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(content, encoding='utf-8')
+            return ToolResult(
+                tool_name=ToolName.WRITE_REGRESSION,
                 stdout='',
                 stderr='',
                 exit_code=0,

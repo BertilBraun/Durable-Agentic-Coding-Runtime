@@ -8,6 +8,7 @@ from src.tools.definitions import (
     RunTests,
     ToolName,
     WriteFile,
+    WriteRegression,
 )
 from src.tools.handlers import command_for_tool
 
@@ -101,6 +102,25 @@ def test_run_tests_command_rejects_parent_traversal_target() -> None:
 
 def test_apply_patch_tool_name() -> None:
     assert ApplyPatch(patch='--- a/file\n+++ b/file').tool_name == ToolName.APPLY_PATCH
+
+
+def test_write_regression_command_refuses_to_overwrite_existing_file() -> None:
+    command = command_for_tool(
+        WriteRegression(file_path='pkg/tests/test_repro.py', content='def test_x():\n    pass\n'),
+        _docker_workspace(),
+    )
+
+    assert command[:2] == ['sh', '-lc']
+    assert 'regression test file already exists' in command[2]
+    assert 'exit 1' in command[2]
+
+
+def test_write_regression_command_rejects_parent_traversal_file_path() -> None:
+    with pytest.raises(ValueError, match='workspace-relative'):
+        command_for_tool(
+            WriteRegression(file_path='../outside/test_repro.py', content='x'),
+            _docker_workspace(),
+        )
 
 
 def test_index_tool_must_be_served_from_index() -> None:

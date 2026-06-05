@@ -10,6 +10,7 @@ from src.runtime_enums import StrEnum
 
 class ToolName(StrEnum):
     WRITE_FILE = 'write_file'
+    WRITE_REGRESSION = 'write_regression'
     APPLY_PATCH = 'apply_patch'
     RUN_TESTS = 'run_tests'
     RUN_SHELL = 'run_shell'
@@ -30,6 +31,17 @@ class WriteFile(ToolBase):
         description='Tool name tag.',
     )
     file_path: str = Field(description='Workspace-relative file path to replace.')
+    content: str = Field(description='Complete file content to write.')
+
+
+class WriteRegression(ToolBase):
+    tool_name: Literal[ToolName.WRITE_REGRESSION] = Field(
+        default=ToolName.WRITE_REGRESSION,
+        description='Tool name tag.',
+    )
+    file_path: str = Field(
+        description='Workspace-relative path for the new regression test file; must not exist yet.'
+    )
     content: str = Field(description='Complete file content to write.')
 
 
@@ -112,6 +124,7 @@ class GatherContext(ToolBase):
 
 Tool = (
     WriteFile
+    | WriteRegression
     | ApplyPatch
     | RunTests
     | RunShell
@@ -124,12 +137,26 @@ Tool = (
 
 ImplementationToolCall: TypeAlias = Tool
 
+# The reproducer may only create its new test via write_regression (which refuses to
+# overwrite) — write_file and apply_patch are excluded so it cannot rewrite existing files.
+ReproductionToolCall: TypeAlias = (
+    WriteRegression
+    | RunTests
+    | RunShell
+    | ReadFile
+    | FindDefinition
+    | FindCallers
+    | FindCallees
+    | GatherContext
+)
+
 ContextGathererToolCall: TypeAlias = RunShell | FindDefinition | FindCallers | FindCallees
 PlannerToolCall: TypeAlias = RunShell | ReadFile | FindDefinition | FindCallers | FindCallees
 
 ImplementationToolCallAdapter: TypeAdapter[ImplementationToolCall] = TypeAdapter(
     ImplementationToolCall
 )
+ReproductionToolCallAdapter: TypeAdapter[ReproductionToolCall] = TypeAdapter(ReproductionToolCall)
 ContextGathererToolCallAdapter: TypeAdapter[ContextGathererToolCall] = TypeAdapter(
     ContextGathererToolCall
 )
