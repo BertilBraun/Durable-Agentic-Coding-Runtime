@@ -5,7 +5,7 @@ from pydantic import Field, model_validator
 from src.models.context import ContextSnippet
 from src.models.frozen_base_model import FrozenBaseModel
 from src.models.repo import RepoIndex
-from src.models.reproduction import ReproductionContext
+from src.models.reproduction import ReproductionBrief, ReproductionContext
 from src.models.task import TaskContract
 from src.models.worker import Confidence, TestResult, WorkerStatus
 from src.runtime_enums import StrEnum
@@ -182,15 +182,42 @@ class PlannerTurn(FrozenBaseModel):
     @model_validator(mode='before')
     @classmethod
     def normalize_planner_tool_aliases(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        tool_calls = value.get('tool_calls')
-        if not isinstance(tool_calls, list):
-            return value
-        return {
-            **value,
-            'tool_calls': [_normalize_planner_tool_call(tool_call) for tool_call in tool_calls],
-        }
+        return _normalize_turn_tool_aliases(value)
+
+
+class ReproductionPlanTurn(FrozenBaseModel):
+    context_requests: list[ContextRequest] = Field(default_factory=list)
+    tool_calls: list[PlannerToolCall] = Field(default_factory=list)
+    reproduction_brief: ReproductionBrief | None = Field(
+        default=None,
+        description='The brief the reproducer must execute; emitted once inspection is complete.',
+    )
+    remaining_work: list[str] = Field(
+        default_factory=list,
+        description=(
+            'Rough backlog of the fix work implied by the reproduction, used to seed the '
+            'implementation planner; each entry names a concrete behavior to implement later.'
+        ),
+    )
+    done: bool = False
+    done_reason: str | None = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_planner_tool_aliases(cls, value: object) -> object:
+        return _normalize_turn_tool_aliases(value)
+
+
+def _normalize_turn_tool_aliases(value: object) -> object:
+    if not isinstance(value, dict):
+        return value
+    tool_calls = value.get('tool_calls')
+    if not isinstance(tool_calls, list):
+        return value
+    return {
+        **value,
+        'tool_calls': [_normalize_planner_tool_call(tool_call) for tool_call in tool_calls],
+    }
 
 
 def _normalize_planner_tool_call(tool_call: object) -> object:

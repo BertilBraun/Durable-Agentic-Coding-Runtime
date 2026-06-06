@@ -1,8 +1,15 @@
 from src.activities.contract_builder import CONTRACT_BUILDER_SYSTEM_PROMPT
 from src.activities.implementation import IMPLEMENTATION_SYSTEM_PROMPT
-from src.activities.planner import PLANNER_TURN_SYSTEM_PROMPT
+from src.activities.planner import PLANNER_TURN_SYSTEM_PROMPT, REPRODUCTION_PLAN_SYSTEM_PROMPT
 from src.activities.reproduction import REPRODUCTION_SYSTEM_PROMPT
 from src.activities.reviewer import REVIEWER_SYSTEM_PROMPT
+
+
+def test_reproduction_plan_prompt_demands_round_trip_and_backlog() -> None:
+    assert 'symmetric operation' in REPRODUCTION_PLAN_SYSTEM_PROMPT
+    assert 'is_round_trip=true' in REPRODUCTION_PLAN_SYSTEM_PROMPT
+    assert 'remaining_work' in REPRODUCTION_PLAN_SYSTEM_PROMPT
+    assert 'regression_test_files' in REPRODUCTION_PLAN_SYSTEM_PROMPT
 
 
 def test_contract_builder_prompt_requires_detailed_contract_fields() -> None:

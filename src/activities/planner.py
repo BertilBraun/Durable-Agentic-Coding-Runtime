@@ -5,7 +5,13 @@ import json
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.context import ContextSnippet
-from src.models.plan import ContextNote, PlannerState, PlannerToolObservation, PlannerTurn
+from src.models.plan import (
+    ContextNote,
+    PlannerState,
+    PlannerToolObservation,
+    PlannerTurn,
+    ReproductionPlanTurn,
+)
 
 PLANNER_TURN_SYSTEM_PROMPT = (
     'You are the workflow coordinator. You do not edit code.\n'
@@ -62,6 +68,28 @@ PLANNER_TURN_SYSTEM_PROMPT = (
 )
 
 
+REPRODUCTION_PLAN_SYSTEM_PROMPT = (
+    'You are the workflow coordinator planning the reproduction before it is written. '
+    'You do not edit code. You receive normalized state, not a chat transcript.\n'
+    'First inspect the relevant code: request context and issue read-only tool calls '
+    '(read_file, run_shell, find_definition, find_callers, find_callees) until you understand the '
+    'behavior, the files involved, and whether it is a symmetric operation. Tool calls must never '
+    'mutate files, run tests, or write patches.\n'
+    'When you understand enough, set done=true and emit a reproduction_brief plus a remaining_work '
+    'backlog. In the brief: set is_round_trip=true when the behavior is symmetric (read/write, '
+    'encode/decode, serialize/parse, or the issue shows both directions), and make '
+    'assertion_guidance require asserting the full round trip (read(write(x)) == x over several '
+    'inputs), never a guessed literal; otherwise state the concrete invariant to assert. List the '
+    'production files in candidate_target_files and the existing repository test files that form '
+    'the regression set in regression_test_files (whole file paths, not node ids); do not invent '
+    'files, use the repository tree.\n'
+    'remaining_work is your rough backlog of the fix this reproduction implies — the concrete '
+    'behaviors the implementer will need to add, including every direction of a symmetric '
+    'operation (for example both the write and the matching read). It seeds the implementation '
+    'planner, so name behaviors, not vague areas.'
+)
+
+
 async def plan_next_turn(state: PlannerState) -> tuple[PlannerTurn, LLMUsage]:
     completion = await generate_structured(
         role=ModelRole.PLANNER,
@@ -70,6 +98,18 @@ async def plan_next_turn(state: PlannerState) -> tuple[PlannerTurn, LLMUsage]:
             Message(role='user', content=_render_planner_state(state)),
         ],
         output_type=PlannerTurn,
+    )
+    return completion.output, completion.usage
+
+
+async def plan_reproduction_turn(state: PlannerState) -> tuple[ReproductionPlanTurn, LLMUsage]:
+    completion = await generate_structured(
+        role=ModelRole.PLANNER,
+        messages=[
+            Message(role='system', content=REPRODUCTION_PLAN_SYSTEM_PROMPT, cacheable=True),
+            Message(role='user', content=_render_planner_state(state)),
+        ],
+        output_type=ReproductionPlanTurn,
     )
     return completion.output, completion.usage
 

@@ -3,8 +3,16 @@ from src.activities.context_gatherer import context_note_from_pack
 from src.activities.workspace_manager import HostWorkspace
 from src.llm.client import LLMUsage
 from src.models.context import ContextPack, PackedSnippet
-from src.models.plan import ContextRequest, PlannerState, PlannerTurn, PlanStep, Risk
+from src.models.plan import (
+    ContextRequest,
+    PlannerState,
+    PlannerTurn,
+    PlanStep,
+    ReproductionPlanTurn,
+    Risk,
+)
 from src.models.repo import RepoIndex
+from src.models.reproduction import ReproductionBrief
 from src.models.task import TaskContract, TaskType
 from src.tools.definitions import RunShell
 from src.workflows import replanning_workflow as workflow_module
@@ -68,6 +76,45 @@ async def test_replanning_workflow_returns_planner_turn_and_usage(
     assert result['context_packs'] == []
     assert result['planner_turn_count'] == 1
     assert result['llm_usage']['call_count'] == 1
+
+
+@pytest.mark.asyncio
+async def test_replanning_workflow_reproduction_mode_returns_brief(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repro_turn = ReproductionPlanTurn(
+        done=True,
+        reproduction_brief=ReproductionBrief(
+            summary='round trip',
+            is_round_trip=True,
+            assertion_guidance='assert read(write(x)) == x',
+        ),
+        remaining_work=['implement read side'],
+    )
+
+    async def fake_plan_reproduction_turn(
+        state: PlannerState,
+    ) -> tuple[ReproductionPlanTurn, LLMUsage]:
+        return repro_turn, LLMUsage(call_count=1)
+
+    async def fail_plan_next_turn(state: PlannerState) -> tuple[PlannerTurn, LLMUsage]:
+        raise AssertionError('reproduction mode must not call plan_next_turn')
+
+    monkeypatch.setattr(workflow_module, 'plan_reproduction_turn', fake_plan_reproduction_turn)
+    monkeypatch.setattr(workflow_module, 'plan_next_turn', fail_plan_next_turn)
+
+    result = await replanning_workflow(
+        workspace=_workspace().model_dump(mode='json'),
+        repo_index=RepoIndex().model_dump(mode='json'),
+        max_planner_turns=5,
+        planner_state=PlannerState(contract=_contract(), repo_index=RepoIndex()).model_dump(
+            mode='json'
+        ),
+        mode='reproduction',
+    )
+
+    assert result['planner_turn']['reproduction_brief']['is_round_trip'] is True
+    assert result['planner_turn']['remaining_work'] == ['implement read side']
 
 
 @pytest.mark.asyncio

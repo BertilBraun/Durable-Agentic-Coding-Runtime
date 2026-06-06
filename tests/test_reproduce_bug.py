@@ -61,6 +61,10 @@ def _patch_generate_structured(
     monkeypatch.setattr(reproduction_module, 'generate_structured', fake_generate_structured)
 
 
+async def _fake_assert_present(request: ToolExecutionRequest) -> ToolResult:
+    return ToolResult(stdout='1', stderr='', exit_code=0, truncated=False)
+
+
 def _done_turn(status: ReproductionStatus) -> ReproductionAgentTurn:
     return ReproductionAgentTurn(
         done=True,
@@ -88,6 +92,7 @@ async def test_reproduce_bug_trusts_reproduced_when_command_actually_fails(
 
     _patch_generate_structured(monkeypatch, handler)
     monkeypatch.setattr(reproduction_module, 'run_tool', fake_run_tool)
+    monkeypatch.setattr('src.activities.test_protection.run_tool', _fake_assert_present)
 
     result, _ = await reproduce_bug(_request())
 
@@ -164,6 +169,8 @@ async def test_reproduce_bug_executes_tool_calls_returned_with_done_before_verif
         tool = request.tool
         if isinstance(tool, RunShell) and tool.command.startswith('git '):
             return ToolResult(stdout='', stderr='', exit_code=0, truncated=False)
+        if isinstance(tool, RunShell) and tool.command.startswith('grep '):
+            return ToolResult(stdout='1', stderr='', exit_code=0, truncated=False)
         calls.append(tool.tool_name.value)
         return ToolResult(stdout='assert 4 == 5', stderr='', exit_code=1, truncated=False)
 

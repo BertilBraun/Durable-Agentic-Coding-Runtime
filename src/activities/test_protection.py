@@ -67,6 +67,18 @@ async def revert_unauthorized_test_edits(
     )
 
 
+async def test_file_has_assertion(
+    workspace: Workspace,
+    repo_index: RepoIndex,
+    file_path: str,
+) -> bool:
+    result = await _run_shell(workspace, repo_index, f'grep -c assert {shlex.quote(file_path)}')
+    try:
+        return int(result.stdout.strip() or '0') > 0
+    except ValueError:
+        return False
+
+
 async def _run_shell(workspace: Workspace, repo_index: RepoIndex, command: str) -> ToolResult:
     return await run_tool(
         ToolExecutionRequest(

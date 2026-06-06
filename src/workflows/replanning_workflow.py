@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from temporal_light import run_child, workflow
 
-from src.activities.planner import plan_next_turn
+from src.activities.planner import plan_next_turn, plan_reproduction_turn
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
     ToolResult,
@@ -12,12 +12,19 @@ from src.activities.workspace_manager import (
 )
 from src.llm.client import LLMUsage
 from src.models.context import ContextPack
-from src.models.plan import ContextNote, PlannerState, PlannerToolObservation, PlannerTurn
+from src.models.plan import (
+    ContextNote,
+    PlannerState,
+    PlannerToolObservation,
+    PlannerTurn,
+    ReproductionPlanTurn,
+)
 from src.models.repo import RepoIndex
 from src.tools.definitions import PlannerToolCall
 from src.workflows.context_gathering_workflow import parse_context_gathering_result
 
 _MAX_PLANNER_TOOL_CALLS_PER_TURN = 2
+REPRODUCTION_PLANNING_MODE = 'reproduction'
 
 
 @workflow
@@ -26,6 +33,7 @@ async def replanning_workflow(
     repo_index: dict[str, object],
     max_planner_turns: int,
     planner_state: dict[str, object],
+    mode: str = 'implementation',
 ) -> dict[str, object]:
     workspace_info = WorkspaceAdapter.validate_python(workspace)
     repository_index = RepoIndex.model_validate(repo_index)
@@ -33,11 +41,17 @@ async def replanning_workflow(
     usage = LLMUsage()
     context_notes: list[ContextNote] = []
     context_packs: list[ContextPack] = []
-    planner_turn = PlannerTurn()
+    reproduction_mode = mode == REPRODUCTION_PLANNING_MODE
+    planner_turn: PlannerTurn | ReproductionPlanTurn = (
+        ReproductionPlanTurn() if reproduction_mode else PlannerTurn()
+    )
     planner_turn_count = 0
 
     for _ in range(max(0, max_planner_turns)):
-        planner_turn, turn_usage = await plan_next_turn(state)
+        if reproduction_mode:
+            planner_turn, turn_usage = await plan_reproduction_turn(state)
+        else:
+            planner_turn, turn_usage = await plan_next_turn(state)
         planner_turn_count += 1
         usage += turn_usage
 

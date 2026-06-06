@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 
 from src.activities.reproduction import repro_run_tests
+from src.activities.test_protection import test_file_has_assertion
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
     ToolResult,
@@ -34,7 +35,19 @@ async def run_anchor_tests(
         await _restore_regression_files(workspace, repo_index, reproduction.regression_test_files)
     results: list[TestResult] = []
     repro_result = await _run(workspace, repo_index, repro_run_tests(reproduction.repro_target))
-    results.append(_test_result(reproduction.repro_target, repro_result, len(results) + 1))
+    repro_test = _test_result(reproduction.repro_target, repro_result, len(results) + 1)
+    repro_file = reproduction.repro_target.split('::', 1)[0]
+    if repro_test.passed and not await test_file_has_assertion(workspace, repo_index, repro_file):
+        repro_test = repro_test.model_copy(
+            update={
+                'passed': False,
+                'stderr_summary': (
+                    f'{repro_test.stderr_summary}\n'
+                    'anchor test has no assertion; not a valid round-trip anchor'
+                ).strip(),
+            }
+        )
+    results.append(repro_test)
     if reproduction.regression_test_files:
         regression_result = await _run(
             workspace,

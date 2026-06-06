@@ -11,6 +11,30 @@ class ReproductionStatus(StrEnum):
     COULD_NOT_REPRODUCE = 'could_not_reproduce'
 
 
+class ReproductionBrief(FrozenBaseModel):
+    summary: str = Field(description='What behavior the reproduction test must demonstrate.')
+    is_round_trip: bool = Field(
+        description=(
+            'Whether the requested behavior is a symmetric operation (read/write, '
+            'encode/decode, serialize/parse) whose correctness must be asserted as a round trip.'
+        )
+    )
+    assertion_guidance: str = Field(
+        description=(
+            'Exactly what the reproduction test must assert: a round-trip invariant '
+            '(read(write(x)) == x) when symmetric, otherwise the concrete behavior to check.'
+        )
+    )
+    candidate_target_files: list[str] = Field(
+        default_factory=list,
+        description='Production files likely involved in implementing the behavior.',
+    )
+    regression_test_files: list[str] = Field(
+        default_factory=list,
+        description='Existing repository test files that form the regression set.',
+    )
+
+
 class ReproductionContext(FrozenBaseModel):
     repro_target: str
     failure_evidence: str

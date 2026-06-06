@@ -1,7 +1,7 @@
 import pytest
 from pydantic import BaseModel
 from src.activities import planner as planner_module
-from src.activities.planner import plan_next_turn
+from src.activities.planner import plan_next_turn, plan_reproduction_turn
 from src.config import ModelRole
 from src.llm.client import LLMUsage, Message, StructuredCompletion
 from src.models.context import PackedSnippet
@@ -10,12 +10,60 @@ from src.models.plan import (
     PlannerState,
     PlannerToolObservation,
     PlannerTurn,
+    ReproductionPlanTurn,
     StepHistoryEntry,
 )
 from src.models.repo import RepoIndex
+from src.models.reproduction import ReproductionBrief
 from src.models.task import TaskContract, TaskType
 from src.models.worker import Confidence, WorkerStatus
 from src.tools.definitions import ToolName
+
+
+@pytest.mark.asyncio
+async def test_plan_reproduction_turn_outputs_brief_and_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_roles: list[ModelRole] = []
+    turn = ReproductionPlanTurn(
+        done=True,
+        reproduction_brief=ReproductionBrief(
+            summary='round trip the rst writer',
+            is_round_trip=True,
+            assertion_guidance='assert read(write(x)) == x',
+        ),
+        remaining_work=['implement the read side'],
+    )
+
+    async def fake_generate_structured(
+        role: ModelRole,
+        messages: list[Message],
+        output_type: type[BaseModel],
+    ) -> StructuredCompletion:
+        captured_roles.append(role)
+        assert output_type is ReproductionPlanTurn
+        return StructuredCompletion(
+            output=turn,
+            content=turn.model_dump_json(),
+            model='fake-model',
+            context_limit_tokens=100,
+            usage=LLMUsage(call_count=1),
+        )
+
+    monkeypatch.setattr(planner_module, 'generate_structured', fake_generate_structured)
+
+    result, usage = await plan_reproduction_turn(
+        PlannerState(
+            contract=TaskContract(task_type=TaskType.FEATURE, goal='support header_rows'),
+            repo_index=RepoIndex(overview_text='pkg/rst.py'),
+        )
+    )
+
+    assert captured_roles == [ModelRole.PLANNER]
+    assert result.reproduction_brief is not None
+    assert result.reproduction_brief.is_round_trip is True
+    assert result.remaining_work == ['implement the read side']
+    assert usage.call_count == 1
 
 
 def test_planner_state_serializes_normalized_history_and_remaining_work() -> None:

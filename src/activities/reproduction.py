@@ -6,7 +6,11 @@ from typing import get_args
 from pydantic import Field
 
 from src.activities.context_gatherer import ContextGatherRequest, gather_context
-from src.activities.test_protection import revert_unauthorized_test_edits, tool_mutates_workspace
+from src.activities.test_protection import (
+    revert_unauthorized_test_edits,
+    test_file_has_assertion,
+    tool_mutates_workspace,
+)
 from src.activities.workspace_manager import (
     ToolExecutionRequest,
     ToolResult,
@@ -17,7 +21,7 @@ from src.config import CONFIG, ModelRole
 from src.llm.client import LLMUsage, Message, generate_structured
 from src.models.frozen_base_model import FrozenBaseModel
 from src.models.repo import RepoIndex
-from src.models.reproduction import ReproductionResult, ReproductionStatus
+from src.models.reproduction import ReproductionBrief, ReproductionResult, ReproductionStatus
 from src.models.task import TaskContract
 from src.tools.definitions import GatherContext, ReproductionToolCall, RunTests
 
@@ -26,7 +30,9 @@ REPRODUCTION_COMMAND_TIMEOUT_SECONDS = 600
 REPRODUCTION_SYSTEM_PROMPT = (
     'You are the reproduction agent for a bugfix or feature task. Your only job is to '
     'demonstrate the reported defect or missing behavior with a test, never to '
-    'implement or fix it. Locate the relevant '
+    'implement or fix it. When a reproduction_brief is provided, follow it exactly: write the '
+    'test it specifies (especially its assertion_guidance), and when is_round_trip is true assert '
+    'the full round trip it describes rather than a guessed literal. Locate the relevant '
     'behavior using run_shell, find_definition / find_callers / find_callees, '
     'and gather_context, then write a focused pytest regression test '
     'that fails on the current code and isolates exactly the reported '
@@ -73,6 +79,7 @@ class ReproductionTurnRequest(FrozenBaseModel):
     task_contract: TaskContract
     workspace_info: Workspace
     repo_index: RepoIndex
+    brief: ReproductionBrief | None = None
 
 
 class ReproductionAgentTurn(FrozenBaseModel):
@@ -150,6 +157,11 @@ async def _verify_reproduction(
     if not _is_assertion_failure(tool_result):
         return _could_not_reproduce(
             'repro command failed, but not with a collected test assertion failure'
+        )
+    repro_file = reproduction_result.repro_target.split('::', 1)[0]
+    if not await test_file_has_assertion(request.workspace_info, request.repo_index, repro_file):
+        return _could_not_reproduce(
+            'reproduction test contains no assertion; not a valid round-trip anchor'
         )
     return reproduction_result.model_copy(
         update={'failure_evidence': _observed_failure_text(tool_result)}
@@ -230,6 +242,9 @@ def _could_not_reproduce(reason: str) -> ReproductionResult:
 def _reproduction_user_payload(request: ReproductionTurnRequest) -> dict[str, object]:
     return {
         'task_contract': request.task_contract.model_dump(mode='json'),
+        'reproduction_brief': (
+            request.brief.model_dump(mode='json') if request.brief is not None else None
+        ),
         'workspace_info': request.workspace_info.model_dump(mode='json'),
         'environment': request.workspace_info.describe_environment(),
         'directory_tree': request.repo_index.directory_tree_text(),
