@@ -295,8 +295,8 @@ async def _run_planner_loop(
         planner_turns_remaining -= planner_turn_count
         state = state.with_usage(turn_usage).with_context(notes, context_packs)
         if turn.next_step is None:
+            state = state.with_remaining_work(turn.remaining_work)
             if turn.done and not _has_outstanding_work(state):
-                state = state.with_remaining_work([])
                 hit_cap = False
                 break
             continue

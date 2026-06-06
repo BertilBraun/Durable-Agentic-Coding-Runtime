@@ -357,6 +357,57 @@ async def test_planner_loop_replans_after_one_step_and_does_not_run_stale_second
 
 
 @pytest.mark.asyncio
+async def test_planner_loop_clears_stale_backlog_when_planner_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    turns = iter(
+        [
+            PlannerTurn(next_step=_step('step-1'), remaining_work=['verify output shape']),
+            PlannerTurn(done=True, remaining_work=[]),
+        ]
+    )
+    executed_steps: list[str] = []
+
+    async def fake_run_replanner_child(
+        workspace_info: Workspace,
+        repo_index: RepoIndex,
+        max_planner_turns: int,
+        planner_state: PlannerState,
+    ) -> tuple[PlannerTurn, list[object], list[ContextPack], int, LLMUsage]:
+        return next(turns), [], [], 1, _usage()
+
+    async def fake_run_implementation_child(
+        plan_step: PlanStep,
+        plan_context: PlanContext,
+        context_pack: ContextPack,
+        workspace_info: Workspace,
+        contract: TaskContract,
+        repo_index: RepoIndex,
+        reproduction: ReproductionContext | None = None,
+    ) -> tuple[WorkerResult, LLMUsage]:
+        executed_steps.append(plan_step.id)
+        return _worker_result(), _usage()
+
+    async def fake_get_full_diff(workspace_arg: Workspace) -> str:
+        return 'diff --git a/app.py b/app.py'
+
+    monkeypatch.setattr(workflow_module, '_run_replanner_child', fake_run_replanner_child)
+    monkeypatch.setattr(workflow_module, '_run_implementation_child', fake_run_implementation_child)
+    monkeypatch.setattr(workflow_module, 'get_full_diff', fake_get_full_diff)
+    monkeypatch.setattr(
+        workflow_module,
+        'CONFIG',
+        CONFIG.model_copy(update={'max_planner_turns': 2}),
+    )
+    _install_step_branch_fakes(monkeypatch)
+
+    result = await _run_planner_loop(_workspace(), _contract(), RepoIndex(), None)
+
+    assert executed_steps == ['step-1']
+    assert [worker.status for worker in result.worker_results] == [WorkerStatus.SUCCESS]
+
+
+@pytest.mark.asyncio
 async def test_planner_replans_when_done_declared_with_outstanding_backlog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -364,7 +415,10 @@ async def test_planner_replans_when_done_declared_with_outstanding_backlog(
     turns = iter(
         [
             PlannerTurn(next_step=_step('step-1'), remaining_work=['finish the read side']),
-            PlannerTurn(done=True),  # premature done while backlog is non-empty -> ignored
+            PlannerTurn(
+                done=True,
+                remaining_work=['finish the read side'],
+            ),  # contradictory done with explicit backlog -> ignored
             PlannerTurn(next_step=_step('step-2')),
             PlannerTurn(done=True),
         ]
