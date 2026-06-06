@@ -24,8 +24,10 @@ Detailed project docs:
   in activities.
 - **LLM as policy, tools as ground truth.** The model decides what to inspect, change, and test.
   The workspace, git, and process exit codes decide what actually happened.
-- **Incremental replanning.** The planner emits future steps, the runtime executes the first one,
-  refreshes evidence, and asks the planner again — rather than blindly executing one large plan.
+- **Incremental (rolling) replanning.** The planner emits one concrete `next_step` plus a
+  `remaining_work` backlog; the runtime executes that step, refreshes evidence, folds any review
+  feedback back into the backlog, and asks the planner again — rather than blindly executing one
+  large plan.
 - **Compact context, external bulk.** Prompt context is deliberately curated. Large outputs are
   written to artifacts and referenced instead of being copied into every prompt.
 - **One workspace abstraction.** Host and Docker execution differ only behind the `Workspace`
@@ -35,14 +37,16 @@ Detailed project docs:
 
 The runtime is built from four workflow functions:
 
-- **`main_workflow`** — top-level orchestration: contract, workspace, reproduction, planner turns,
-  candidates, and review.
-- **`reproduction_workflow`** — for bugfix tasks, finds or creates a command that fails on the
-  original bug.
-- **`replanning_workflow`** — runs planner turns, gathering grounded context until a concrete next
-  step or done state appears.
-- **`implementation_workflow`** — executes exactly one plan step in a bounded tool loop and reviews
-  its output.
+- **`main_workflow`** — top-level orchestration: contract, workspace, reproduction planning +
+  reproduction, planner turns, candidates, verification, and review.
+- **`reproduction_workflow`** — for bugfix and feature tasks, writes a failing anchor test
+  (a read/write round trip when the behavior is symmetric) from the planner's reproduction brief,
+  and records the existing repo test files to run as the regression set.
+- **`replanning_workflow`** — runs planner turns (context gathering + read-only tools). In
+  reproduction mode (round 0, before reproduction) it produces the reproduction brief and a rough
+  fix backlog; in implementation mode it produces one concrete `next_step` plus `remaining_work`.
+- **`implementation_workflow`** — executes exactly one plan step in a bounded tool loop, reverts any
+  edits to existing test files, and reviews the step against verifier-run test results.
 
 For each planner step, the first candidate runs from the current base; its confidence decides how
 many additional candidates to try on fresh branches, and the best candidate by status, confidence,
@@ -55,23 +59,24 @@ flowchart TD
     Start([TaskRequest]) --> Contract[Build TaskContract]
     Contract --> Setup[Setup clean workspace]
     Setup --> Index[Build RepoIndex]
-    Index --> Bugfix{Bugfix?}
+    Index --> Reproducible{Bugfix or feature?}
 
-    Bugfix -->|yes| Reproduce[Run reproduction child]
-    Reproduce --> Reproduced{Bug reproduced?}
+    Reproducible -->|yes| ReproPlan[Reproduction planning child: brief + fix backlog]
+    ReproPlan --> Reproduce[Run reproduction child with brief]
+    Reproduce --> Reproduced{Reproduced: failing anchor test?}
     Reproduced -->|no| BlockedReport[Return blocked report]
     Reproduced -->|yes| SnapshotRepro[Snapshot candidate base]
-    Bugfix -->|no| PlannerLoop
+    Reproducible -->|no| PlannerLoop
     SnapshotRepro --> PlannerLoop
 
-    PlannerLoop[Planner loop] --> ReplanChild[Run replanning child]
-    ReplanChild --> ContextNeeded{Context requested?}
+    PlannerLoop[Planner loop: seeded with round-0 context + backlog] --> ReplanChild[Run replanning child]
+    ReplanChild --> ContextNeeded{Context or tools requested?}
     ContextNeeded -->|yes| Gather[Gather read-only context and pack snippets]
     Gather --> ReplanChild
-    ContextNeeded -->|no| Done{Done with no future steps?}
+    ContextNeeded -->|no| Done{Done, backlog empty, last step not needs_replan?}
 
-    Done -->|yes| FinalVerify[Final reproduction and integration tests]
-    Done -->|no| HasStep{Future step exists?}
+    Done -->|yes| FinalVerify[Final verification: reproduction + regression anchor]
+    Done -->|no| HasStep{next_step present?}
     HasStep -->|no| PlannerLoop
     HasStep -->|yes| CandidateStart[Run step candidates]
 
@@ -85,17 +90,17 @@ flowchart TD
 
     SelectStep --> StepStatus{Selected status}
     StepStatus -->|success| SnapshotStep[Snapshot accepted step as new candidate base]
-    StepStatus -->|needs_replan| PreservePartial[Preserve partial candidate workspace]
+    StepStatus -->|needs_replan| PreservePartial[Preserve partial workspace; fold review issues into backlog]
     StepStatus -->|failed or blocked| KeepPrior[Keep prior workspace]
 
-    SnapshotStep --> Evidence[Refresh diff and reproduction evidence]
+    SnapshotStep --> Evidence[Refresh diff and anchor evidence]
     PreservePartial --> Evidence
     KeepPrior --> Evidence
     Evidence --> PlannerLoop
 
     PlannerLoop -->|turn cap reached| CapBlocked[Append blocked WorkerResult]
     CapBlocked --> FinalVerify
-    FinalVerify --> FinalReview[Final review]
+    FinalVerify --> FinalReview[Final review on verifier-run results]
     FinalReview --> Finalize[Finalize winner and teardown]
     Finalize --> Report([FinalReport])
 ```

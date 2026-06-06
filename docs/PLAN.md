@@ -21,9 +21,10 @@ system without reverse-engineering the workflow code first.
   in activities.
 - **LLM as policy, tools as ground truth.** The model decides what to inspect, change, and test.
   The workspace, git, and process exit codes decide what actually happened.
-- **Incremental replanning.** The planner does not emit a large plan that is blindly executed.
-  Instead, it emits future steps, the runtime executes the first one, refreshes evidence, and asks
-  the planner again.
+- **Incremental (rolling) replanning.** The planner does not emit a large plan that is blindly
+  executed. Instead, it emits one concrete `next_step` plus a `remaining_work` backlog; the runtime
+  executes that step, refreshes evidence, folds any review feedback back into the backlog, and asks
+  the planner again. It only finishes when the backlog is empty and the last step was not revised.
 - **Compact context, external bulk.** Prompt context is deliberately curated. Large outputs and
   overflow snippets are written to artifacts and referenced instead of being copied into every prompt.
 - **One workspace abstraction.** Host and Docker execution differ only behind the `Workspace`
@@ -61,6 +62,7 @@ flowchart LR
         Index[build_repo_index]
         Context[context_gatherer]
         Planner[plan_next_turn]
+        ReproPlanner[plan_reproduction_turn]
         Implement[run_implementation_turn]
         Reviewer[review_patch]
         Report[FinalReport]
@@ -79,6 +81,7 @@ flowchart LR
     Main --> Reviewer
     Main --> Report
     Replan --> Planner
+    Replan --> ReproPlanner
     Replan --> Context
     Impl --> Implement
     Impl --> Reviewer
@@ -86,12 +89,12 @@ flowchart LR
 
 The runtime has four workflow functions:
 
-| Workflow                                                                 | Responsibility                                                                                                                                                                                     |
-| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`main_workflow`](../src/workflows/main_workflow.py)                     | Top-level orchestration. Builds the task contract, prepares the workspace, coordinates reproduction, planner turns, step candidates, final verification, final review, finalization, and teardown. |
-| [`reproduction_workflow`](../src/workflows/reproduction_workflow.py)     | For bugfix tasks, asks the reproducer to create or identify a command that fails on the original bug.                                                                                              |
-| [`replanning_workflow`](../src/workflows/replanning_workflow.py)         | Runs planner turns. If the planner requests context, gathers grounded snippets and loops until a concrete future step or done state is produced.                                                   |
-| [`implementation_workflow`](../src/workflows/implementation_workflow.py) | Executes exactly one `PlanStep` in a bounded tool loop and reviews successful step output before returning it to the parent.                                                                       |
+| Workflow | Responsibility |
+| --- | --- |
+| [`main_workflow`](../src/workflows/main_workflow.py) | Top-level orchestration. Builds the task contract, prepares the workspace, runs reproduction planning then reproduction, coordinates planner turns, step candidates, final verification, final review, finalization, and teardown. |
+| [`reproduction_workflow`](../src/workflows/reproduction_workflow.py) | For bugfix and feature tasks, asks the reproducer to write a failing anchor test (a read/write round trip when the behavior is symmetric) from the planner's `ReproductionBrief`, and to record the existing repo test files that form the regression set. |
+| [`replanning_workflow`](../src/workflows/replanning_workflow.py) | Runs planner turns with context gathering and read-only tools. In `mode='reproduction'` (round 0) it emits a `ReproductionPlanTurn` (brief + fix backlog); in `mode='implementation'` it loops until a concrete `next_step` + `remaining_work`, or a done state, is produced. |
+| [`implementation_workflow`](../src/workflows/implementation_workflow.py) | Executes exactly one `PlanStep` in a bounded tool loop, reverts unauthorized edits to existing test files, and reviews successful step output against verifier-run test results before returning it to the parent. |
 
 Core modules:
 
@@ -118,23 +121,24 @@ flowchart TD
     Start([TaskRequest]) --> Contract[Build TaskContract]
     Contract --> Setup[Setup clean workspace]
     Setup --> Index[Build RepoIndex]
-    Index --> Bugfix{Bugfix?}
+    Index --> Reproducible{Bugfix or feature?}
 
-    Bugfix -->|yes| Reproduce[Run reproduction child]
-    Reproduce --> Reproduced{Bug reproduced?}
+    Reproducible -->|yes| ReproPlan[Reproduction planning child: brief + fix backlog]
+    ReproPlan --> Reproduce[Run reproduction child with brief]
+    Reproduce --> Reproduced{Reproduced: failing anchor test?}
     Reproduced -->|no| BlockedReport[Return blocked report]
     Reproduced -->|yes| SnapshotRepro[Snapshot candidate base]
-    Bugfix -->|no| PlannerLoop
+    Reproducible -->|no| PlannerLoop
     SnapshotRepro --> PlannerLoop
 
-    PlannerLoop[Planner loop] --> ReplanChild[Run replanning child]
-    ReplanChild --> ContextNeeded{Context requested?}
+    PlannerLoop[Planner loop: seeded with round-0 context + backlog] --> ReplanChild[Run replanning child]
+    ReplanChild --> ContextNeeded{Context or tools requested?}
     ContextNeeded -->|yes| Gather[Gather read-only context and pack snippets]
     Gather --> ReplanChild
-    ContextNeeded -->|no| Done{Done with no future steps?}
+    ContextNeeded -->|no| Done{Done, backlog empty, last step not needs_replan?}
 
-    Done -->|yes| FinalVerify[Final reproduction and integration tests]
-    Done -->|no| HasStep{Future step exists?}
+    Done -->|yes| FinalVerify[Final verification: reproduction + regression anchor]
+    Done -->|no| HasStep{next_step present?}
     HasStep -->|no| PlannerLoop
     HasStep -->|yes| CandidateStart[Run step candidates]
 
@@ -148,17 +152,17 @@ flowchart TD
 
     SelectStep --> StepStatus{Selected status}
     StepStatus -->|success| SnapshotStep[Snapshot accepted step as new candidate base]
-    StepStatus -->|needs_replan| PreservePartial[Preserve partial candidate workspace]
+    StepStatus -->|needs_replan| PreservePartial[Preserve partial workspace; fold review issues into backlog]
     StepStatus -->|failed or blocked| KeepPrior[Keep prior workspace]
 
-    SnapshotStep --> Evidence[Refresh diff and reproduction evidence]
+    SnapshotStep --> Evidence[Refresh diff and anchor evidence]
     PreservePartial --> Evidence
     KeepPrior --> Evidence
     Evidence --> PlannerLoop
 
     PlannerLoop -->|turn cap reached| CapBlocked[Append blocked WorkerResult]
     CapBlocked --> FinalVerify
-    FinalVerify --> FinalReview[Final review]
+    FinalVerify --> FinalReview[Final review on verifier-run results]
     FinalReview --> Finalize[Finalize winner and teardown]
     Finalize --> Report([FinalReport])
 ```
@@ -200,14 +204,14 @@ One persistent environment is created per run:
 Setup asserts that the target repository has a clean working tree, records `base_sha`, records the
 base branch when available, and uses git branches for candidate attempts. The key state fields are:
 
-| Field                | Meaning                                                                                                      |
-| -------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `run_id`             | Stable id for the top-level task run.                                                                        |
-| `execution_id`       | Per-environment id used to keep child workflow ids unique.                                                   |
-| `base_sha`           | Starting commit. Final diffs are against this commit.                                                        |
-| `base_branch`        | Starting branch if the repository was not detached.                                                          |
-| `current_branch`     | Branch or commit currently checked out.                                                                      |
-| `candidate_base_sha` | Snapshot commit that future candidates should start from. For bugfixes this includes the reproduction setup. |
+| Field | Meaning |
+| --- | --- |
+| `run_id` | Stable id for the top-level task run. |
+| `execution_id` | Per-environment id used to keep child workflow ids unique. |
+| `base_sha` | Starting commit. Final diffs are against this commit. |
+| `base_branch` | Starting branch if the repository was not detached. |
+| `current_branch` | Branch or commit currently checked out. |
+| `candidate_base_sha` | Snapshot commit that future candidates should start from. For reproducible tasks this includes the reproduction setup (the anchor test). |
 
 Candidate branches are named `agentic/{run_id}/cand-{index}`. `snapshot_candidate_result` writes a
 temporary commit for a candidate result. `snapshot_candidate_base` writes a temporary commit used as
@@ -223,16 +227,21 @@ system-level writes inside a Docker container.
 
 Implementation workers can request:
 
-| Tool              | Purpose                                                               |
-| ----------------- | --------------------------------------------------------------------- |
-| `write_file`      | Replace a workspace-relative file with complete content.              |
-| `apply_patch`     | Apply a git patch from the workspace root.                            |
-| `run_tests`       | Run a verification command from a workspace-relative directory.       |
-| `run_shell`       | Run general shell commands for inspection or setup.                   |
-| `find_definition` | Search for Python definitions by name.                                |
-| `find_callers`    | Search for symbol mentions/calls by name.                             |
-| `find_callees`    | Search call-like expressions in a file.                               |
-| `gather_context`  | Delegate focused read-only context retrieval to the context gatherer. |
+| Tool | Purpose |
+| --- | --- |
+| `write_file` | Replace a workspace-relative file with complete content. |
+| `write_regression` | Create a new file that must not already exist; used by the reproducer to write the anchor test. |
+| `apply_patch` | Apply a git patch from the workspace root. |
+| `run_tests` | Run a verification command from a workspace-relative directory. |
+| `run_shell` | Run general shell commands for inspection or setup. |
+| `find_definition` | Search for Python definitions by name. |
+| `find_callers` | Search for symbol mentions/calls by name. |
+| `find_callees` | Search call-like expressions in a file. |
+| `gather_context` | Delegate focused read-only context retrieval to the context gatherer. |
+
+The reproducer's tool set excludes `write_file` and `apply_patch` so the anchor test can only be
+created through `write_regression`. During implementation, edits to existing test files are detected
+after each tool call and reverted (the reproduction anchor file is the only permitted test edit).
 
 The `find_*` tools are currently search-backed, not precise semantic index lookups. `RepoIndex`
 contains model types for symbols and references, but `build_repo_index` currently returns a bounded
@@ -342,12 +351,16 @@ Implemented and covered by unit/fake-mode tests:
 - host and Docker workspace abstractions;
 - contract builder;
 - repository overview;
-- bug reproduction workflow;
-- incremental replanning workflow with context gathering;
-- implementation child workflow with bounded tools;
-- review of successful steps;
+- reproduction planning (round 0) producing a `ReproductionBrief` + fix backlog;
+- reproduction workflow for bugfix and feature tasks, writing a round-trip anchor test via
+  `write_regression` plus a regression test set;
+- assert-count gate (an anchor test with no assertion does not count as reproduced);
+- rolling replanning workflow with context gathering, `next_step` + `remaining_work` backlog, and
+  review feedback folded back into the backlog;
+- implementation child workflow with bounded tools and deterministic test-file write protection;
+- review of successful steps against verifier-run test results;
 - adaptive per-step candidates;
-- final reproduction/integration checks;
+- final verification against the reproduction + regression anchor;
 - final report and SWE-Bench prediction writing.
 
 Known gaps:
