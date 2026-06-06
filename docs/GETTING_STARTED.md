@@ -34,7 +34,7 @@ uv run pytest
 Already cloned without `--recurse-submodules`? `Temporal-Light/` will be empty - pull it in
 with `git submodule update --init --recursive`, then re-run `uv sync`.
 
-Expected test result: roughly **152 passed, 1 skipped**. The skipped test is a host-workspace
+Expected test result: roughly **183 passed, 1 skipped**. The skipped test is a host-workspace
 integration test gated behind `RUN_HOST_TESTS=1`. Tests marked `integration` (Docker /
 live Temporal-Light) are deselected by default and are not required for a green run.
 

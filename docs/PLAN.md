@@ -298,13 +298,33 @@ SWE-Bench Docker images must be built locally before generation. Native Windows 
 against Docker Desktop, but image preparation and official scoring are usually more reliable from
 WSL/Linux because the SWE-Bench harness imports Unix-oriented modules.
 
-### SWE-Bench Light Results
+### Future Comparison Strategy
 
-Fill this table after running the benchmark.
+This project does not currently claim a SWE-Bench score. Exploratory SWE-Bench runs are useful for
+debugging the runtime, but they are not meaningful benchmark results without a paired baseline.
 
-| Date | Dataset         | Split | Subset | Model config | Resolved | Generated patches | Avg cost | Notes |
-| ---- | --------------- | ----- | -----: | ------------ | -------: | ----------------: | -------: | ----- |
-|      | SWE-Bench Light | test  |        |              |          |                   |          |       |
+A useful future evaluation would compare:
+
+- the base model in a lightweight SWE-agent-style harness;
+- the same model in this durable workflow runtime.
+
+Use a fixed task subset and report:
+
+- resolved/attempted;
+- generated patches;
+- average cost;
+- input, output, and cache-read tokens;
+- wall-clock time;
+- qualitative failure modes.
+
+The expected advantages of this runtime are durability, Temporal-Light dashboard introspection,
+hard verification gates, deterministic orchestration around tests and reviews, explicit reset logic,
+protection against test overrides, multi-model routing, curated context gathering, and inspectable
+planner steps.
+
+The expected tradeoffs are higher token usage and more constraint. A free-looping mini agent may be
+more flexible and outperform it on some individual tasks, but it has fewer structural safeguards
+against broken tests, forgotten context, skipped review, or untracked decision drift.
 
 ---
 

@@ -143,8 +143,20 @@ uv run pytest -q
 uv run --extra eval python -m src.eval.swe_bench --generate-only --force --subset 5
 ```
 
-### SWE-Bench Light Results
+### Project Status
 
-| Date | Dataset         | Split | Subset | Model config | Resolved | Generated patches | Avg cost | Notes |
-| ---- | --------------- | ----- | -----: | ------------ | -------: | ----------------: | -------: | ----- |
-|      | SWE-Bench Light | test  |        |              |          |                   |          |       |
+This repository is best understood as a durable agent-runtime prototype and Temporal-Light stress
+test, not as a claimed SWE-Bench submission.
+
+SWE-Bench Light support is included so the runtime can be exercised against realistic tasks, but
+exploratory runs are not reported here as benchmark results. A meaningful comparison would use a
+fixed task subset and a paired baseline, such as the same base model running through a lightweight
+SWE-agent-style harness. That comparison should report both resolution rate and cost/token usage,
+because this runtime intentionally spends extra orchestration and verification tokens for stronger
+control.
+
+The intended value is durable execution, inspectable workflow state, deterministic evidence gates,
+clean context curation, multi-model orchestration, and step-level plans/reviews that make model
+decisions auditable. The tradeoff is higher token usage and more constraint than a free-looping mini
+agent, which may be more flexible on some tasks but has fewer built-in safeguards against broken
+tests, forgotten context, or unreviewed changes.
